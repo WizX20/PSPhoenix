@@ -20,7 +20,7 @@ Your machine dies; your code does not - it lives in remotes. What dies with the 
 - **Claude Code** — per-project memory, settings, skills and commands.
 - **The machine setup** — winget and Scoop packages, your PowerShell profile and modules, Windows Terminal settings, WSL distros, user environment variables, git and SSH config.
 
-> **Status: early development.** This is milestone M0: the module skeleton, the help, and the [design](docs/design.md). Commands marked `(Mx)` below arrive with that milestone. See the [Changelog](CHANGELOG.md) for updates.
+> **Status: early development.** Released and installable, but it does not back anything up yet: this is milestone M0 — the module skeleton, the help, and the [design](docs/design.md). Commands marked `(Mx)` below arrive with that milestone. See the [Changelog](CHANGELOG.md) for updates.
 
 ## License
 
@@ -44,15 +44,31 @@ The full design, including what is not built yet: [docs/design.md](docs/design.m
 
 ## Install
 
-Not released yet. From a checkout:
+With [Scoop](https://scoop.sh):
 
 ```powershell
-task link                       # junction src/PSPhoenix into your CurrentUser module path
-Import-Module PSPhoenix
+scoop bucket add psphoenix https://github.com/WizX20/PSPhoenix
+scoop install psphoenix
 phx help
 ```
 
-Once released: `scoop bucket add psphoenix https://github.com/WizX20/PSPhoenix` and `scoop install psphoenix`.
+Scoop puts the module on your `PSModulePath`, so `phx` loads itself the first time you type it — in the session that installed it too. Tab completion of the sub-commands arrives with the module; to have it from the first keystroke of every session, add `Import-Module PSPhoenix` to your `$PROFILE`.
+
+```powershell
+scoop update psphoenix          # a new version - releases come out weekly when something changed
+scoop uninstall psphoenix
+```
+
+Scoop does not install PowerShell 7.4 for you: a dependency would put a second PowerShell next to the one you have from winget or the MSI.
+
+**Without Scoop:** download `PSPhoenix-<version>.zip` from the [latest release](https://github.com/WizX20/PSPhoenix/releases/latest) and extract it into your module folder — the zip holds a `PSPhoenix` folder (on Linux the folder is `~/.local/share/powershell/Modules`):
+
+```powershell
+Unblock-File .\PSPhoenix-<version>.zip
+Expand-Archive .\PSPhoenix-<version>.zip -DestinationPath (Join-Path (Split-Path $PROFILE.CurrentUserAllHosts) 'Modules')
+```
+
+To update, delete that `PSPhoenix` folder and extract the new zip. **From a checkout** (to work on PSPhoenix itself): `task link`, see [DEVGUIDE.md](DEVGUIDE.md#running-from-source).
 
 ## Help: `phx help`
 
