@@ -8,7 +8,7 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
 
 ### Fixed
 
-- fix: config - saving replaces the file in one rename, so a reader never finds it missing; reading refuses an empty, corrupt or unversioned config with a message naming the file, reads keys in any case and fills in missing sections from the defaults; `phx` works without `APPDATA`/`LOCALAPPDATA` and ignores a relative `XDG_*` directory
+- fix: release pipeline - releases exactly the commit CI verified; pushes the release commit and tag atomically; drafts the GitHub Release before the push and publishes it after, so `main` never points Scoop at a missing zip; refuses to release when CI's verdict is unknown; keeps the release token out of every step but the push; a missing or expiring release token fails CI, also in a weekly run
 
 ## [0.1.0] - 2026-10-07
 
