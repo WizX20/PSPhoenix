@@ -36,7 +36,7 @@ task release [VERSION=x.y.z] # dispatch the Release workflow; it also runs weekl
 - **Providers**: one file per provider in `src/PSPhoenix/Providers/`, registering through `Register-PhxProvider`. A provider writes only inside its staging folder during backup; every `Restore` is idempotent.
 - **Secrets**: only ever written encrypted (age, to the recipient in the config). Never DPAPI, never a token or private key in a snapshot, a log or test output.
 - **Design is the contract**: a change that deviates from `docs/design.md` updates it in the same PR.
-- **Changelog**: add a line under `## [Unreleased]`; the release workflow stamps the version. Do not touch released sections.
+- **Changelog**: a user-visible change adds a fragment `changelog.d/<branch>.<section>.md` (see `changelog.d/README.md`) - never edit `CHANGELOG.md` in a PR; the release folds the fragments in. Do not touch released sections.
 - **Versions**: patch bumps are automatic. For a minor/major, raise `ModuleVersion` in `src/PSPhoenix/PSPhoenix.psd1` in the PR.
 - **Help is the contract**: change `Show-PhxHelp` and paste `task help` into the README block.
 - **Commits**: imperative subject ≤72 chars, new commits (no amend), no `--no-verify`. Branches `feature/…`, `fix/…`, `chore/…` off `main`.

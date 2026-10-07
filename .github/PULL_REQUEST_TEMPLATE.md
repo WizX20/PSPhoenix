@@ -24,7 +24,7 @@ Thanks for the PR! Fill in the sections below — the checklist at the bottom ca
 
 ## Checklist
 
-- [ ] `CHANGELOG.md` has a new entry under **Unreleased** (user-visible changes only).
+- [ ] A changelog fragment in `changelog.d/` (user-visible changes only; see `changelog.d/README.md`) - not an edit to `CHANGELOG.md`.
 - [ ] `phx --help` (in `Show-PhxHelp`) updated if a command, flag or behaviour changed — the README quotes it.
 - [ ] `docs/design.md` updated if the change deviates from it.
 - [ ] No secret, token or private key can end up unencrypted in a snapshot, a log or the console.

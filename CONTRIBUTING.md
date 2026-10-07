@@ -39,7 +39,7 @@ Do **not** open a public issue for security-sensitive bugs (anything that could 
 1. Fork the repo and create a topic branch off `main`.
 2. Make your change. Keep the diff focused — one concern per PR.
 3. Run `task check` (PSScriptAnalyzer + Pester). Add or extend a test in `tests/` for behaviour you changed; a new provider comes with a round-trip test.
-4. Update [`CHANGELOG.md`](CHANGELOG.md) — add a line under **Unreleased** for any user-visible change. Never edit released sections.
+4. For any user-visible change, add a changelog fragment: `changelog.d/<branch>.<section>.md` with a `- ` bullet ([how](changelog.d/README.md)). Do not edit `CHANGELOG.md` itself: one file per PR means no PR conflicts with another over it.
 5. Update `Show-PhxHelp` in `src/PSPhoenix/PSPhoenix.psm1` if a command, flag or behaviour changed, and paste the new `task help` output into the README's help block.
 6. Update `docs/design.md` if the change deviates from it.
 7. Push and open a PR against `main`. Reference any related issue (`Fixes #123`).
