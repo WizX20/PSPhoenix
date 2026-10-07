@@ -8,7 +8,7 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
 
 ### Fixed
 
-- fix: an unknown or not-yet-built command (`phx frobnicate`, `phx run` before M2) is an error now - `$?` is false, `-ErrorAction Stop` throws and `pwsh -Command` exits with 1 - instead of a yellow line and success
+- fix: release pipeline - releases exactly the commit CI verified; pushes the release commit and tag atomically; drafts the GitHub Release before the push and publishes it after, so `main` never points Scoop at a missing zip; refuses to release when CI's verdict is unknown; keeps the release token out of every step but the push; a missing or expiring release token fails CI, also in a weekly run
 
 ## [0.1.0] - 2026-10-07
 
