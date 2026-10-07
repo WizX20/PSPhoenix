@@ -1,0 +1,7 @@
+# Normalise line endings in the repo; PowerShell reads either ending, so checkouts may differ.
+* text=auto
+# bash is not so forgiving: a CR ends up in the command.
+*.sh text eol=lf
+
+*.png binary
+*.zip binary

@@ -1,0 +1,65 @@
+name: Feature request
+description: Suggest an enhancement or new capability.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the use case first, the proposed solution second. The use case is what gets the change scoped correctly — the solution can change during discussion. Check [docs/design.md](https://github.com/WizX20/PSPhoenix/blob/main/docs/design.md) first: it may already be planned.
+
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched [open and closed issues](https://github.com/WizX20/PSPhoenix/issues?q=) for an existing request.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: The user-facing scenario — what would you lose, or have to redo by hand, after a crash? Skip the implementation for now.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How you imagine it working from the shell — the command line you would type and what it prints.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this touch?
+      multiple: true
+      options:
+        - Setup wizard (phx init)
+        - Repository inventory / GitHub accounts
+        - Local-only git work (bundles)
+        - Gitignored files (filters, review)
+        - Claude Code
+        - Machine setup (winget, Scoop, PowerShell, Terminal, WSL, environment)
+        - Secrets (age)
+        - Targets (folder, git)
+        - Scheduling
+        - Restore
+        - Packaging (Scoop / module)
+        - Cross-cutting / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Links, related tools, reference implementations.

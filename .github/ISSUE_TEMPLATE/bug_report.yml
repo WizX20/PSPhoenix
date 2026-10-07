@@ -1,0 +1,91 @@
+name: Bug report
+description: Something doesn't work the way it should.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. The more concrete the repro, the faster it gets fixed.
+        Paste command output as text rather than screenshots where you can.
+        **Read it before you paste it**: a backup tool handles exactly the files you would not want in a public issue.
+
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched [open and closed issues](https://github.com/WizX20/PSPhoenix/issues?q=) for duplicates.
+          required: true
+        - label: I ran the failing command again in a fresh shell after `Import-Module PSPhoenix -Force`.
+          required: true
+        - label: The output below contains no secrets, tokens or private paths I mind sharing.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: phx version
+      description: "`phx version` — or `main` + commit if you run from a checkout."
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS and PowerShell
+      description: "OS version, `$PSVersionTable.PSVersion`, and the host (Windows Terminal, VS Code, scheduled task…)."
+      placeholder: "Windows 11 24H2, PowerShell 7.6.5 in Windows Terminal"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Install method
+      options:
+        - Scoop
+        - Manual (copied the module folder)
+        - Running from a checkout of this repo
+    validations:
+      required: true
+
+  - type: dropdown
+    id: target
+    attributes:
+      label: Backup target
+      options:
+        - Folder synced by OneDrive / Dropbox / similar
+        - Local or network folder
+        - Git repository
+        - Not set up yet
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Number the steps so they can be followed verbatim. Include the exact `phx` command line.
+      placeholder: |
+        1. Run `phx run -Provider repos` …
+        2. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Full console output, including any red error text.
+      render: text
+    validations:
+      required: true
