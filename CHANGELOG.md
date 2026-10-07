@@ -6,6 +6,10 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
 
 ## [Unreleased]
 
+### Changed
+
+- docs: the README explains installing, updating and removing with Scoop, and a manual zip install; the Scoop notes point at `phx help` instead of the not-yet-built `phx init`
+
 ## [0.1.0] - 2026-10-07
 
 ### Added
