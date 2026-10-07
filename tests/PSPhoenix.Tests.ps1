@@ -119,6 +119,26 @@ Describe 'paths' {
             $paths.State | Should -Be (Join-Path $root 'state/psphoenix')
         }
     }
+
+    It 'falls back to the known folders when APPDATA and LOCALAPPDATA are not set' -Skip:(-not $IsWindows) {
+        # Only computes the paths; nothing is read or written there.
+        Use-TestHome | Out-Null
+        $env:APPDATA = $null
+        $env:LOCALAPPDATA = $null
+        $paths = InModuleScope PSPhoenix { @{ Config = Get-PhxConfigDir; State = Get-PhxStateDir } }
+        $paths.Config | Should -Be (Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'PSPhoenix')
+        $paths.State | Should -Be (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'PSPhoenix')
+    }
+
+    It 'uses the XDG defaults under HOME when the variables are unset or relative' -Skip:$IsWindows {
+        # Only computes the paths; nothing is read or written there.
+        Use-TestHome | Out-Null
+        $env:XDG_CONFIG_HOME = $null
+        $env:XDG_STATE_HOME = 'relative/state'
+        $paths = InModuleScope PSPhoenix { @{ Config = Get-PhxConfigDir; State = Get-PhxStateDir } }
+        $paths.Config | Should -Be (Join-Path $HOME '.config/psphoenix')
+        $paths.State | Should -Be (Join-Path $HOME '.local/state/psphoenix')
+    }
 }
 
 Describe 'config' {
