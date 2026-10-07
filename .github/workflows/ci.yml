@@ -4,6 +4,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Weekly on main, the day before the Tuesday release: in a quiet week nothing else would run
+  # the release token expiry check (a failed scheduled run emails the maintainer), and it shows
+  # a runner image or a newly installed Pester/PSScriptAnalyzer breaking the build.
+  schedule:
+    - cron: "0 5 * * 1"
 
 permissions:
   contents: read
@@ -84,10 +89,9 @@ jobs:
           # expiry - GitHub sends it back on any call made with it - gates merges: a warning from
           # WARN_DAYS out, a failure from FAIL_DAYS out. Rotation: DEVGUIDE.md -> Release process.
           if [ -z "$TOKEN" ]; then
-            # Before the first release the secret may not exist yet: warn instead of failing, so
-            # the repository can get going. The release workflow itself still refuses to run.
-            echo "::warning::Repository secret $SECRET_NAME is not set yet - releases cannot push to main until it is (DEVGUIDE.md -> Release process)."
-            exit 0
+            # Released since v0.1.0: a deleted or renamed secret is as broken as an expired one.
+            echo "::error::Repository secret $SECRET_NAME is missing - every release fails until it is set (DEVGUIDE.md -> Release process)."
+            exit 1
           fi
           HEADERS=$(curl -sS -D - -o /dev/null -H "Authorization: Bearer $TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/user)
           STATUS=$(printf '%s\n' "$HEADERS" | head -1 | tr -d '\r')

@@ -98,7 +98,7 @@ For a minor or major bump, raise `ModuleVersion` in `src/PSPhoenix/PSPhoenix.psd
 1. GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate. Resource owner `WizX20`, repository access: only `PSPhoenix`, permissions: **Contents: Read and write**. Expiry: one year at most.
 2. `git gh secret set PSPHOENIX_RELEASE_TOKEN -R WizX20/PSPhoenix` and paste the token.
 
-CI's **release token expiry** job reads the token's real expiry from the API on every PR and push: a warning 30 days out, a failure 14 days out. Until the secret exists the job only warns (unlike PSWorktree, where it fails), so the repository can get going before the first release; the release workflow itself refuses to run without it.
+CI's **release token expiry** job reads the token's real expiry from the API on every PR and push, and in a weekly scheduled run on Mondays: a warning 30 days out, a failure 14 days out, and a failure when the secret is missing. A failed scheduled run emails the maintainer. GitHub disables scheduled workflows after 60 days without repository activity, so in a very quiet stretch the dated `maintenance` issue and GitHub's own expiry mail are the reminders left.
 
 ### Branch rules (ruleset `main`)
 
