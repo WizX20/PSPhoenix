@@ -101,9 +101,11 @@ Describe 'module surface' {
         Get-PhxOutput { phx version } | Should -Match ([regex]::Escape("PSPhoenix $version"))
     }
 
-    It 'names the milestone of a command that is not built yet' {
-        Get-PhxOutput { phx init } | Should -Match 'not built yet.*M1'
-        Get-PhxOutput { phx restore } | Should -Match 'not built yet.*M6'
+    It 'fails a command that is not built yet, naming its milestone' {
+        { phx init -ErrorAction Stop } | Should -Throw '*not built yet*M1*'
+        { phx restore -ErrorAction Stop } | Should -Throw '*not built yet*M6*'
+        phx run -ErrorAction SilentlyContinue
+        $? | Should -BeFalse
     }
 
     It 'every planned command appears in the help with its milestone' {
@@ -114,8 +116,28 @@ Describe 'module surface' {
         }
     }
 
-    It 'refuses an unknown command' {
-        Get-PhxOutput { phx frobnicate } | Should -Match "unknown command 'frobnicate'"
+    It 'fails an unknown command' {
+        { phx frobnicate -ErrorAction Stop } | Should -Throw "*unknown command 'frobnicate'*"
+        phx frobnicate -ErrorAction SilentlyContinue
+        $? | Should -BeFalse
+    }
+
+    It 'exits with 1 from pwsh -Command on an unknown command, as a scheduled task would see it' {
+        Use-TestHome | Out-Null
+        $pwsh = (Get-Process -Id $PID).Path
+        & $pwsh -NoProfile -NonInteractive -Command "Import-Module '$script:ModulePath'; phx frobnicate" 2>&1 | Out-Null
+        $LASTEXITCODE | Should -Be 1
+        & $pwsh -NoProfile -NonInteractive -Command "Import-Module '$script:ModulePath'; phx version" 6>&1 | Out-Null
+        $LASTEXITCODE | Should -Be 0
+    }
+
+    It 'keeps -P and -E as short forms of -Provider and -Every' {
+        $bound = InModuleScope PSPhoenix {
+            $cmd = Get-Command phx
+            @{ P = $cmd.ResolveParameter('P').Name; E = $cmd.ResolveParameter('E').Name }
+        }
+        $bound.P | Should -Be 'Provider'
+        $bound.E | Should -Be 'Every'
     }
 }
 
@@ -139,6 +161,26 @@ Describe 'paths' {
             $paths.Config | Should -Be (Join-Path $root 'config/psphoenix')
             $paths.State | Should -Be (Join-Path $root 'state/psphoenix')
         }
+    }
+
+    It 'falls back to the known folders when APPDATA and LOCALAPPDATA are not set' -Skip:(-not $IsWindows) {
+        # Only computes the paths; nothing is read or written there.
+        Use-TestHome | Out-Null
+        $env:APPDATA = $null
+        $env:LOCALAPPDATA = $null
+        $paths = InModuleScope PSPhoenix { @{ Config = Get-PhxConfigDir; State = Get-PhxStateDir } }
+        $paths.Config | Should -Be (Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'PSPhoenix')
+        $paths.State | Should -Be (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'PSPhoenix')
+    }
+
+    It 'uses the XDG defaults under HOME when the variables are unset or relative' -Skip:$IsWindows {
+        # Only computes the paths; nothing is read or written there.
+        Use-TestHome | Out-Null
+        $env:XDG_CONFIG_HOME = $null
+        $env:XDG_STATE_HOME = 'relative/state'
+        $paths = InModuleScope PSPhoenix { @{ Config = Get-PhxConfigDir; State = Get-PhxStateDir } }
+        $paths.Config | Should -Be (Join-Path $HOME '.config/psphoenix')
+        $paths.State | Should -Be (Join-Path $HOME '.local/state/psphoenix')
     }
 }
 
@@ -164,7 +206,20 @@ Describe 'config' {
         $config.roots[0].path | Should -Be 'C:\Repos'
         $config.roots[0].depth | Should -Be 3
         $config.accounts['github.com/WizX20'] | Should -Be 'WizX20'
-        Test-Path ((InModuleScope PSPhoenix { Get-PhxConfigPath }) + '.tmp') | Should -BeFalse
+        $dir = Split-Path (InModuleScope PSPhoenix { Get-PhxConfigPath })
+        @(Get-ChildItem -LiteralPath $dir -Force).Name | Should -Be @('config.json')
+    }
+
+    It 'overwrites an existing config' {
+        Use-TestHome | Out-Null
+        $config = InModuleScope PSPhoenix {
+            $c = Read-PhxConfig
+            Save-PhxConfig $c
+            $c.interval = '2h'
+            Save-PhxConfig $c
+            Read-PhxConfig
+        }
+        $config.interval | Should -Be '2h'
     }
 
     It 'refuses a config written by a newer PSPhoenix' {
@@ -175,6 +230,93 @@ Describe 'config' {
             Set-Content -LiteralPath $path -Value '{ "version": 99 }'
             { Read-PhxConfig } | Should -Throw '*version 99*'
         }
+    }
+
+    It 'refuses a config that is <Case>, naming the file' -ForEach @(
+        @{ Case = 'empty'; Json = ''; Message = '*is empty*' }
+        @{ Case = 'whitespace only'; Json = "  `n "; Message = '*is empty*' }
+        @{ Case = 'not JSON'; Json = '{ "version": 1,'; Message = '*is not valid JSON*' }
+        @{ Case = 'an array'; Json = '[1, 2]'; Message = '*is not a JSON object*' }
+        @{ Case = 'null'; Json = 'null'; Message = '*is not a JSON object*' }
+        @{ Case = 'without a version'; Json = '{}'; Message = "*no whole-number 'version'*" }
+        @{ Case = 'versioned with a string'; Json = '{ "version": "1" }'; Message = "*no whole-number 'version'*" }
+        @{ Case = 'version 0'; Json = '{ "version": 0 }'; Message = '*version 0*' }
+        @{ Case = 'newer, spelled Version'; Json = '{ "Version": 99 }'; Message = '*version 99*' }
+        @{ Case = 'ambiguous in case'; Json = '{ "version": 1, "interval": "1h", "Interval": "2h" }'; Message = "*duplicate key 'Interval'*" }
+    ) {
+        Use-TestHome | Out-Null
+        InModuleScope PSPhoenix -Parameters @{ Json = $Json; Message = $Message } {
+            param($Json, $Message)
+            $path = Get-PhxConfigPath
+            [IO.Directory]::CreateDirectory((Split-Path $path)) | Out-Null
+            [IO.File]::WriteAllText($path, $Json)
+            { Read-PhxConfig } | Should -Throw $Message
+            { Read-PhxConfig } | Should -Throw "*$path*"
+        }
+    }
+
+    It 'reads keys in any case, like the defaults' {
+        Use-TestHome | Out-Null
+        $config = InModuleScope PSPhoenix {
+            Save-PhxConfig (New-PhxDefaultConfig)
+            Read-PhxConfig
+        }
+        $config.Files.MaxKB | Should -Be 1024
+        $config['INTERVAL'] | Should -Be '1h'
+    }
+
+    It 'fills in what an older or hand-written config leaves out' {
+        Use-TestHome | Out-Null
+        $config = InModuleScope PSPhoenix {
+            $path = Get-PhxConfigPath
+            [IO.Directory]::CreateDirectory((Split-Path $path)) | Out-Null
+            [IO.File]::WriteAllText($path, '{ "Version": 1, "Files": { "MaxKB": 5 }, "providers": { "winget": { "enabled": false } } }')
+            Read-PhxConfig
+        }
+        $config.files.maxKB | Should -Be 5
+        $config.files.Contains('repos') | Should -BeTrue
+        $config.interval | Should -Be '1h'
+        $config.providers.winget.enabled | Should -BeFalse
+        # The defaults' spelling and order survive: a save writes 'version', never 'Version'.
+        @($config.Keys) | Should -Be @('version', 'roots', 'target', 'interval', 'providers', 'accounts', 'secrets', 'files')
+    }
+}
+
+Describe 'atomic writes' {
+    It 'replaces an existing file and leaves no temporary file behind' {
+        $root = Use-TestHome
+        $path = Join-Path $root 'a [b] c/file.json'
+        InModuleScope PSPhoenix -Parameters @{ Path = $path } {
+            param($Path)
+            Write-PhxTextFile -Path $Path -Value 'one'
+            Write-PhxTextFile -Path $Path -Value 'two'
+        }
+        Get-Content -LiteralPath $path -Raw | Should -Be 'two'
+        @(Get-ChildItem -LiteralPath (Split-Path $path) -Force).Name | Should -Be @('file.json')
+    }
+
+    It 'never lets a reader find the file missing while it is replaced' {
+        # Move-Item -Force deletes the target before moving: a reader polling in between saw no
+        # file in about one check of seven. A rename over the target leaves no such moment.
+        $root = Use-TestHome
+        $path = Join-Path $root 'config.json'
+        $stop = Join-Path $root 'stop'
+        InModuleScope PSPhoenix -Parameters @{ Path = $path } { param($Path) Write-PhxTextFile -Path $Path -Value '0' }
+        $reader = Start-ThreadJob -ScriptBlock {
+            $misses = 0
+            while (-not [IO.File]::Exists($using:stop)) { if (-not [IO.File]::Exists($using:path)) { $misses++ } }
+            $misses
+        }
+        try {
+            InModuleScope PSPhoenix -Parameters @{ Path = $path } {
+                param($Path)
+                foreach ($i in 1..300) { Write-PhxTextFile -Path $Path -Value "$i" }
+            }
+        }
+        finally { [IO.File]::WriteAllText($stop, '') }
+        $misses = $reader | Wait-Job | Receive-Job
+        Remove-Job $reader
+        $misses | Should -Be 0
     }
 }
 
@@ -195,7 +337,7 @@ Describe 'provider registry' {
     }
 
     It 'rejects a provider without <Missing>' -ForEach @(
-        @{ Missing = 'Backup' }, @{ Missing = 'Restore' }, @{ Missing = 'Status' }, @{ Missing = 'Description' }
+        @{ Missing = 'Name' }, @{ Missing = 'Backup' }, @{ Missing = 'Restore' }, @{ Missing = 'Status' }, @{ Missing = 'Description' }
     ) {
         InModuleScope PSPhoenix -Parameters @{ Missing = $Missing } {
             param($Missing)
@@ -214,6 +356,32 @@ Describe 'provider registry' {
             Register-PhxProvider @{ Name = 'c'; Description = 'c'; Backup = {}; Restore = {}; Status = {} }
             { Register-PhxProvider @{ Name = 'c'; Description = 'c'; Backup = {}; Restore = {}; Status = {} } } |
                 Should -Throw '*registered twice*'
+        }
+    }
+
+    It 'rejects <Case>' -ForEach @(
+        @{ Case = 'an unknown key (a typo of Platforms)'; Extra = @{ Platform = @('Windows') }; Message = '*unknown key(s) Platform*' }
+        @{ Case = 'a name with a path in it'; Extra = @{ Name = '../evil' }; Message = '*lowercase letters*' }
+        @{ Case = 'a blank name'; Extra = @{ Name = ' ' }; Message = '*lowercase letters*' }
+        @{ Case = 'an upper-case name'; Extra = @{ Name = 'Winget' }; Message = '*lowercase letters*' }
+        @{ Case = 'an empty Platforms'; Extra = @{ Platforms = @() }; Message = '*Platforms is empty*' }
+        @{ Case = 'a Cadence that is not a duration'; Extra = @{ Cadence = 'banana' }; Message = "*Cadence 'banana'*" }
+        @{ Case = 'a zero Cadence'; Extra = @{ Cadence = '0h' }; Message = "*Cadence '0h'*" }
+    ) {
+        InModuleScope PSPhoenix -Parameters @{ Extra = $Extra; Message = $Message } {
+            param($Extra, $Message)
+            $p = @{ Name = 'demo'; Description = 'demo'; Backup = {}; Restore = {}; Status = {} }
+            foreach ($key in $Extra.Keys) { $p[$key] = $Extra[$key] }
+            { Register-PhxProvider $p } | Should -Throw $Message
+        }
+    }
+
+    It 'accepts a cadence in minutes, hours or days' {
+        InModuleScope PSPhoenix {
+            foreach ($cadence in '30m', '1h', '7d') {
+                Register-PhxProvider @{ Name = "p$cadence"; Description = 'd'; Backup = {}; Restore = {}; Status = {}; Cadence = $cadence }
+            }
+            (Get-PhxProvider 'p7d').Cadence | Should -Be '7d'
         }
     }
 

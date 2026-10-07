@@ -67,6 +67,13 @@ Register-PhxProvider @{
 }
 ```
 
+Registration is strict, so a mistake fails at import instead of yielding a provider that quietly
+never runs: `Name`, `Description`, `Backup`, `Restore` and `Status` are required; the name is
+lowercase letters, digits and dashes (it becomes a snapshot folder and a `-Provider` value);
+unknown keys are refused (a `Platform` typo would otherwise run the provider everywhere);
+`Platforms` defaults to all three but may not be empty; `Cadence` is absent or a whole number of
+minutes, hours or days (`30m`, `1h`, `1d`).
+
 `$Context` carries the loaded config, the provider's staging folder in the snapshot, the state
 store, a logger, the secret writer (age) and a `DryRun` flag. A provider never writes outside its
 staging folder during backup, and every `Restore` is idempotent: a second run skips what exists.
@@ -251,6 +258,9 @@ phx providers                     the providers registered for this platform
 phx version                       module version
 phx help                          usage
 ```
+
+An unknown command, or one whose milestone has not arrived yet, is an error - `$?` is false and
+`pwsh -Command` exits with 1 - so a scheduled task that calls it fails visibly.
 
 ## Restore sequence
 
