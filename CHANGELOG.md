@@ -6,6 +6,9 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-07
+
 ### Added
 
 - feat: project scaffold (milestone M0) - the `phx` command with help, version and `phx providers`; config and state paths per platform; config read/save with a format version; the provider registry and its contract checks; the design in `docs/design.md`
+

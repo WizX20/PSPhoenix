@@ -4,7 +4,7 @@
   "homepage": "https://github.com/WizX20/PSPhoenix",
   "license": "BUSL-1.1",
   "url": "https://github.com/WizX20/PSPhoenix/releases/download/v0.1.0/PSPhoenix-0.1.0.zip",
-  "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "hash": "B8DCA393EADB044F95F91D8C5818873C897385E9ADD552C601D7F10E6D351540",
   "extract_dir": "PSPhoenix",
   "psmodule": {
     "name": "PSPhoenix"
