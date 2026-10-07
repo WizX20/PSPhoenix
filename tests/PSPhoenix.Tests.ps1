@@ -80,9 +80,11 @@ Describe 'module surface' {
         Get-PhxOutput { phx version } | Should -Match ([regex]::Escape("PSPhoenix $version"))
     }
 
-    It 'names the milestone of a command that is not built yet' {
-        Get-PhxOutput { phx init } | Should -Match 'not built yet.*M1'
-        Get-PhxOutput { phx restore } | Should -Match 'not built yet.*M6'
+    It 'fails a command that is not built yet, naming its milestone' {
+        { phx init -ErrorAction Stop } | Should -Throw '*not built yet*M1*'
+        { phx restore -ErrorAction Stop } | Should -Throw '*not built yet*M6*'
+        phx run -ErrorAction SilentlyContinue
+        $? | Should -BeFalse
     }
 
     It 'every planned command appears in the help with its milestone' {
@@ -93,8 +95,28 @@ Describe 'module surface' {
         }
     }
 
-    It 'refuses an unknown command' {
-        Get-PhxOutput { phx frobnicate } | Should -Match "unknown command 'frobnicate'"
+    It 'fails an unknown command' {
+        { phx frobnicate -ErrorAction Stop } | Should -Throw "*unknown command 'frobnicate'*"
+        phx frobnicate -ErrorAction SilentlyContinue
+        $? | Should -BeFalse
+    }
+
+    It 'exits with 1 from pwsh -Command on an unknown command, as a scheduled task would see it' {
+        Use-TestHome | Out-Null
+        $pwsh = (Get-Process -Id $PID).Path
+        & $pwsh -NoProfile -NonInteractive -Command "Import-Module '$script:ModulePath'; phx frobnicate" 2>&1 | Out-Null
+        $LASTEXITCODE | Should -Be 1
+        & $pwsh -NoProfile -NonInteractive -Command "Import-Module '$script:ModulePath'; phx version" 6>&1 | Out-Null
+        $LASTEXITCODE | Should -Be 0
+    }
+
+    It 'keeps -P and -E as short forms of -Provider and -Every' {
+        $bound = InModuleScope PSPhoenix {
+            $cmd = Get-Command phx
+            @{ P = $cmd.ResolveParameter('P').Name; E = $cmd.ResolveParameter('E').Name }
+        }
+        $bound.P | Should -Be 'Provider'
+        $bound.E | Should -Be 'Every'
     }
 }
 
@@ -294,7 +316,7 @@ Describe 'provider registry' {
     }
 
     It 'rejects a provider without <Missing>' -ForEach @(
-        @{ Missing = 'Backup' }, @{ Missing = 'Restore' }, @{ Missing = 'Status' }, @{ Missing = 'Description' }
+        @{ Missing = 'Name' }, @{ Missing = 'Backup' }, @{ Missing = 'Restore' }, @{ Missing = 'Status' }, @{ Missing = 'Description' }
     ) {
         InModuleScope PSPhoenix -Parameters @{ Missing = $Missing } {
             param($Missing)
@@ -313,6 +335,32 @@ Describe 'provider registry' {
             Register-PhxProvider @{ Name = 'c'; Description = 'c'; Backup = {}; Restore = {}; Status = {} }
             { Register-PhxProvider @{ Name = 'c'; Description = 'c'; Backup = {}; Restore = {}; Status = {} } } |
                 Should -Throw '*registered twice*'
+        }
+    }
+
+    It 'rejects <Case>' -ForEach @(
+        @{ Case = 'an unknown key (a typo of Platforms)'; Extra = @{ Platform = @('Windows') }; Message = '*unknown key(s) Platform*' }
+        @{ Case = 'a name with a path in it'; Extra = @{ Name = '../evil' }; Message = '*lowercase letters*' }
+        @{ Case = 'a blank name'; Extra = @{ Name = ' ' }; Message = '*lowercase letters*' }
+        @{ Case = 'an upper-case name'; Extra = @{ Name = 'Winget' }; Message = '*lowercase letters*' }
+        @{ Case = 'an empty Platforms'; Extra = @{ Platforms = @() }; Message = '*Platforms is empty*' }
+        @{ Case = 'a Cadence that is not a duration'; Extra = @{ Cadence = 'banana' }; Message = "*Cadence 'banana'*" }
+        @{ Case = 'a zero Cadence'; Extra = @{ Cadence = '0h' }; Message = "*Cadence '0h'*" }
+    ) {
+        InModuleScope PSPhoenix -Parameters @{ Extra = $Extra; Message = $Message } {
+            param($Extra, $Message)
+            $p = @{ Name = 'demo'; Description = 'demo'; Backup = {}; Restore = {}; Status = {} }
+            foreach ($key in $Extra.Keys) { $p[$key] = $Extra[$key] }
+            { Register-PhxProvider $p } | Should -Throw $Message
+        }
+    }
+
+    It 'accepts a cadence in minutes, hours or days' {
+        InModuleScope PSPhoenix {
+            foreach ($cadence in '30m', '1h', '7d') {
+                Register-PhxProvider @{ Name = "p$cadence"; Description = 'd'; Backup = {}; Restore = {}; Status = {}; Cadence = $cadence }
+            }
+            (Get-PhxProvider 'p7d').Cadence | Should -Be '7d'
         }
     }
 
