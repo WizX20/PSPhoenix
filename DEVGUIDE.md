@@ -81,7 +81,7 @@ task release                    # release now: next patch version (or the manife
 task release VERSION=0.2.0      # release now with an explicit version
 ```
 
-The `check` job decides on `main`: anything to release (`main` moved past the last `v*` tag), which version (dispatch input, else an unreleased manifest version, else the next patch), validates it, and waits for CI on that exact commit to be green. The `release` job then stamps `ModuleVersion` and the changelog (`scripts/set-version.ps1`, `scripts/cut-changelog.ps1 -FallbackFromGit`), lints and tests the stamped module, packs `dist/PSPhoenix-x.y.z.zip`, bumps `bucket/psphoenix.json` (`version`, `url`, `hash`), commits `chore: release vx.y.z` with tag `vx.y.z` on `main`, and creates the GitHub Release with the zip attached.
+The `check` job decides on `main`: anything to release (`main` moved past the last `v*` tag), which version (dispatch input, else an unreleased manifest version, else the next patch), validates it, and waits for CI on that exact commit to be green. The `release` job then checks out that same commit — not whatever `main` is by then — stamps `ModuleVersion` and the changelog (`scripts/set-version.ps1`, `scripts/cut-changelog.ps1 -FallbackFromGit`), lints and tests the stamped module, packs `dist/PSPhoenix-x.y.z.zip`, bumps `bucket/psphoenix.json` (`version`, `url`, `hash`), commits `chore: release vx.y.z` with tag `vx.y.z` and pushes both atomically to `main` (refused, with nothing published, when `main` moved meanwhile — run it again), and creates the GitHub Release with the zip attached.
 
 For a minor or major bump, raise `ModuleVersion` in `src/PSPhoenix/PSPhoenix.psd1` in a PR; the next release ships exactly that.
 
