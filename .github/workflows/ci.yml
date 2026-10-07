@@ -4,14 +4,21 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Weekly on main, the day before the Tuesday release: in a quiet week nothing else would run
+  # the release token expiry check (a failed scheduled run emails the maintainer), and it shows
+  # a runner image or a newly installed Pester/PSScriptAnalyzer breaking the build.
+  schedule:
+    - cron: "0 5 * * 1"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  # Superseded PR pushes are cancelled; runs on main always finish, so the release gate never
-  # meets a 'cancelled' run for the commit it is about to ship.
+  # A pull request shares one group, so a newer push cancels the superseded run. Everything else
+  # gets a group per commit: GitHub cancels a *pending* run in a group when a newer one queues,
+  # even with cancel-in-progress off, so a shared group for main would cancel the middle run of
+  # three quick merges - and the release gate refuses a commit whose CI was cancelled.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -28,7 +35,7 @@ jobs:
           - { name: pwsh, os: windows-latest }
           - { name: pwsh-linux, os: ubuntu-latest }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Lint (PSScriptAnalyzer)
         shell: pwsh
@@ -38,7 +45,7 @@ jobs:
         shell: pwsh
         run: ./scripts/test.ps1 -CI
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: test-results-${{ matrix.name }}
@@ -49,13 +56,13 @@ jobs:
     needs: test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Pack
         shell: pwsh
         run: ./scripts/pack.ps1
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: module-zip
           path: dist/PSPhoenix-*.zip
@@ -82,10 +89,9 @@ jobs:
           # expiry - GitHub sends it back on any call made with it - gates merges: a warning from
           # WARN_DAYS out, a failure from FAIL_DAYS out. Rotation: DEVGUIDE.md -> Release process.
           if [ -z "$TOKEN" ]; then
-            # Before the first release the secret may not exist yet: warn instead of failing, so
-            # the repository can get going. The release workflow itself still refuses to run.
-            echo "::warning::Repository secret $SECRET_NAME is not set yet - releases cannot push to main until it is (DEVGUIDE.md -> Release process)."
-            exit 0
+            # Released since v0.1.0: a deleted or renamed secret is as broken as an expired one.
+            echo "::error::Repository secret $SECRET_NAME is missing - every release fails until it is set (DEVGUIDE.md -> Release process)."
+            exit 1
           fi
           HEADERS=$(curl -sS -D - -o /dev/null -H "Authorization: Bearer $TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/user)
           STATUS=$(printf '%s\n' "$HEADERS" | head -1 | tr -d '\r')
