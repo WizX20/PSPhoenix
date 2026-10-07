@@ -168,6 +168,55 @@ Describe 'config' {
             { Read-PhxConfig } | Should -Throw '*version 99*'
         }
     }
+
+    It 'refuses a config that is <Case>, naming the file' -ForEach @(
+        @{ Case = 'empty'; Json = ''; Message = '*is empty*' }
+        @{ Case = 'whitespace only'; Json = "  `n "; Message = '*is empty*' }
+        @{ Case = 'not JSON'; Json = '{ "version": 1,'; Message = '*is not valid JSON*' }
+        @{ Case = 'an array'; Json = '[1, 2]'; Message = '*is not a JSON object*' }
+        @{ Case = 'null'; Json = 'null'; Message = '*is not a JSON object*' }
+        @{ Case = 'without a version'; Json = '{}'; Message = "*no whole-number 'version'*" }
+        @{ Case = 'versioned with a string'; Json = '{ "version": "1" }'; Message = "*no whole-number 'version'*" }
+        @{ Case = 'version 0'; Json = '{ "version": 0 }'; Message = '*version 0*' }
+        @{ Case = 'newer, spelled Version'; Json = '{ "Version": 99 }'; Message = '*version 99*' }
+        @{ Case = 'ambiguous in case'; Json = '{ "version": 1, "interval": "1h", "Interval": "2h" }'; Message = "*duplicate key 'Interval'*" }
+    ) {
+        Use-TestHome | Out-Null
+        InModuleScope PSPhoenix -Parameters @{ Json = $Json; Message = $Message } {
+            param($Json, $Message)
+            $path = Get-PhxConfigPath
+            [IO.Directory]::CreateDirectory((Split-Path $path)) | Out-Null
+            [IO.File]::WriteAllText($path, $Json)
+            { Read-PhxConfig } | Should -Throw $Message
+            { Read-PhxConfig } | Should -Throw "*$path*"
+        }
+    }
+
+    It 'reads keys in any case, like the defaults' {
+        Use-TestHome | Out-Null
+        $config = InModuleScope PSPhoenix {
+            Save-PhxConfig (New-PhxDefaultConfig)
+            Read-PhxConfig
+        }
+        $config.Files.MaxKB | Should -Be 1024
+        $config['INTERVAL'] | Should -Be '1h'
+    }
+
+    It 'fills in what an older or hand-written config leaves out' {
+        Use-TestHome | Out-Null
+        $config = InModuleScope PSPhoenix {
+            $path = Get-PhxConfigPath
+            [IO.Directory]::CreateDirectory((Split-Path $path)) | Out-Null
+            [IO.File]::WriteAllText($path, '{ "Version": 1, "Files": { "MaxKB": 5 }, "providers": { "winget": { "enabled": false } } }')
+            Read-PhxConfig
+        }
+        $config.files.maxKB | Should -Be 5
+        $config.files.Contains('repos') | Should -BeTrue
+        $config.interval | Should -Be '1h'
+        $config.providers.winget.enabled | Should -BeFalse
+        # The defaults' spelling and order survive: a save writes 'version', never 'Version'.
+        @($config.Keys) | Should -Be @('version', 'roots', 'target', 'interval', 'providers', 'accounts', 'secrets', 'files')
+    }
 }
 
 Describe 'atomic writes' {
