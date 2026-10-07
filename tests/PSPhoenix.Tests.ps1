@@ -31,6 +31,10 @@ BeforeAll {
     foreach ($name in 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME') {
         $script:SavedEnv[$name] = [Environment]::GetEnvironmentVariable($name)
     }
+    # From here on no test derives anything from the real home - not even a path printed in the
+    # help. A test that needs a folder of its own calls Use-TestHome again for its path. (Pester
+    # has no root-level BeforeEach.)
+    Use-TestHome | Out-Null
 }
 
 AfterAll {
@@ -60,6 +64,23 @@ Describe 'module surface' {
             '-Every', 'phx review', 'phx restore', '-From', 'phx providers', 'phx version', 'docs/design.md') {
             $help | Should -Match ([regex]::Escape($text))
         }
+    }
+
+    It 'help is quoted word for word in the README' {
+        # The README quotes `phx help` (task help). Three lines differ per machine or release and
+        # are placeholders there: the version, the config path and the module folder.
+        $readme = Get-Content -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'README.md') -Raw
+        $quoted = [regex]::Match($readme, '(?s)## Help: `phx help`\s*```text\r?\n(.*?)\r?\n```').Groups[1].Value
+        $quoted | Should -Not -BeNullOrEmpty
+        $normalise = {
+            param([string]$Text)
+            @($Text.TrimEnd() -split '\r?\n' | ForEach-Object {
+                    $_.TrimEnd() -replace '^(phx - PSPhoenix )[^:]+:', '$1<version>:' `
+                        -replace '^(  - config: ).*', '$1<config>' `
+                        -replace '^(  - module: ).*', '$1<module>'
+                }) -join "`n"
+        }
+        (& $normalise (Get-PhxOutput { phx help })) | Should -Be (& $normalise $quoted)
     }
 
     It 'help shows the config path' {

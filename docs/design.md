@@ -254,6 +254,8 @@ phx scan                          re-discover repositories under the roots
 phx roots add|rm|list             manage roots
 phx schedule on|off|status        manage the scheduled task; -Every <n>h sets the interval
 phx restore                       rebuild this machine from a snapshot (see below)
+phx providers                     the providers registered for this platform
+phx version                       module version
 phx help                          usage
 ```
 
