@@ -257,6 +257,9 @@ phx restore                       rebuild this machine from a snapshot (see belo
 phx help                          usage
 ```
 
+An unknown command, or one whose milestone has not arrived yet, is an error - `$?` is false and
+`pwsh -Command` exits with 1 - so a scheduled task that calls it fails visibly.
+
 ## Restore sequence
 
 0. Install PSPhoenix, git, `gh` and age (or let step 2 do the rest).
