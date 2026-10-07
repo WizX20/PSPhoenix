@@ -6,6 +6,10 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
 
 ## [Unreleased]
 
+### Fixed
+
+- fix: an unknown or not-yet-built command (`phx frobnicate`, `phx run` before M2) is an error now - `$?` is false, `-ErrorAction Stop` throws and `pwsh -Command` exits with 1 - instead of a yellow line and success
+
 ## [0.1.0] - 2026-10-07
 
 ### Added
