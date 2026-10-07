@@ -47,7 +47,7 @@ task help                       # print `phx --help` (the README quotes it)
 - **Every provider gets a round-trip test**: back up into one `$TestDrive` home, restore into another, compare. Git-backed tests build throwaway repositories (a bare `origin` plus a clone) the way PSWorktree's suite does.
 - `phx` prints through `Write-Host`; tests capture it with `6>&1` (the `Get-PhxOutput { phx ... }` helper). Call `phx` with real switches inside the block — splatting `'-Provider'` as a string would bind it positionally.
 - CI runs the suite on Windows and Linux (pwsh). No `\` in a path that reaches git or gets compared: build paths with `Join-Path`, match separators in test regexes with `[\\/]`.
-- When `task help` changes, paste it into the README's help block. Two lines differ per machine — keep `config: %APPDATA%\PSPhoenix\config.json` and `module: <module folder>` there.
+- When `task help` changes, paste it into the README's help block. Three lines differ per machine or release — keep `PSPhoenix <version>`, `config: %APPDATA%\PSPhoenix\config.json` and `module: <module folder>` there. A test compares the two with those three lines normalised, so a help change without the README fails `task test`.
 
 ## Adding a provider
 

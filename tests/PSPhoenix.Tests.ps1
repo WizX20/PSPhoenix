@@ -62,6 +62,23 @@ Describe 'module surface' {
         }
     }
 
+    It 'help is quoted word for word in the README' {
+        # The README quotes `phx help` (task help). Three lines differ per machine or release and
+        # are placeholders there: the version, the config path and the module folder.
+        $readme = Get-Content -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'README.md') -Raw
+        $quoted = [regex]::Match($readme, '(?s)## Help: `phx help`\s*```text\r?\n(.*?)\r?\n```').Groups[1].Value
+        $quoted | Should -Not -BeNullOrEmpty
+        $normalise = {
+            param([string]$Text)
+            @($Text.TrimEnd() -split '\r?\n' | ForEach-Object {
+                    $_.TrimEnd() -replace '^(phx - PSPhoenix )[^:]+:', '$1<version>:' `
+                        -replace '^(  - config: ).*', '$1<config>' `
+                        -replace '^(  - module: ).*', '$1<module>'
+                }) -join "`n"
+        }
+        (& $normalise (Get-PhxOutput { phx help })) | Should -Be (& $normalise $quoted)
+    }
+
     It 'help shows the config path' {
         Use-TestHome | Out-Null
         $expected = InModuleScope PSPhoenix { Get-PhxConfigPath }

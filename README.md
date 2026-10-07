@@ -73,7 +73,7 @@ To update, delete that `PSPhoenix` folder and extract the new zip. **From a chec
 ## Help: `phx help`
 
 ```text
-phx - PSPhoenix 0.1.0: back up what your machine would lose in a crash, rebuild a new one from it.
+phx - PSPhoenix <version>: back up what your machine would lose in a crash, rebuild a new one from it.
 
 Code in a remote is safe already. phx keeps the rest: which repositories you had (remotes,
 GitHub account, identity), local-only git work, gitignored local files, Claude Code memory
