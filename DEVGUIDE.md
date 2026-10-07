@@ -11,6 +11,7 @@ src/PSPhoenix/Private/*.ps1         helpers, one file per concern (paths, config
 src/PSPhoenix/Providers/*.ps1       one file per backup unit; each calls Register-PhxProvider at import
 tests/PSPhoenix.Tests.ps1           Pester 5+ suite; never touches the real home, registry or Task Scheduler
 docs/design.md                      the design and the roadmap - the contract the code builds towards
+changelog.d/                        one release-notes fragment per pull request; the release folds them into CHANGELOG.md
 scripts/                            lint / test / pack / set-version / cut-changelog / dev-link
 bucket/psphoenix.json               Scoop manifest; this repo doubles as the Scoop bucket
 .github/workflows/ci.yml            lint + test on pwsh (Windows and Linux), then pack
@@ -116,6 +117,6 @@ To set up on GitHub: **Settings → Rules → Rulesets → main**. Pull request 
 ## Conventions
 
 - **Design first** — `docs/design.md` is the contract; a PR that deviates changes it too.
-- **Changelog** — add a line under `## [Unreleased]` for user-visible changes; the release workflow stamps the version. Never edit released sections.
+- **Changelog** — a user-visible change adds a fragment `changelog.d/<branch>.<section>.md` ([format](changelog.d/README.md)); `scripts/cut-changelog.ps1` folds the fragments into `CHANGELOG.md` at release and deletes them. Never edit released sections.
 - **Help text** — `Show-PhxHelp` is the contract; the README quotes it. Change both.
 - **Commits** — new commits, no amends of published commits, no skipped hooks.
