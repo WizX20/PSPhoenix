@@ -77,24 +77,34 @@ function Show-PhxProviders {
 }
 
 function phx {
+    # An advanced function so a failure is an error a caller can see: $? is false, -ErrorAction
+    # Stop throws, and `pwsh -Command phx ...` - what a scheduled task runs - exits with 1. The
+    # aliases keep -P and -E unambiguous next to the common parameters (-PipelineVariable,
+    # -ProgressAction, -ErrorAction, ...).
+    [CmdletBinding()]
     param(
         [Parameter(Position = 0)][string]$Command,
         [Parameter(Position = 1)][string]$Arg,
         [Parameter(Position = 2)][string]$Arg2,
-        [string]$Provider,
-        [string]$Every,
+        [Alias('P')][string]$Provider,
+        [Alias('E')][string]$Every,
         [string]$From,
         [Alias('h')][switch]$Help
     )
     if ($Help -or $Command -in '', '--help', 'help', '-h', '/?') { Show-PhxHelp; return }
     if ($script:PhxPlanned.Contains($Command)) {
-        Write-Host "phx $Command is not built yet - it arrives with milestone $($script:PhxPlanned[$Command]) (docs/design.md -> Roadmap)" -ForegroundColor Yellow
+        $message = "phx $Command is not built yet - it arrives with milestone $($script:PhxPlanned[$Command]) (docs/design.md -> Roadmap)"
+        $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
+                [System.NotImplementedException]::new($message), 'PhxNotBuiltYet', 'NotImplemented', $Command))
         return
     }
     switch ($Command) {
         'providers' { Show-PhxProviders }
         'version' { Write-Host "PSPhoenix $(Get-PhxVersion)" }
-        default { Write-Host "unknown command '$Command' - see: phx help" -ForegroundColor Yellow }
+        default {
+            $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
+                    [System.ArgumentException]::new("unknown command '$Command' - see: phx help"), 'PhxUnknownCommand', 'InvalidArgument', $Command))
+        }
     }
 }
 
