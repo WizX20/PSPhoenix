@@ -174,7 +174,7 @@ Describe 'provider registry' {
     }
 
     It 'rejects a provider without <Missing>' -ForEach @(
-        @{ Missing = 'Backup' }, @{ Missing = 'Restore' }, @{ Missing = 'Status' }, @{ Missing = 'Description' }
+        @{ Missing = 'Name' }, @{ Missing = 'Backup' }, @{ Missing = 'Restore' }, @{ Missing = 'Status' }, @{ Missing = 'Description' }
     ) {
         InModuleScope PSPhoenix -Parameters @{ Missing = $Missing } {
             param($Missing)
@@ -193,6 +193,32 @@ Describe 'provider registry' {
             Register-PhxProvider @{ Name = 'c'; Description = 'c'; Backup = {}; Restore = {}; Status = {} }
             { Register-PhxProvider @{ Name = 'c'; Description = 'c'; Backup = {}; Restore = {}; Status = {} } } |
                 Should -Throw '*registered twice*'
+        }
+    }
+
+    It 'rejects <Case>' -ForEach @(
+        @{ Case = 'an unknown key (a typo of Platforms)'; Extra = @{ Platform = @('Windows') }; Message = '*unknown key(s) Platform*' }
+        @{ Case = 'a name with a path in it'; Extra = @{ Name = '../evil' }; Message = '*lowercase letters*' }
+        @{ Case = 'a blank name'; Extra = @{ Name = ' ' }; Message = '*lowercase letters*' }
+        @{ Case = 'an upper-case name'; Extra = @{ Name = 'Winget' }; Message = '*lowercase letters*' }
+        @{ Case = 'an empty Platforms'; Extra = @{ Platforms = @() }; Message = '*Platforms is empty*' }
+        @{ Case = 'a Cadence that is not a duration'; Extra = @{ Cadence = 'banana' }; Message = "*Cadence 'banana'*" }
+        @{ Case = 'a zero Cadence'; Extra = @{ Cadence = '0h' }; Message = "*Cadence '0h'*" }
+    ) {
+        InModuleScope PSPhoenix -Parameters @{ Extra = $Extra; Message = $Message } {
+            param($Extra, $Message)
+            $p = @{ Name = 'demo'; Description = 'demo'; Backup = {}; Restore = {}; Status = {} }
+            foreach ($key in $Extra.Keys) { $p[$key] = $Extra[$key] }
+            { Register-PhxProvider $p } | Should -Throw $Message
+        }
+    }
+
+    It 'accepts a cadence in minutes, hours or days' {
+        InModuleScope PSPhoenix {
+            foreach ($cadence in '30m', '1h', '7d') {
+                Register-PhxProvider @{ Name = "p$cadence"; Description = 'd'; Backup = {}; Restore = {}; Status = {}; Cadence = $cadence }
+            }
+            (Get-PhxProvider 'p7d').Cadence | Should -Be '7d'
         }
     }
 
