@@ -14,9 +14,6 @@
         # ($commandName, $parameterName, $wordToComplete, ...) signature to reach the later
         # ones; and `phx` declares the flags of milestones that are not built yet, so the help
         # and the command line agree from the start.
-        'PSReviewUnusedParameter',
-        # False positive on `if ($x -eq (git ... 2>$null))`: the rule sees the '>' of a
-        # stderr redirection inside a condition and suspects a mistyped comparison.
-        'PSPossibleIncorrectUsageOfRedirectionOperator'
+        'PSReviewUnusedParameter'
     )
 }
