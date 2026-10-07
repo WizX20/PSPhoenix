@@ -29,10 +29,6 @@ function Read-PhxConfig {
 
 function Save-PhxConfig {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Config)
-    $path = Get-PhxConfigPath
-    New-Item -ItemType Directory -Force -Path (Split-Path $path -Parent) | Out-Null
-    # Temp file + move: a scheduled run reading the config never sees half a file.
-    $tmp = "$path.tmp"
-    [IO.File]::WriteAllText($tmp, ($Config | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
-    Move-Item -LiteralPath $tmp -Destination $path -Force
+    # Temp file + rename: a scheduled run reading the config never sees half a file, or none.
+    Write-PhxTextFile -Path (Get-PhxConfigPath) -Value ($Config | ConvertTo-Json -Depth 10)
 }

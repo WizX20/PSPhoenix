@@ -143,7 +143,20 @@ Describe 'config' {
         $config.roots[0].path | Should -Be 'C:\Repos'
         $config.roots[0].depth | Should -Be 3
         $config.accounts['github.com/WizX20'] | Should -Be 'WizX20'
-        Test-Path ((InModuleScope PSPhoenix { Get-PhxConfigPath }) + '.tmp') | Should -BeFalse
+        $dir = Split-Path (InModuleScope PSPhoenix { Get-PhxConfigPath })
+        @(Get-ChildItem -LiteralPath $dir -Force).Name | Should -Be @('config.json')
+    }
+
+    It 'overwrites an existing config' {
+        Use-TestHome | Out-Null
+        $config = InModuleScope PSPhoenix {
+            $c = Read-PhxConfig
+            Save-PhxConfig $c
+            $c.interval = '2h'
+            Save-PhxConfig $c
+            Read-PhxConfig
+        }
+        $config.interval | Should -Be '2h'
     }
 
     It 'refuses a config written by a newer PSPhoenix' {
@@ -154,6 +167,44 @@ Describe 'config' {
             Set-Content -LiteralPath $path -Value '{ "version": 99 }'
             { Read-PhxConfig } | Should -Throw '*version 99*'
         }
+    }
+}
+
+Describe 'atomic writes' {
+    It 'replaces an existing file and leaves no temporary file behind' {
+        $root = Use-TestHome
+        $path = Join-Path $root 'a [b] c/file.json'
+        InModuleScope PSPhoenix -Parameters @{ Path = $path } {
+            param($Path)
+            Write-PhxTextFile -Path $Path -Value 'one'
+            Write-PhxTextFile -Path $Path -Value 'two'
+        }
+        Get-Content -LiteralPath $path -Raw | Should -Be 'two'
+        @(Get-ChildItem -LiteralPath (Split-Path $path) -Force).Name | Should -Be @('file.json')
+    }
+
+    It 'never lets a reader find the file missing while it is replaced' {
+        # Move-Item -Force deletes the target before moving: a reader polling in between saw no
+        # file in about one check of seven. A rename over the target leaves no such moment.
+        $root = Use-TestHome
+        $path = Join-Path $root 'config.json'
+        $stop = Join-Path $root 'stop'
+        InModuleScope PSPhoenix -Parameters @{ Path = $path } { param($Path) Write-PhxTextFile -Path $Path -Value '0' }
+        $reader = Start-ThreadJob -ScriptBlock {
+            $misses = 0
+            while (-not [IO.File]::Exists($using:stop)) { if (-not [IO.File]::Exists($using:path)) { $misses++ } }
+            $misses
+        }
+        try {
+            InModuleScope PSPhoenix -Parameters @{ Path = $path } {
+                param($Path)
+                foreach ($i in 1..300) { Write-PhxTextFile -Path $Path -Value "$i" }
+            }
+        }
+        finally { [IO.File]::WriteAllText($stop, '') }
+        $misses = $reader | Wait-Job | Receive-Job
+        Remove-Job $reader
+        $misses | Should -Be 0
     }
 }
 
