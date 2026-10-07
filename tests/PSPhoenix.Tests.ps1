@@ -31,6 +31,10 @@ BeforeAll {
     foreach ($name in 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME') {
         $script:SavedEnv[$name] = [Environment]::GetEnvironmentVariable($name)
     }
+    # From here on no test derives anything from the real home - not even a path printed in the
+    # help. A test that needs a folder of its own calls Use-TestHome again for its path. (Pester
+    # has no root-level BeforeEach.)
+    Use-TestHome | Out-Null
 }
 
 AfterAll {
