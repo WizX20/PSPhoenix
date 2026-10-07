@@ -23,7 +23,7 @@
     "extract_dir": "PSPhoenix"
   },
   "notes": [
-    "Import-Module PSPhoenix, then: phx init (wizard) - or phx help.",
+    "Type phx help - the module loads itself. For tab completion from the first keystroke, add Import-Module PSPhoenix to your $PROFILE.",
     "PowerShell 7.4+ only; secrets need age: scoop install age"
   ]
 }

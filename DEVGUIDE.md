@@ -11,6 +11,7 @@ src/PSPhoenix/Private/*.ps1         helpers, one file per concern (paths, config
 src/PSPhoenix/Providers/*.ps1       one file per backup unit; each calls Register-PhxProvider at import
 tests/PSPhoenix.Tests.ps1           Pester 5+ suite; never touches the real home, registry or Task Scheduler
 docs/design.md                      the design and the roadmap - the contract the code builds towards
+changelog.d/                        one release-notes fragment per pull request; the release folds them into CHANGELOG.md
 scripts/                            lint / test / pack / set-version / cut-changelog / dev-link
 bucket/psphoenix.json               Scoop manifest; this repo doubles as the Scoop bucket
 .github/workflows/ci.yml            lint + test on pwsh (Windows and Linux), then pack
@@ -47,7 +48,7 @@ task help                       # print `phx --help` (the README quotes it)
 - **Every provider gets a round-trip test**: back up into one `$TestDrive` home, restore into another, compare. Git-backed tests build throwaway repositories (a bare `origin` plus a clone) the way PSWorktree's suite does.
 - `phx` prints through `Write-Host`; tests capture it with `6>&1` (the `Get-PhxOutput { phx ... }` helper). Call `phx` with real switches inside the block — splatting `'-Provider'` as a string would bind it positionally.
 - CI runs the suite on Windows and Linux (pwsh). No `\` in a path that reaches git or gets compared: build paths with `Join-Path`, match separators in test regexes with `[\\/]`.
-- When `task help` changes, paste it into the README's help block. Two lines differ per machine — keep `config: %APPDATA%\PSPhoenix\config.json` and `module: <module folder>` there.
+- When `task help` changes, paste it into the README's help block. Three lines differ per machine or release — keep `PSPhoenix <version>`, `config: %APPDATA%\PSPhoenix\config.json` and `module: <module folder>` there. A test compares the two with those three lines normalised, so a help change without the README fails `task test`.
 
 ## Adding a provider
 
@@ -85,11 +86,14 @@ The `check` job decides on `main`: anything to release (`main` moved past the la
 
 For a minor or major bump, raise `ModuleVersion` in `src/PSPhoenix/PSPhoenix.psd1` in a PR; the next release ships exactly that.
 
-### First release — not done yet
+### Repository setup
 
-1. Create `WizX20/PSPhoenix` on GitHub (**public**: Scoop downloads release assets anonymously) and push `main`.
-2. Create the `PSPHOENIX_RELEASE_TOKEN` secret (below).
-3. Add the ruleset (below), then `task release` once CI is green — it ships the manifest's `0.1.0`. Until then `bucket/psphoenix.json` carries a placeholder hash and `scoop install` fails.
+Done once, before `0.1.0` (2026-10-07); kept as the checklist for a repository like this one:
+
+1. `WizX20/PSPhoenix` is **public**: Scoop downloads release assets anonymously.
+2. The `PSPHOENIX_RELEASE_TOKEN` secret (below), with a dated `maintenance` issue to rotate it.
+3. The ruleset `main` (below), labels copied from PSVsCommand (`git gh label clone`), squash merges only.
+4. `task release` shipped the manifest's version; from then on the release workflow keeps `bucket/psphoenix.json` in step.
 
 ### Required secret: `PSPHOENIX_RELEASE_TOKEN`
 
@@ -107,12 +111,12 @@ To set up on GitHub: **Settings → Rules → Rulesets → main**. Pull request 
 ## Scoop bucket maintenance
 
 - Manifest: `bucket/psphoenix.json`. The release workflow bumps `version`/`url`/`hash`; `checkver: github` + `autoupdate` let `scoop update` find new releases.
-- Users subscribe straight from this repo: `scoop bucket add psphoenix https://github.com/WizX20/PSPhoenix`. With three WizX20 tools now, moving the manifests into one `WizX20/scoop-bucket` repo is worth doing (see PSWorktree's DEVGUIDE).
+- Users subscribe straight from this repo: `scoop bucket add psphoenix https://github.com/WizX20/PSPhoenix`. With three WizX20 tools now, moving the manifests into one `WizX20/scoop-bucket` repo is worth doing (#1).
 - `psmodule.name: PSPhoenix` junctions `~/scoop/modules/PSPhoenix` to the install dir; `post_install` patches `PSModulePath` in the running process. No `depends: pwsh`: that would install a second PowerShell next to a winget or MSI one.
 
 ## Conventions
 
 - **Design first** — `docs/design.md` is the contract; a PR that deviates changes it too.
-- **Changelog** — add a line under `## [Unreleased]` for user-visible changes; the release workflow stamps the version. Never edit released sections.
+- **Changelog** — a user-visible change adds a fragment `changelog.d/<branch>.<section>.md` ([format](changelog.d/README.md)); `scripts/cut-changelog.ps1` folds the fragments into `CHANGELOG.md` at release and deletes them. Never edit released sections.
 - **Help text** — `Show-PhxHelp` is the contract; the README quotes it. Change both.
 - **Commits** — new commits, no amends of published commits, no skipped hooks.
