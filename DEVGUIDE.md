@@ -81,7 +81,7 @@ task release                    # release now: next patch version (or the manife
 task release VERSION=0.2.0      # release now with an explicit version
 ```
 
-The `check` job decides on `main`: anything to release (`main` moved past the last `v*` tag), which version (dispatch input, else an unreleased manifest version, else the next patch), validates it, and waits for CI on that exact commit to be green. The `release` job then stamps `ModuleVersion` and the changelog (`scripts/set-version.ps1`, `scripts/cut-changelog.ps1 -FallbackFromGit`), lints and tests the stamped module, packs `dist/PSPhoenix-x.y.z.zip`, bumps `bucket/psphoenix.json` (`version`, `url`, `hash`), commits `chore: release vx.y.z` with tag `vx.y.z` on `main`, and creates the GitHub Release with the zip attached.
+The `check` job decides on `main`: anything to release (`main` moved past the last `v*` tag), which version (dispatch input, else an unreleased manifest version, else the next patch), validates it, and waits for CI on that exact commit to be green (an API error, or no CI run after five minutes, refuses the release rather than letting it through). The `release` job then checks out that same commit — not whatever `main` is by then — stamps `ModuleVersion` and the changelog (`scripts/set-version.ps1`, `scripts/cut-changelog.ps1 -FallbackFromGit`), lints and tests the stamped module, packs `dist/PSPhoenix-x.y.z.zip`, bumps `bucket/psphoenix.json` (`version`, `url`, `hash`) and commits `chore: release vx.y.z`. Then, in this order: it drafts the GitHub Release with the zip attached, pushes the commit and tag `vx.y.z` atomically to `main`, and publishes the draft. When `main` moved meanwhile the push is refused, the draft is deleted and nothing is published — run it again. When only publishing fails, the next run stops with the command that publishes the draft by hand (`git gh release edit vx.y.z --draft=false`); until then `scoop install` cannot download the zip.
 
 For a minor or major bump, raise `ModuleVersion` in `src/PSPhoenix/PSPhoenix.psd1` in a PR; the next release ships exactly that.
 
@@ -101,7 +101,7 @@ Done once, before `0.1.0` (2026-10-07); kept as the checklist for a repository l
 1. GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate. Resource owner `WizX20`, repository access: only `PSPhoenix`, permissions: **Contents: Read and write**. Expiry: one year at most.
 2. `git gh secret set PSPHOENIX_RELEASE_TOKEN -R WizX20/PSPhoenix` and paste the token.
 
-CI's **release token expiry** job reads the token's real expiry from the API on every PR and push: a warning 30 days out, a failure 14 days out. Until the secret exists the job only warns (unlike PSWorktree, where it fails), so the repository can get going before the first release; the release workflow itself refuses to run without it.
+CI's **release token expiry** job reads the token's real expiry from the API on every PR and push, and in a weekly scheduled run on Mondays: a warning 30 days out, a failure 14 days out, and a failure when the secret is missing. A failed scheduled run emails the maintainer. GitHub disables scheduled workflows after 60 days without repository activity, so in a very quiet stretch the dated `maintenance` issue and GitHub's own expiry mail are the reminders left.
 
 ### Branch rules (ruleset `main`)
 
