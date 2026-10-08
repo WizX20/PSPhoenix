@@ -1068,7 +1068,7 @@ Describe 'prompts' {
 Describe 'gh wrappers' {
     It 'lists the logged-in accounts from gh auth status --json' {
         InModuleScope PSPhoenix {
-            Mock gh { '{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"wpaap"},{"state":"success","active":false,"host":"github.com","login":"WizX20"},{"state":"error","active":false,"host":"github.com","login":"Broken"}]}}' }
+            Mock Invoke-PhxGh { '{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"wpaap"},{"state":"success","active":false,"host":"github.com","login":"WizX20"},{"state":"error","active":false,"host":"github.com","login":"Broken"}]}}' }
             $accounts = @(Get-PhxGhAccount)
             $accounts.Login | Should -Be @('wpaap', 'WizX20')
             ($accounts | Where-Object Login -EQ 'wpaap').Active | Should -BeTrue
@@ -1077,17 +1077,25 @@ Describe 'gh wrappers' {
 
     It 'lists nothing when gh says nothing usable' {
         InModuleScope PSPhoenix {
-            Mock gh { 'not json' }
+            Mock Invoke-PhxGh { 'not json' }
             @(Get-PhxGhAccount).Count | Should -Be 0
         }
     }
 
     It "gets one account's token, or says which login to run" {
         InModuleScope PSPhoenix {
-            Mock gh { $global:LASTEXITCODE = 0; 'secret-token' } -ParameterFilter { $args -contains 'WizX20' }
+            Mock Invoke-PhxGh { $global:LASTEXITCODE = 0; 'secret-token' } -ParameterFilter { $Arguments -contains 'WizX20' }
             Get-PhxGhToken -Account WizX20 | Should -Be 'secret-token'
-            Mock gh { $global:LASTEXITCODE = 1 } -ParameterFilter { $args -contains 'Nobody' }
+            Mock Invoke-PhxGh { $global:LASTEXITCODE = 1 } -ParameterFilter { $Arguments -contains 'Nobody' }
             { Get-PhxGhToken -Account Nobody } | Should -Throw '*no token for Nobody*gh auth login*'
+        }
+    }
+
+    It 'copes with gh not being installed' {
+        InModuleScope PSPhoenix {
+            Mock Invoke-PhxGh { throw [System.Management.Automation.CommandNotFoundException]::new('gh') }
+            @(Get-PhxGhAccount).Count | Should -Be 0
+            { Get-PhxGhToken -Account WizX20 } | Should -Throw '*gh is not installed*'
         }
     }
 }
