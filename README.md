@@ -20,7 +20,7 @@ Your machine dies; your code does not - it lives in remotes. What dies with the 
 - **Claude Code** — per-project memory, settings, skills and commands.
 - **The machine setup** — winget and Scoop packages, your PowerShell profile and modules, Windows Terminal settings, WSL distros, user environment variables, git and SSH config.
 
-> **Status: early development.** Released and installable, but it does not back anything up yet: this is milestone M0 — the module skeleton, the help, and the [design](docs/design.md). Commands marked `(Mx)` below arrive with that milestone. See the [Changelog](CHANGELOG.md) for updates.
+> **Status: early development.** Released and installable, but it does not back anything up yet. Milestone M1 brings the set-up - `phx init`, `phx roots`, `phx scan`, `phx status` - and the repository inventory; backups start with M2 (`phx run`). Commands marked `(Mx)` below arrive with that milestone; the [roadmap](docs/design.md#roadmap) and the [milestones](https://github.com/WizX20/PSPhoenix/milestones) show what comes when. See the [Changelog](CHANGELOG.md) for updates.
 
 ## License
 
@@ -82,7 +82,7 @@ environment variables.
 
 USAGE:
   phx init                        set up or change: roots, accounts, target, interval
-  phx status                      last run, pending review items, local-only work      (M1)
+  phx status                      what is set up, and what needs attention
   phx scan                        re-discover repositories under the roots
   phx roots add|rm|list [<path>]  the folders that hold your repositories; add: -Depth <n>
   phx run [-Provider <name>]      one backup run now (the scheduled task calls this)   (M2)

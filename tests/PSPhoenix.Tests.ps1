@@ -963,6 +963,91 @@ Describe 'init' {
     }
 }
 
+Describe 'status' {
+    BeforeEach {
+        $testHome = Use-TestHome
+        $repos = Join-Path $testHome 'Repos'
+        New-TestRepository (Join-Path $repos 'Mine') -Remote 'origin=https://github.com/WizX20/mine.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'Work') -Remote 'origin=https://github.com/summitnl/work.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'Scratch') | Out-Null
+        $target = Join-Path $testHome 'Target'
+        New-Item -ItemType Directory -Path $target | Out-Null
+        Mock Get-PhxGhAccount -ModuleName PSPhoenix {
+            [pscustomobject]@{ Host = 'github.com'; Login = 'wpaap'; Active = $true }
+            [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $false }
+        }
+
+        function Set-TestConfig {
+            param([string]$WorkAccount = 'wpaap', [string]$TargetPath = $target)
+            InModuleScope PSPhoenix -Parameters @{ Root = $repos; Target = $TargetPath; Work = $WorkAccount } {
+                param($Root, $Target, $Work)
+                $c = Read-PhxConfig
+                $c.roots = @([ordered]@{ path = $Root; depth = 3 })
+                $c.target = [ordered]@{ type = 'folder'; path = $Target }
+                $c.accounts['github.com/WizX20'] = 'WizX20'
+                $c.accounts['github.com/summitnl'] = $Work
+                Save-PhxConfig $c
+            }
+        }
+    }
+
+    It 'says when nothing is set up yet' {
+        Get-PhxOutput { phx status } | Should -Match 'not set up yet - run: phx init'
+    }
+
+    It 'shows the set-up, and finds nothing that needs attention' {
+        Set-TestConfig
+        phx scan 6>$null
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match ('target\s+' + [regex]::Escape($target))
+        $output | Should -Match ('root\s+' + [regex]::Escape($repos) + '\s+depth 3\s+3 repositories')
+        $output | Should -Match 'scan\s+just now'
+        $output | Should -Match 'repos\s+3 repositories, 1 without a remote'
+        $output | Should -Match 'WizX20: 1'
+        $output | Should -Match 'account\s+wpaap on github.com \(1 repositories\) - logged in to gh'
+        $output | Should -Match 'last run\s+arrives with M2'
+        $output | Should -Match 'nothing needs attention'
+    }
+
+    It 'warns about an account gh is not logged in with' {
+        Set-TestConfig -WorkAccount 'Ghost'
+        phx scan 6>$null
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match 'Ghost on github.com \(1 repositories\) - not logged in to gh: gh auth login --hostname github.com'
+        $output | Should -Match '1 thing\(s\) need attention'
+    }
+
+    It 'warns about a missing target, a missing root folder and a missing scan' {
+        Set-TestConfig -TargetPath (Join-Path $testHome 'Unplugged')
+        Remove-Item -LiteralPath $repos -Recurse -Force
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match 'Unplugged - folder not found'
+        $output | Should -Match 'depth 3\s+folder not found'
+        $output | Should -Match 'not scanned yet - phx scan'
+        $output | Should -Match '3 thing\(s\) need attention'
+    }
+
+    It "keeps going when a provider's status fails" {
+        Set-TestConfig
+        InModuleScope PSPhoenix {
+            $script:SavedProviders = [ordered]@{}
+            foreach ($key in $script:PhxProviders.Keys) { $script:SavedProviders[$key] = $script:PhxProviders[$key] }
+            Register-PhxProvider @{ Name = 'broken'; Description = 'b'; Backup = {}; Restore = {}; Status = { throw 'boom' } }
+        }
+        try { Get-PhxOutput { phx status } | Should -Match 'broken\s+status failed: boom' }
+        finally { InModuleScope PSPhoenix { $script:PhxProviders = $script:SavedProviders } }
+    }
+
+    It 'says how long ago, in words' {
+        InModuleScope PSPhoenix {
+            Format-PhxAge ([DateTime]::UtcNow) | Should -Be 'just now'
+            Format-PhxAge ([DateTime]::UtcNow.AddMinutes(-30)) | Should -Be '30 minutes ago'
+            Format-PhxAge ([DateTime]::UtcNow.AddHours(-5)) | Should -Be '5 hours ago'
+            Format-PhxAge ([DateTime]::UtcNow.AddDays(-3)) | Should -Be '3 days ago'
+        }
+    }
+}
+
 Describe 'prompts' {
     It 'reads an answer with its default, and refuses a console without input' {
         InModuleScope PSPhoenix {
