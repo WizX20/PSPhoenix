@@ -81,9 +81,13 @@ function phx {
     # Stop throws, and `pwsh -Command phx ...` - what a scheduled task runs - exits with 1. The
     # aliases keep -P and -E unambiguous next to the common parameters (-PipelineVariable,
     # -ProgressAction, -ErrorAction, ...). It declares the flags of milestones that are not built
-    # yet, so the help and the command line agree from the start; each loses the suppression's
-    # cover once its milestone uses it.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'Flags of commands from later milestones.')]
+    # yet, so the help and the command line agree from the start. One suppression per flag, so
+    # the rule stays live for every other parameter; each goes once its milestone uses the flag.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Arg', Justification = 'Used by commands from later milestones.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Arg2', Justification = 'Used by commands from later milestones.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Provider', Justification = 'phx run -Provider arrives with M2.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Every', Justification = 'phx schedule -Every arrives with M2.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'From', Justification = 'phx restore -From arrives with M6.')]
     [CmdletBinding()]
     param(
         [Parameter(Position = 0)][string]$Command,
