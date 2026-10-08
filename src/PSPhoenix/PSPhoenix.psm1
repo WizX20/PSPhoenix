@@ -80,7 +80,10 @@ function phx {
     # An advanced function so a failure is an error a caller can see: $? is false, -ErrorAction
     # Stop throws, and `pwsh -Command phx ...` - what a scheduled task runs - exits with 1. The
     # aliases keep -P and -E unambiguous next to the common parameters (-PipelineVariable,
-    # -ProgressAction, -ErrorAction, ...).
+    # -ProgressAction, -ErrorAction, ...). It declares the flags of milestones that are not built
+    # yet, so the help and the command line agree from the start; each loses the suppression's
+    # cover once its milestone uses it.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'Flags of commands from later milestones.')]
     [CmdletBinding()]
     param(
         [Parameter(Position = 0)][string]$Command,
@@ -109,7 +112,8 @@ function phx {
 }
 
 Register-ArgumentCompleter -CommandName phx -ParameterName Command -ScriptBlock {
-    param($commandName, $parameterName, $word)
+    # Completers get ($commandName, $parameterName, $wordToComplete, ...); only the third matters.
+    $word = $args[2]
     $script:PhxCommands | Where-Object { $_.StartsWith($word, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object {
         [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
     }

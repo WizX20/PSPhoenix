@@ -111,7 +111,7 @@ $today = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
 # MatchEvaluator, not -replace: notes may contain '$' (e.g. $PROFILE), which a replacement
 # string would read as a group reference.
 $fresh = "## [Unreleased]`n`n## [$Version] - $today`n`n$notes`n`n"
-$stamped = [regex]::Replace($text, '(?ms)^## \[Unreleased\][^\n]*\n.*?(?=^## |\z)', { param($m) $fresh }.GetNewClosure())
+$stamped = [regex]::Replace($text, '(?ms)^## \[Unreleased\][^\n]*\n.*?(?=^## |\z)', { $fresh }.GetNewClosure())
 # One newline at the end, also when the new section is the last one in the file.
 [IO.File]::WriteAllText($changelog, $stamped.TrimEnd("`n") + "`n", [Text.UTF8Encoding]::new($false))
 foreach ($file in $fragments) { Remove-Item -LiteralPath $file.FullName }
