@@ -1,0 +1,1 @@
+- feat: `phx scan` - discovers the repositories under the roots, knows each by its remote (`host/owner/name`; https, ssh and Azure DevOps forms agree), records linked worktrees on their main repository, and says what is new or gone since the last scan; `phx roots list` shows the count per root

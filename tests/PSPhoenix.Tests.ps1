@@ -27,6 +27,19 @@ BeforeAll {
         $root
     }
 
+    function script:New-TestRepository {
+        # A throwaway repository with one commit and the given remotes, in order. Returns its path.
+        param([Parameter(Mandatory)][string]$Path, [string[]]$Remote = @())
+        New-Item -ItemType Directory -Force -Path $Path | Out-Null
+        git -c init.defaultBranch=main init -q $Path
+        git -C $Path -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m init
+        foreach ($entry in $Remote) {
+            $name, $url = $entry -split '=', 2
+            git -C $Path remote add $name $url
+        }
+        $Path
+    }
+
     $script:SavedEnv = @{}
     foreach ($name in 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME') {
         $script:SavedEnv[$name] = [Environment]::GetEnvironmentVariable($name)
@@ -383,6 +396,191 @@ Describe 'roots' {
             $driveRoot = [IO.Path]::GetPathRoot($TestDrive)
             ConvertTo-PhxFullPath $driveRoot | Should -Be $driveRoot
         }
+    }
+}
+
+Describe 'repository identity' {
+    It 'reads <Url> as <Identity>' -ForEach @(
+        @{ Url = 'https://github.com/WizX20/PSPhoenix.git'; Identity = 'github.com/WizX20/PSPhoenix' }
+        @{ Url = 'https://github.com/WizX20/PSPhoenix'; Identity = 'github.com/WizX20/PSPhoenix' }
+        @{ Url = 'https://someone@GitHub.com/WizX20/PSPhoenix/'; Identity = 'github.com/WizX20/PSPhoenix' }
+        @{ Url = 'git@github.com:WizX20/PSPhoenix.git'; Identity = 'github.com/WizX20/PSPhoenix' }
+        @{ Url = 'ssh://git@github.com/WizX20/PSPhoenix.git'; Identity = 'github.com/WizX20/PSPhoenix' }
+        @{ Url = 'ssh://git@github.com:22/WizX20/PSPhoenix.git'; Identity = 'github.com/WizX20/PSPhoenix' }
+        @{ Url = 'git://github.com/WizX20/PSPhoenix.git'; Identity = 'github.com/WizX20/PSPhoenix' }
+        @{ Url = 'https://gitlab.example.com/group/sub/name.git'; Identity = 'gitlab.example.com/group/sub/name' }
+        @{ Url = 'https://dev.azure.com/org/My%20Project/_git/repo'; Identity = 'dev.azure.com/org/My Project/repo' }
+        @{ Url = 'https://org@dev.azure.com/org/proj/_git/repo'; Identity = 'dev.azure.com/org/proj/repo' }
+        @{ Url = 'git@ssh.dev.azure.com:v3/org/proj/repo'; Identity = 'dev.azure.com/org/proj/repo' }
+        @{ Url = 'https://org.visualstudio.com/DefaultCollection/proj/_git/repo'; Identity = 'dev.azure.com/org/proj/repo' }
+        @{ Url = 'https://org.visualstudio.com/proj/_git/repo'; Identity = 'dev.azure.com/org/proj/repo' }
+        @{ Url = 'C:\git\origin.git'; Identity = 'file/C/git/origin' }
+        @{ Url = 'file:///C:/git/origin.git'; Identity = 'file/C/git/origin' }
+        @{ Url = '\\nas\git\origin.git'; Identity = 'file/nas/git/origin' }
+        @{ Url = '/srv/git/origin.git'; Identity = 'file/srv/git/origin' }
+    ) {
+        InModuleScope PSPhoenix -Parameters @{ Url = $Url } { param($Url) ConvertTo-PhxRepoIdentity -Url $Url } | Should -BeExactly $Identity
+    }
+
+    It 'resolves a relative local remote against the repository' {
+        $base = Join-Path $TestDrive 'a/b'
+        $identity = InModuleScope PSPhoenix -Parameters @{ Base = $base } { param($Base) ConvertTo-PhxRepoIdentity -Url '../origin.git' -BasePath $Base }
+        $identity | Should -BeLike 'file/*/a/origin'
+    }
+}
+
+Describe 'scan' {
+    BeforeEach {
+        $testHome = Use-TestHome
+        $repos = Join-Path $testHome 'Repos'
+        New-Item -ItemType Directory -Path $repos | Out-Null
+
+        function Get-TestScan {
+            # Scans and returns the records; the summary goes to $script:ScanOutput.
+            $script:ScanOutput = InModuleScope PSPhoenix { Invoke-PhxScan -PassThru } 6>&1
+            @($script:ScanOutput | Where-Object { $_ -is [System.Collections.IDictionary] })
+        }
+    }
+
+    It "finds repositories down to the root's depth, and no deeper" {
+        New-TestRepository (Join-Path $repos 'One') -Remote 'origin=https://github.com/o/one.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'org/Two') -Remote 'origin=https://github.com/o/two.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'a/b/Three') -Remote 'origin=https://github.com/o/three.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'a/b/c/Four') -Remote 'origin=https://github.com/o/four.git' | Out-Null
+        phx roots add $repos 6>$null
+        $records = @(Get-TestScan)
+        @($records.identity | Sort-Object) | Should -Be @('github.com/o/one', 'github.com/o/three', 'github.com/o/two')
+        ($records | Where-Object identity -EQ 'github.com/o/two').path | Should -Be 'org/Two'
+    }
+
+    It 'does not enter a repository: one nested inside it is not found' {
+        New-TestRepository (Join-Path $repos 'Outer') -Remote 'origin=https://github.com/o/outer.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'Outer/vendor/Inner') -Remote 'origin=https://github.com/o/inner.git' | Out-Null
+        phx roots add $repos 6>$null
+        @((Get-TestScan).identity) | Should -Be @('github.com/o/outer')
+    }
+
+    It 'records a linked worktree on its main repository, not as a repository of its own' {
+        $main = New-TestRepository (Join-Path $repos 'Main') -Remote 'origin=https://github.com/o/main.git'
+        git -C $main worktree add -q (Join-Path $repos 'Main-feature') -b feature 2>$null
+        phx roots add $repos 6>$null
+        $records = @(Get-TestScan)
+        @($records.identity) | Should -Be @('github.com/o/main')
+        @($records[0].worktrees).Count | Should -Be 1
+        $records[0].worktrees[0] | Should -Match 'Main-feature$'
+    }
+
+    It 'skips a submodule and build-output folders' {
+        $submodule = Join-Path $repos 'App/../Sub'
+        New-Item -ItemType Directory -Path $submodule -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $submodule '.git') -Value 'gitdir: ../App/.git/modules/Sub'
+        New-TestRepository (Join-Path $repos 'web/node_modules/pkg') -Remote 'origin=https://github.com/o/pkg.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'Real') -Remote 'origin=https://github.com/o/real.git' | Out-Null
+        phx roots add $repos 6>$null
+        @((Get-TestScan).identity) | Should -Be @('github.com/o/real')
+    }
+
+    It 'does not follow a junction or symbolic link' {
+        New-TestRepository (Join-Path $repos 'Real') -Remote 'origin=https://github.com/o/real.git' | Out-Null
+        $elsewhere = New-TestRepository (Join-Path $testHome 'Elsewhere') -Remote 'origin=https://github.com/o/elsewhere.git'
+        $link = Join-Path $repos 'Link'
+        New-Item -ItemType ($IsWindows ? 'Junction' : 'SymbolicLink') -Path $link -Target $elsewhere | Out-Null
+        try {
+            phx roots add $repos 6>$null
+            @((Get-TestScan).identity) | Should -Be @('github.com/o/real')
+        }
+        finally { (Get-Item -LiteralPath $link -Force).Delete() }
+    }
+
+    It 'gives a repository without remotes a local identity, and a local-path remote a file one' {
+        New-TestRepository (Join-Path $repos 'Lonely') | Out-Null
+        $bare = Join-Path $testHome 'origin.git'
+        git init -q --bare $bare
+        New-TestRepository (Join-Path $repos 'FromDisk') -Remote "origin=$bare" | Out-Null
+        phx roots add $repos 6>$null
+        $records = @(Get-TestScan)
+        ($records | Where-Object path -EQ 'Lonely').identity | Should -Be 'local/Lonely'
+        ($records | Where-Object path -EQ 'FromDisk').identity | Should -BeLike 'file/*/origin'
+        $script:ScanOutput -join "`n" | Should -Match '2 repositories, 1 without a remote'
+    }
+
+    It 'takes origin, else the first remote' {
+        New-TestRepository (Join-Path $repos 'Fork') -Remote 'upstream=https://github.com/up/x.git', 'origin=https://github.com/me/x.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'Mirror') -Remote 'upstream=https://github.com/up/y.git', 'backup=https://example.com/b/y.git' | Out-Null
+        phx roots add $repos 6>$null
+        $records = @(Get-TestScan)
+        ($records | Where-Object path -EQ 'Fork').identity | Should -Be 'github.com/me/x'
+        ($records | Where-Object path -EQ 'Mirror').identity | Should -Be 'github.com/up/y'
+        @(($records | Where-Object path -EQ 'Fork').remotes.Keys) | Should -Be @('upstream', 'origin')
+    }
+
+    It 'treats a root that is itself a repository as one repository' {
+        $single = New-TestRepository (Join-Path $repos 'Single') -Remote 'origin=https://github.com/o/single.git'
+        phx roots add $single 6>$null
+        $records = @(Get-TestScan)
+        @($records.identity) | Should -Be @('github.com/o/single')
+        $records[0].path | Should -Be '.'
+    }
+
+    It 'saves the scan and says what is new and what is gone' {
+        $one = New-TestRepository (Join-Path $repos 'One') -Remote 'origin=https://github.com/o/one.git'
+        New-TestRepository (Join-Path $repos 'Two') -Remote 'origin=https://github.com/o/two.git' | Out-Null
+        phx roots add $repos 6>$null
+        Get-PhxOutput { phx roots list } | Should -Match 'not scanned yet'
+        Get-TestScan | Out-Null
+        Test-Path -LiteralPath (Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'repos.json') | Should -BeTrue
+        Get-PhxOutput { phx roots list } | Should -Match '2 repositories'
+
+        Remove-Item -LiteralPath $one -Recurse -Force
+        New-TestRepository (Join-Path $repos 'Three') -Remote 'origin=https://github.com/o/three.git' | Out-Null
+        $output = Get-PhxOutput { phx scan }
+        $output | Should -Match 'new:\s+github.com/o/three'
+        $output | Should -Match 'gone:\s+github.com/o/one'
+    }
+
+    It 'points out the same remote cloned twice' {
+        New-TestRepository (Join-Path $repos 'A') -Remote 'origin=https://github.com/o/same.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'B') -Remote 'origin=https://github.com/o/same.git' | Out-Null
+        phx roots add $repos 6>$null
+        Get-PhxOutput { phx scan } | Should -Match 'github.com/o/same is cloned 2 times'
+    }
+
+    It 'skips a root whose folder is gone' {
+        phx roots add $repos 6>$null
+        Remove-Item -LiteralPath $repos -Recurse -Force
+        Get-PhxOutput { phx scan } | Should -Match 'folder not found - skipped'
+    }
+
+    It 'keeps non-ASCII paths and URLs intact' {
+        $e = [char]0x00E9   # spelled as a char code to keep this file ASCII
+        New-TestRepository (Join-Path $repos "Caf$e") -Remote "origin=https://example.com/o/caf$e.git" | Out-Null
+        phx roots add $repos 6>$null
+        $records = @(Get-TestScan)
+        $records[0].identity | Should -BeExactly "example.com/o/caf$e"
+        $records[0].path | Should -BeExactly "Caf$e"
+    }
+
+    It "reports git's own message when git fails" {
+        InModuleScope PSPhoenix -Parameters @{ Folder = $repos } {
+            param($Folder)
+            { Invoke-PhxGit -Repository $Folder -Arguments 'rev-parse', 'HEAD' } | Should -Throw '*git rev-parse HEAD failed in*not a git repository*'
+            Invoke-PhxGit -Repository $Folder -Arguments 'rev-parse', 'HEAD' -AllowFailure | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'refuses to scan without roots' {
+        { phx scan -ErrorAction Stop 6>$null } | Should -Throw '*no roots yet*'
+    }
+
+    It 'ignores an unreadable cache and rebuilds it' {
+        New-TestRepository (Join-Path $repos 'One') -Remote 'origin=https://github.com/o/one.git' | Out-Null
+        phx roots add $repos 6>$null
+        $cache = Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'repos.json'
+        New-Item -ItemType Directory -Force -Path (Split-Path $cache) | Out-Null
+        Set-Content -LiteralPath $cache -Value '{ not json'
+        Get-PhxOutput { phx roots list } | Should -Match 'not scanned yet'
+        Get-PhxOutput { phx scan } | Should -Match 'ignoring .*repos.json'
+        Get-PhxOutput { phx roots list } | Should -Match '1 repositories'
     }
 }
 

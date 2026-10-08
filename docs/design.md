@@ -41,8 +41,14 @@ machine from it with `phx restore`.
   (`C:\Repos`, `D:\Work`, `~/src`). Discovery searches each root to a configurable depth (default 3)
   and stops descending at a repository.
 - **Repository identity**: the normalised remote URL `host/owner/name` of `origin`, else of the
-  first remote. A repository without any remote gets `local/<path relative to its root>` and a full
-  bundle, since there is nothing to clone it from.
+  first remote: host lower-cased, no `.git`; https, ssh and scp-style URLs agree; Azure DevOps folds
+  into `dev.azure.com/org/project/repo`. A remote that is a local path, `file://` URL or UNC share
+  gives `file/<path>` - still clonable where that path exists. A repository without any remote gets
+  `local/<path relative to its root>` and a full bundle, since there is nothing to clone it from.
+  The same remote cloned twice keeps one identity in two places; `phx scan` points it out.
+- **Discovery cache**: `phx scan` writes what it found (root, relative path, remotes, identity,
+  linked worktrees) to `repos.json` in the state folder. Links and junctions are not followed, and
+  build-output folders (`node_modules`, `bin`, `obj`, ...) are not entered.
 - **Worktree**: a linked worktree (including Claude Code's `.claude/worktrees/*`) belongs to its
   main repository and is recorded there, never as a repository of its own.
 - **Provider**: one unit of backup and restore (`repos`, `claude`, `winget`, ...). See
