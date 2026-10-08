@@ -84,7 +84,7 @@ USAGE:
   phx init                        set up: roots, target, interval, secrets, schedule   (M1)
   phx status                      last run, pending review items, local-only work      (M1)
   phx scan                        re-discover repositories under the roots             (M1)
-  phx roots add|rm|list [<path>]  the folders that hold your repositories              (M1)
+  phx roots add|rm|list [<path>]  the folders that hold your repositories; add: -Depth <n>
   phx run [-Provider <name>]      one backup run now (the scheduled task calls this)   (M2)
   phx schedule on|off|status      the background task; -Every <n>h sets the interval   (M2)
   phx review                      decide on new gitignored files                       (M3)

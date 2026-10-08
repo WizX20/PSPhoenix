@@ -282,6 +282,110 @@ Describe 'config' {
     }
 }
 
+Describe 'roots' {
+    BeforeEach {
+        $testHome = Use-TestHome
+        $repos = Join-Path $testHome 'Repos'
+        New-Item -ItemType Directory -Path (Join-Path $repos 'App') -Force | Out-Null
+    }
+
+    It 'adds a root as a full path with the default depth, and lists it' {
+        Get-PhxOutput { phx roots add $repos } | Should -Match 'added root'
+        $roots = @(InModuleScope PSPhoenix { Get-PhxRoot })
+        $roots.Count | Should -Be 1
+        $roots[0].path | Should -Be $repos
+        $roots[0].depth | Should -Be 3
+        Get-PhxOutput { phx roots list } | Should -Match ([regex]::Escape($repos) + '\s+depth 3')
+        Get-PhxOutput { phx roots } | Should -Match 'depth 3'
+    }
+
+    It 'stores -Depth' {
+        phx roots add $repos -Depth 5 6>$null
+        @(InModuleScope PSPhoenix { Get-PhxRoot })[0].depth | Should -Be 5
+    }
+
+    It 'refuses a depth outside 1-10' {
+        { phx roots add $repos -Depth 11 6>$null } | Should -Throw '*Depth*'
+        { phx roots add $repos -Depth 0 6>$null } | Should -Throw '*Depth*'
+    }
+
+    It 'stores a relative path with a trailing separator as a clean full path' {
+        Push-Location $testHome
+        try { phx roots add ('Repos' + [IO.Path]::DirectorySeparatorChar) 6>$null }
+        finally { Pop-Location }
+        @(InModuleScope PSPhoenix { Get-PhxRoot })[0].path | Should -Be $repos
+    }
+
+    It 'refuses <Case>' -ForEach @(
+        @{ Case = 'the same root twice'; Second = { $repos }; Message = '*is a root already*' }
+        @{ Case = 'a root inside a root'; Second = { Join-Path $repos 'App' }; Message = '*lies inside the root*' }
+        @{ Case = 'a root around a root'; Second = { $testHome }; Message = '*contains the root*' }
+        @{ Case = 'a folder that does not exist'; Second = { Join-Path $testHome 'nope' }; Message = '*no such folder*' }
+    ) {
+        if ($Case -ne 'a folder that does not exist') { phx roots add $repos 6>$null }
+        $path = & $Second
+        { phx roots add $path -ErrorAction Stop 6>$null } | Should -Throw $Message
+    }
+
+    It 'treats the same path in another case as the same root on Windows' -Skip:(-not $IsWindows) {
+        phx roots add $repos 6>$null
+        { phx roots add $repos.ToUpperInvariant() -ErrorAction Stop 6>$null } | Should -Throw '*is a root already*'
+    }
+
+    It 'does not take a sibling with a longer name for a root inside it' {
+        $sibling = "$repos" + '2'
+        New-Item -ItemType Directory -Path $sibling | Out-Null
+        phx roots add $repos 6>$null
+        phx roots add $sibling 6>$null
+        @(InModuleScope PSPhoenix { Get-PhxRoot }).Count | Should -Be 2
+    }
+
+    It 'removes a root, also one whose folder is gone' {
+        phx roots add $repos 6>$null
+        Remove-Item -LiteralPath $repos -Recurse -Force
+        Get-PhxOutput { phx roots list } | Should -Match 'folder not found'
+        Get-PhxOutput { phx roots rm $repos } | Should -Match 'removed root'
+        @(InModuleScope PSPhoenix { Get-PhxRoot }).Count | Should -Be 0
+    }
+
+    It 'accepts remove for rm' {
+        phx roots add $repos 6>$null
+        phx roots remove $repos 6>$null
+        @(InModuleScope PSPhoenix { Get-PhxRoot }).Count | Should -Be 0
+    }
+
+    It 'says how to start when there are no roots' {
+        Get-PhxOutput { phx roots list } | Should -Match 'no roots yet.*phx roots add'
+    }
+
+    It 'fails <Case> as an error of phx' -ForEach @(
+        @{ Case = 'removing a path that is not a root'; Arguments = { 'roots', 'rm', $repos }; Message = '*is not a root*' }
+        @{ Case = 'add without a path'; Arguments = { 'roots', 'add' }; Message = '*usage: phx roots add*' }
+        @{ Case = 'rm without a path'; Arguments = { 'roots', 'rm' }; Message = '*usage: phx roots rm*' }
+        @{ Case = 'an unknown action'; Arguments = { 'roots', 'frob' }; Message = "*unknown action 'frob'*" }
+    ) {
+        # Positional values only, so splatting binds them as phx <command> <arg> <arg2>.
+        $arguments = @(& $Arguments)
+        phx @arguments -ErrorAction SilentlyContinue -ErrorVariable failure 6>$null
+        $? | Should -BeFalse
+        # -ErrorVariable also collects the throw that phx caught; the record callers see is phx's own.
+        $record = $failure | Where-Object FullyQualifiedErrorId -Like 'PhxCommandFailed*' | Select-Object -First 1
+        $record | Should -Not -BeNullOrEmpty
+        $record.Exception.Message | Should -BeLike $Message
+        # Shown as "phx: <message>", not as an exception from inside a helper.
+        $record.InvocationInfo.MyCommand.Name | Should -Be 'phx'
+    }
+
+    It 'expands ~ and keeps a drive or file-system root whole' {
+        InModuleScope PSPhoenix {
+            ConvertTo-PhxFullPath '~' | Should -Be ($HOME.TrimEnd('\', '/'))
+            ConvertTo-PhxFullPath '~/src' | Should -Be (Join-Path $HOME 'src')
+            $driveRoot = [IO.Path]::GetPathRoot($TestDrive)
+            ConvertTo-PhxFullPath $driveRoot | Should -Be $driveRoot
+        }
+    }
+}
+
 Describe 'atomic writes' {
     It 'replaces an existing file and leaves no temporary file behind' {
         $root = Use-TestHome

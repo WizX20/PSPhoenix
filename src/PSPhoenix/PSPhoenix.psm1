@@ -25,13 +25,12 @@ $script:PhxPlanned = [ordered]@{
     init     = 'M1'
     status   = 'M1'
     scan     = 'M1'
-    roots    = 'M1'
     run      = 'M2'
     schedule = 'M2'
     review   = 'M3'
     restore  = 'M6'
 }
-$script:PhxCommands = @($script:PhxPlanned.Keys) + @('providers', 'version', 'help')
+$script:PhxCommands = @($script:PhxPlanned.Keys) + @('roots', 'providers', 'version', 'help')
 
 function Get-PhxVersion { (Get-Module PSPhoenix).Version }
 
@@ -48,7 +47,7 @@ USAGE:
   phx init                        set up: roots, target, interval, secrets, schedule   (M1)
   phx status                      last run, pending review items, local-only work      (M1)
   phx scan                        re-discover repositories under the roots             (M1)
-  phx roots add|rm|list [<path>]  the folders that hold your repositories              (M1)
+  phx roots add|rm|list [<path>]  the folders that hold your repositories; add: -Depth <n>
   phx run [-Provider <name>]      one backup run now (the scheduled task calls this)   (M2)
   phx schedule on|off|status      the background task; -Every <n>h sets the interval   (M2)
   phx review                      decide on new gitignored files                       (M3)
@@ -89,6 +88,7 @@ function phx {
         [Parameter(Position = 0)][string]$Command,
         [Parameter(Position = 1)][string]$Arg,
         [Parameter(Position = 2)][string]$Arg2,
+        [ValidateRange(1, 10)][int]$Depth,
         [Alias('P')][string]$Provider,
         [Alias('E')][string]$Every,
         [string]$From,
@@ -101,13 +101,23 @@ function phx {
                 [System.NotImplementedException]::new($message), 'PhxNotBuiltYet', 'NotImplemented', $Command))
         return
     }
-    switch ($Command) {
-        'providers' { Show-PhxProviders }
-        'version' { Write-Host "PSPhoenix $(Get-PhxVersion)" }
-        default {
-            $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
-                    [System.ArgumentException]::new("unknown command '$Command' - see: phx help"), 'PhxUnknownCommand', 'InvalidArgument', $Command))
-        }
+    $handler = switch ($Command) {
+        'roots' { { Invoke-PhxRootsCommand -Action $Arg -Path $Arg2 -Depth $Depth } }
+        'providers' { { Show-PhxProviders } }
+        'version' { { Write-Host "PSPhoenix $(Get-PhxVersion)" } }
+    }
+    if (-not $handler) {
+        $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
+                [System.ArgumentException]::new("unknown command '$Command' - see: phx help"), 'PhxUnknownCommand', 'InvalidArgument', $Command))
+        return
+    }
+    # A command that fails throws; that becomes an error of phx itself - "phx: <message>", $? false,
+    # exit code 1 - rather than an exception pointing into a helper. A fresh exception (the
+    # original as its inner one): reusing a thrown one carries the throw site along.
+    try { & $handler }
+    catch {
+        $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
+                [System.InvalidOperationException]::new($_.Exception.Message, $_.Exception), 'PhxCommandFailed', 'InvalidOperation', $Command))
     }
 }
 

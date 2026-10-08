@@ -251,7 +251,8 @@ phx run [-Provider <name>]        one backup run now (what the scheduled task ca
 phx status                        last run, changes, pending review items, local-only work, warnings
 phx review                        decide on pending gitignored candidates
 phx scan                          re-discover repositories under the roots
-phx roots add|rm|list             manage roots
+phx roots add|rm|list             manage roots; add takes -Depth <n> (1-10, default 3); roots
+                                  may not overlap - discovery would see repositories twice
 phx schedule on|off|status        manage the scheduled task; -Every <n>h sets the interval
 phx restore                       rebuild this machine from a snapshot (see below)
 phx providers                     the providers registered for this platform
