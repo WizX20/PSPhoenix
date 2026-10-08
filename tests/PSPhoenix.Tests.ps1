@@ -312,6 +312,21 @@ Describe 'roots' {
         Get-PhxOutput { phx roots } | Should -Match 'depth 3'
     }
 
+    It 'changes the depth of an existing root with -Depth' {
+        phx roots add $repos 6>$null
+        Get-PhxOutput { phx roots add $repos -Depth 6 } | Should -Match 'now has depth 6'
+        $roots = @(InModuleScope PSPhoenix { Get-PhxRoot })
+        $roots.Count | Should -Be 1
+        $roots[0].depth | Should -Be 6
+    }
+
+    It "stops a caller's script on a failure when the caller asks for Stop" {
+        # A script's $ErrorActionPreference = 'Stop' must reach phx's own errors.
+        $pwsh = (Get-Process -Id $PID).Path
+        $script = "`$ErrorActionPreference = 'Stop'; Import-Module '$script:ModulePath'; try { phx roots add '$(Join-Path $testHome 'nope')' 6>`$null; 'carried on' } catch { 'stopped' }"
+        & $pwsh -NoProfile -NonInteractive -Command $script | Should -Be 'stopped'
+    }
+
     It 'stores -Depth' {
         phx roots add $repos -Depth 5 6>$null
         @(InModuleScope PSPhoenix { Get-PhxRoot })[0].depth | Should -Be 5
