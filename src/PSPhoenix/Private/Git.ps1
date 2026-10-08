@@ -7,7 +7,8 @@ function Invoke-PhxGit {
     # nothing matches). Output is read as UTF-8 - git writes it so - whatever the console code page.
     param(
         [Parameter(Mandatory)][string]$Repository,
-        [Parameter(Mandatory)][string[]]$Arguments,
+        # Empty strings are real arguments: `credential.helper =` resets the helper list.
+        [Parameter(Mandatory)][AllowEmptyString()][string[]]$Arguments,
         [switch]$AllowFailure
     )
     $savedEncoding = $null

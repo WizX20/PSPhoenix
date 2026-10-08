@@ -67,19 +67,64 @@ function ConvertTo-PhxRepoIdentity {
     "$hostName/$path"
 }
 
+# Repo-local settings that make up who you are in a repository (docs/design.md -> GitHub accounts):
+# recorded by the repos provider and re-applied right after a clone, before any fetch or push.
+$script:PhxRepoSettingPattern = '^(user\.(name|email|signingkey)|include\.path|includeif\..+\.path|credential\..+|core\.sshcommand|commit\.gpgsign|tag\.gpgsign|gpg\.format|gpg\.ssh\.allowedsignersfile)$'
+
+function Read-PhxRepoConfig {
+    # A repository's local config in one git call: its remotes ({ url, pushUrl } per name, in config
+    # order) and its identity settings ({ key, value } in order - multi-valued keys such as a reset
+    # `credential.helper =` followed by the real one keep their order). Files the local config
+    # includes (`include.path = ../.gitconfig`, tracked in the repository) are read too, but kept
+    # apart as Included: they come back with the clone, so a restore must not copy them into the
+    # local config - yet their credential helper still tells which account the repository uses.
+    param([Parameter(Mandatory)][string]$Path)
+    $remotes = [ordered]@{}
+    $settings = [Collections.Generic.List[object]]::new()
+    $included = [Collections.Generic.List[object]]::new()
+    foreach ($line in @(Invoke-PhxGit -Repository $Path -Arguments 'config', '--local', '--includes', '--list', '--show-origin' -AllowFailure)) {
+        $origin, $entry = $line -split "`t", 2
+        $key, $value = "$entry" -split '=', 2
+        if ($origin -ne 'file:.git/config') {
+            if ($key -match $script:PhxRepoSettingPattern) { $included.Add([ordered]@{ key = $key; value = "$value" }) }
+            continue
+        }
+        if ($key -match '^remote\.(?<name>.+)\.(?<kind>url|pushurl)$') {
+            $name = $Matches.name
+            $field = if ($Matches.kind -eq 'url') { 'url' } else { 'pushUrl' }
+            if (-not $remotes.Contains($name)) { $remotes[$name] = [ordered]@{ url = $null; pushUrl = $null } }
+            if (-not $remotes[$name][$field]) { $remotes[$name][$field] = "$value" }
+        }
+        elseif ($key -match $script:PhxRepoSettingPattern) { $settings.Add([ordered]@{ key = $key; value = "$value" }) }
+    }
+    [pscustomobject]@{ Remotes = $remotes; Settings = @($settings); Included = @($included) }
+}
+
+function Get-PhxPrimaryRemote {
+    # origin, else the first remote; nothing for a repository without remotes.
+    param([System.Collections.IDictionary]$Remotes)
+    if ($Remotes.Contains('origin')) { 'origin' } elseif ($Remotes.Count) { @($Remotes.Keys)[0] }
+}
+
+function Get-PhxCredentialAccount {
+    # The account a repository's own credential helper asks gh for (`gh auth token --user <x>`, as
+    # a WizX20-style .gitconfig include sets up), or nothing.
+    param([object[]]$Settings)
+    foreach ($entry in @($Settings)) {
+        if ($entry.key -like 'credential.*helper' -and $entry.value -match '--user\s+["'']?(?<login>[A-Za-z0-9][A-Za-z0-9-]*)') { return $Matches.login }
+    }
+}
+
 function Get-PhxRepoRecord {
-    # What discovery knows about one repository: where it is, its remotes, its identity, its linked
-    # worktrees. Two git calls.
+    # What discovery knows about one repository: where it is, its remotes, its identity, the account
+    # its credential helper names, its linked worktrees. One git call, two with worktrees.
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Path)
     $relative = [IO.Path]::GetRelativePath($Root, $Path) -replace '\\', '/'
+    $local = Read-PhxRepoConfig -Path $Path
     $remotes = [ordered]@{}
-    foreach ($line in @(Invoke-PhxGit -Repository $Path -Arguments 'config', '--local', '--get-regexp', '^remote\..+\.url$' -AllowFailure)) {
-        if ($line -match '^remote\.(?<name>.+)\.url (?<url>.+)$' -and -not $remotes.Contains($Matches.name)) {
-            $remotes[$Matches.name] = $Matches.url
-        }
-    }
-    $primary = if ($remotes.Contains('origin')) { $remotes['origin'] } elseif ($remotes.Count) { @($remotes.Values)[0] }
-    $identity = if ($primary) { ConvertTo-PhxRepoIdentity -Url $primary -BasePath $Path }
+    foreach ($name in $local.Remotes.Keys) { $remotes[$name] = $local.Remotes[$name].url }
+    $primary = Get-PhxPrimaryRemote $remotes
+    $identity = if ($primary) { ConvertTo-PhxRepoIdentity -Url $remotes[$primary] -BasePath $Path }
     else { 'local/' + $(if ($relative -eq '.') { [IO.Path]::GetFileName($Root) } else { $relative }) }
     # Only a repository with .git/worktrees has linked worktrees - most have none, and every git
     # call costs ~0.1 s on Windows. The first entry of `git worktree list` is the repository itself.
@@ -88,7 +133,14 @@ function Get-PhxRepoRecord {
         $worktrees = @(Invoke-PhxGit -Repository $Path -Arguments 'worktree', 'list', '--porcelain' -AllowFailure |
                 Where-Object { $_ -like 'worktree *' } | ForEach-Object { $_.Substring(9) } | Select-Object -Skip 1)
     }
-    [ordered]@{ identity = $identity; root = $Root; path = $relative; remotes = $remotes; worktrees = $worktrees }
+    [ordered]@{
+        identity  = $identity
+        root      = $Root
+        path      = $relative
+        remotes   = $remotes
+        account   = Get-PhxCredentialAccount (@($local.Settings) + @($local.Included))
+        worktrees = $worktrees
+    }
 }
 
 function Get-PhxRepoCachePath { Join-Path (Get-PhxStateDir) 'repos.json' }
