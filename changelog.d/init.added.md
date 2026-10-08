@@ -1,0 +1,1 @@
+- feat: `phx init` - the setup wizard: roots (the usual folders, with their repository counts), the GitHub account per owner (from the repositories' credential helpers and `gh auth status`), the target folder (OneDrive for Business suggested) and the interval; saves nothing before the last question, `q` stops, a second run starts from the current values

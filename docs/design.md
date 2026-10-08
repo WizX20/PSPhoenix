@@ -277,6 +277,14 @@ phx help                          usage
 An unknown command, or one whose milestone has not arrived yet, is an error - `$?` is false and
 `pwsh -Command` exits with 1 - so a scheduled task that calls it fails visibly.
 
+`phx init` saves nothing before its last question (`q` at any prompt, or Ctrl+C, stops without
+saving) and starts from the current values when run again. It offers the current roots and the
+usual folders that hold repositories (`~/source/repos`, `C:\Repos`, `~/src`, ...) with their
+repository counts; asks, per owner on a host `gh` is logged in to, which account its repositories
+use - defaulting to what their credential helpers say, else the active account; suggests the
+OneDrive for Business folder as target, with a note on where company data belongs when another
+folder is chosen. Each later milestone adds its step.
+
 ## Restore sequence
 
 0. Install PSPhoenix, git, `gh` and age (or let step 2 do the rest).

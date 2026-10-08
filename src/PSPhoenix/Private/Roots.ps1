@@ -20,6 +20,20 @@ function ConvertTo-PhxFullPath {
     $full
 }
 
+function Get-PhxActualPath {
+    # An existing folder as the file system spells it - C:\Repos, not c:\repos. Windows matches
+    # either; a path stored and shown back should look like the folder. Elsewhere paths are exact.
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not $script:OnWindows -or -not [IO.Directory]::Exists($Path)) { return $Path }
+    $root = [IO.Path]::GetPathRoot($Path)
+    $actual = if ($root -match '^[A-Za-z]:') { $root.Substring(0, 1).ToUpperInvariant() + $root.Substring(1) } else { $root }
+    foreach ($segment in $Path.Substring($root.Length).Split([char[]]'\/', [StringSplitOptions]::RemoveEmptyEntries)) {
+        $match = @([IO.Directory]::GetDirectories($actual, $segment))[0]
+        $actual = if ($match) { $match } else { Join-Path $actual $segment }
+    }
+    $actual
+}
+
 function Test-PhxPathWithin {
     # True when $Path is $Parent or lies below it.
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Parent)
@@ -27,6 +41,17 @@ function Test-PhxPathWithin {
     if ([string]::Equals($Path, $Parent, $comparison)) { return $true }
     $prefix = $Parent.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
     $Path.StartsWith($prefix, $comparison)
+}
+
+function Assert-PhxRootFits {
+    # Throws when $Path cannot join $Roots: overlapping roots would make discovery see the same
+    # repositories twice.
+    param([Parameter(Mandatory)][string]$Path, [string[]]$Roots = @())
+    foreach ($root in $Roots) {
+        if ([string]::Equals($root, $Path, (Get-PhxPathComparison))) { throw "$Path is a root already" }
+        if (Test-PhxPathWithin $Path $root) { throw "$Path lies inside the root $root - raise that root's depth instead (phx roots rm, then add with -Depth)" }
+        if (Test-PhxPathWithin $root $Path) { throw "$Path contains the root $root - remove that one first (phx roots rm $root)" }
+    }
 }
 
 function Get-PhxRoot {
@@ -43,14 +68,10 @@ function Add-PhxRoot {
     if (-not $Depth) { $Depth = $script:PhxDefaultRootDepth }
     $full = ConvertTo-PhxFullPath $Path
     if (-not [IO.Directory]::Exists($full)) { throw "no such folder: $full" }
+    $full = Get-PhxActualPath $full
 
     $config = Read-PhxConfig
-    foreach ($root in @($config.roots | Where-Object { $_ })) {
-        # Overlapping roots would make discovery see the same repositories twice.
-        if ([string]::Equals($root.path, $full, (Get-PhxPathComparison))) { throw "$full is a root already" }
-        if (Test-PhxPathWithin $full $root.path) { throw "$full lies inside the root $($root.path) - raise that root's depth instead (phx roots rm, then add with -Depth)" }
-        if (Test-PhxPathWithin $root.path $full) { throw "$full contains the root $($root.path) - remove that one first (phx roots rm $($root.path))" }
-    }
+    Assert-PhxRootFits -Path $full -Roots @($config.roots | Where-Object { $_ } | ForEach-Object { $_.path })
     $config.roots = @($config.roots | Where-Object { $_ }) + @([ordered]@{ path = $full; depth = $Depth })
     Save-PhxConfig $config
     Write-Host "added root $full (depth $Depth) - phx scan finds its repositories" -ForegroundColor Green

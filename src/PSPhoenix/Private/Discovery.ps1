@@ -166,9 +166,10 @@ function Get-PhxRepoKey {
 
 function Invoke-PhxScan {
     # Discovers the repositories under every root, saves the cache and says what changed since the
-    # last scan. -PassThru also returns the records.
-    param([switch]$PassThru)
-    $roots = Get-PhxRoot
+    # last scan. -Roots scans those instead of the configured ones (the wizard, before it saves);
+    # -PassThru also returns the records.
+    param([object[]]$Roots, [switch]$PassThru)
+    $roots = if ($PSBoundParameters.ContainsKey('Roots')) { @($Roots) } else { Get-PhxRoot }
     if (-not $roots) { throw 'no roots yet - add the folders that hold your repositories: phx roots add <path>' }
     $previous = Read-PhxRepoCache
     $records = [Collections.Generic.List[object]]::new()

@@ -22,14 +22,13 @@ foreach ($folder in 'Private', 'Providers') {
 
 # Commands that exist in the help but arrive with a later milestone (docs/design.md -> Roadmap).
 $script:PhxPlanned = [ordered]@{
-    init     = 'M1'
     status   = 'M1'
     run      = 'M2'
     schedule = 'M2'
     review   = 'M3'
     restore  = 'M6'
 }
-$script:PhxCommands = @($script:PhxPlanned.Keys) + @('roots', 'scan', 'providers', 'version', 'help')
+$script:PhxCommands = @($script:PhxPlanned.Keys) + @('init', 'roots', 'scan', 'providers', 'version', 'help')
 
 function Get-PhxVersion { (Get-Module PSPhoenix).Version }
 
@@ -43,7 +42,7 @@ and settings, and the machine setup - winget, Scoop, PowerShell, Windows Termina
 environment variables.
 
 USAGE:
-  phx init                        set up: roots, target, interval, secrets, schedule   (M1)
+  phx init                        set up or change: roots, accounts, target, interval
   phx status                      last run, pending review items, local-only work      (M1)
   phx scan                        re-discover repositories under the roots
   phx roots add|rm|list [<path>]  the folders that hold your repositories; add: -Depth <n>
@@ -103,6 +102,7 @@ function phx {
     $handler = switch ($Command) {
         'roots' { { Invoke-PhxRootsCommand -Action $Arg -Path $Arg2 -Depth $Depth } }
         'scan' { { Invoke-PhxScan } }
+        'init' { { Invoke-PhxInit } }
         'providers' { { Show-PhxProviders } }
         'version' { { Write-Host "PSPhoenix $(Get-PhxVersion)" } }
     }
@@ -115,6 +115,7 @@ function phx {
     # exit code 1 - rather than an exception pointing into a helper. A fresh exception (the
     # original as its inner one): reusing a thrown one carries the throw site along.
     try { & $handler }
+    catch [System.Management.Automation.PipelineStoppedException] { throw }   # Ctrl+C just stops
     catch {
         $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
                 [System.InvalidOperationException]::new($_.Exception.Message, $_.Exception), 'PhxCommandFailed', 'InvalidOperation', $Command))
