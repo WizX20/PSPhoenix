@@ -1,1 +1,0 @@
-- docs: the README explains installing, updating and removing with Scoop, and a manual zip install; the Scoop notes point at `phx help` instead of the not-yet-built `phx init`

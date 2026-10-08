@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSPhoenix.psm1'
-    ModuleVersion     = '0.1.0'
+    ModuleVersion     = '0.1.1'
     GUID              = '1bb730fc-8f34-4dcb-9793-8b8e23d58251'
     Author            = 'WizX20'
     CompanyName       = 'WizX20'
