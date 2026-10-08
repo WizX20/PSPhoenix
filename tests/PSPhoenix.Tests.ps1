@@ -719,11 +719,15 @@ Describe 'repos provider' {
         (Read-TestInventory $snapshot | Where-Object path -EQ 'Tok').accountSource | Should -Be 'accounts'
 
         Mock Get-PhxGhToken { 'test-token' } -ModuleName PSPhoenix -ParameterFilter { $Account -eq 'WorkAccount' -and $HostName -eq 'github.com' }
-        $env:GIT_CONFIG_COUNT = '1'
-        $env:GIT_CONFIG_KEY_0 = "url.$(([uri](Split-Path $tokRemote)).AbsoluteUri.TrimEnd('/'))/.insteadOf"
-        $env:GIT_CONFIG_VALUE_0 = 'https://github.com/o/'
+        # file:///C:/... on Windows, file:///tmp/... elsewhere ([uri] reads /tmp/... as relative).
+        $folder = (Split-Path $tokRemote) -replace '\\', '/'
+        $fileUrl = if ($folder.StartsWith('/')) { "file://$folder" } else { "file:///$folder" }
         $env:GH_TOKEN = $null
         try {
+            # Inside the try: a GIT_CONFIG_COUNT left behind without its key breaks every later git call.
+            $env:GIT_CONFIG_KEY_0 = "url.$fileUrl/.insteadOf"
+            $env:GIT_CONFIG_VALUE_0 = 'https://github.com/o/'
+            $env:GIT_CONFIG_COUNT = '1'
             $reposB = Join-Path (Use-TestHome) 'Repos'
             Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } -Select 'github.com/o/tok' | Should -Match 'cloning github.com/o/tok .* as WorkAccount'
         }
