@@ -291,6 +291,15 @@ function Get-PhxScannedRecord {
     }
 }
 
+function Test-PhxScanDue {
+    # Whether a run should scan the roots first: there is no scan, a configured root is missing
+    # from it, or it is a day old (docs/design.md -> Change detection: discovery refreshed daily).
+    param([System.Collections.IDictionary]$Cache, [System.Collections.IDictionary]$Config, [datetime]$Now = [DateTime]::UtcNow)
+    if (-not $Cache) { return $true }
+    foreach ($root in @($Config.roots)) { if ($null -eq (Get-PhxRootRepoCount -Cache $Cache -Root $root.path)) { return $true } }
+    Test-PhxDue -Last $Cache.scannedAt -Every ([TimeSpan]::FromDays(1)) -Now $Now
+}
+
 function Get-PhxRepoKey {
     # One repository in one place: identities repeat when the same remote is cloned twice.
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Record)

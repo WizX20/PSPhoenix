@@ -14,16 +14,6 @@ function Format-PhxAge {
     '{0} {1}{2} ago' -f $count, $unit, $(if ($count -eq 1) { '' } else { 's' })
 }
 
-function ConvertTo-PhxScanTime {
-    # The scan's timestamp, or nothing when it is not one. ConvertFrom-Json already turns the ISO
-    # text into a DateTime; anything else is parsed, and a cache edited by hand may hold neither.
-    param($Value)
-    if ($Value -is [datetime]) { return $Value }
-    $parsed = [datetime]::MinValue
-    $styles = [Globalization.DateTimeStyles]::RoundtripKind
-    if ([datetime]::TryParse("$Value", [Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) { $parsed }
-}
-
 function Test-PhxWritableFolder {
     # True when a file can be created in the folder: a read-only share, a write-protected disk or a
     # folder without permission fails here rather than at the first backup.
@@ -90,7 +80,7 @@ function Show-PhxStatus {
     if (-not $cache) { & $line 'scan' 'not scanned yet - phx scan' -Warn }
     elseif ($unscanned) { & $line 'scan' "$unscanned root(s) not scanned yet - phx scan" -Warn }
     else {
-        $scanned = ConvertTo-PhxScanTime $cache.scannedAt
+        $scanned = ConvertTo-PhxDateTime $cache.scannedAt
         if ($scanned) { & $line 'scan' "$(Format-PhxAge $scanned) - phx scan refreshes it" }
         else { & $line 'scan' 'time unknown - phx scan refreshes it' -Warn }
     }

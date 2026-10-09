@@ -82,7 +82,12 @@ function Publish-PhxFolder {
     # identical one left alone, any other file removed - a stale temporary one included - and then
     # the folders left empty. Paths compare as the platform does (case-insensitively on Windows), so
     # a file is never removed as "another" file it is the same file as. Returns the counts.
-    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Destination)
+    #
+    # -Published (relative path -> SHA-256 as last published, from the state) spares reading the
+    # target back: a staged file whose hash matches, with the published file still there at its
+    # length, is unchanged. Reading a file in a OneDrive folder can mean downloading it first. The
+    # dictionary is updated to what the destination holds afterwards.
+    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Destination, [System.Collections.IDictionary]$Published)
     $wanted = [Collections.Generic.HashSet[string]]::new([StringComparer]::FromComparison((Get-PhxPathComparison)))
     $written = 0; $unchanged = 0; $removed = 0
     if ([IO.Directory]::Exists($Source)) {
@@ -90,10 +95,18 @@ function Publish-PhxFolder {
             $relative = [IO.Path]::GetRelativePath($Source, $file)
             [void]$wanted.Add($relative)
             $target = Join-Path $Destination $relative
-            if (Test-PhxSameFile -Source $file -Path $target) { $unchanged++; continue }
+            if ($null -ne $Published) {
+                $hash = Get-PhxFileHash $file
+                $known = $Published.ContainsKey($relative) -and $Published[$relative] -eq $hash -and
+                    [IO.File]::Exists($target) -and [IO.FileInfo]::new($target).Length -eq [IO.FileInfo]::new($file).Length
+                $Published[$relative] = $hash
+                if ($known -or (Test-PhxSameFile -Source $file -Path $target)) { $unchanged++; continue }
+            }
+            elseif (Test-PhxSameFile -Source $file -Path $target) { $unchanged++; continue }
             Copy-PhxFile -Source $file -Path $target
             $written++
         }
+        if ($null -ne $Published) { foreach ($key in @($Published.Keys)) { if (-not $wanted.Contains($key)) { $Published.Remove($key) } } }
     }
     if ([IO.Directory]::Exists($Destination)) {
         foreach ($file in @([IO.Directory]::EnumerateFiles($Destination, '*', [IO.SearchOption]::AllDirectories))) {
@@ -111,8 +124,13 @@ function Publish-PhxFolder {
 function Publish-PhxSnapshot {
     # Publishes the staged files of these providers, and the config, into this machine's snapshot
     # folder. phoenix.json records when each provider's files last changed; it is rewritten only
-    # when something was. Returns the result per provider.
-    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Provider)
+    # when something was. With -State, the hashes it last published come from there and go back
+    # there. Returns the result per provider.
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Config,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Provider,
+        [System.Collections.IDictionary]$State
+    )
     if (-not $Config.machine -or -not $Config.machine.id) { throw 'this machine has no id yet - run phx init' }
     $snapshot = Get-PhxSnapshotPath $Config
     $info = Assert-PhxSnapshotWritable -Path $snapshot -Config $Config
@@ -126,7 +144,12 @@ function Publish-PhxSnapshot {
     $changed = $false
     $results = [ordered]@{}
     foreach ($name in $Provider) {
-        $result = Publish-PhxFolder -Source (Get-PhxStagingPath $name) -Destination (Join-Path $snapshot $name)
+        $published = $null
+        if ($State) {
+            if (-not $State.published.Contains($name)) { $State.published[$name] = New-PhxPathDictionary }
+            $published = $State.published[$name]
+        }
+        $result = Publish-PhxFolder -Source (Get-PhxStagingPath $name) -Destination (Join-Path $snapshot $name) -Published $published
         $results[$name] = $result
         if ($result.Written -or $result.Removed -or -not $providers.Contains($name)) {
             $providers[$name] = [ordered]@{ changedAt = $now; files = $result.Files }

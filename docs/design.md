@@ -271,14 +271,24 @@ One target can hold several machines side by side; restore picks one.
 
 ## Change detection and resource use
 
-- Local state (`%LOCALAPPDATA%\PSPhoenix\state.json`, `$XDG_STATE_HOME/psphoenix` elsewhere): per
-  source file its size, mtime and SHA-256.
+- Local state (`%LOCALAPPDATA%\PSPhoenix\state.json`, `$XDG_STATE_HOME/psphoenix` elsewhere), never
+  backed up and never needed for correctness - a missing, broken or newer state means "everything
+  changed", not an error: per provider when it last ran; per source file its size, mtime and
+  SHA-256; per published snapshot file the SHA-256 it was published with; per repository a hash of
+  its refs.
 - A run compares size and mtime first, hashes only on a difference, copies only on a changed hash.
-- Repository discovery is cached and refreshed daily or by `phx scan`.
+  A file touched but not changed is hashed once and does not count as changed.
+- Publishing compares a staged file's hash with the one the state recorded at the last publish,
+  so the target is not read back - in a OneDrive folder, reading can mean downloading.
+- Repository discovery is cached and refreshed daily, when a configured root is missing from the
+  scan, or by `phx scan`.
 - Git-heavy work (`wip` bundles) runs only for repositories whose refs changed: one
   `git for-each-ref` per repository, hashed, compared with the last run.
 - Slow inventories (`winget export`, `scoop export`, the module list) have their own cadence
-  (default daily) instead of running every hour.
+  (default daily) instead of running every hour; `providers.<name>.cadence` in the config overrides
+  it. A provider is due when its cadence has passed since it last ran, a tenth of the cadence (at
+  most five minutes) early included - a scheduled run never starts on the second, and an hourly
+  provider must not slip to every other hour.
 - The process runs at below-normal priority.
 
 ## Scheduling
@@ -384,7 +394,8 @@ itself is part of every snapshot.
 ```
 
 A root needs a full path; a hand-written one without `depth` gets 3, and a depth outside 1-10 is an
-error, like any other invalid config.
+error, like any other invalid config: an `interval` that is not 15m to 31d, a `providers.<name>` that
+is not an object, an `enabled` that is not true or false, a `cadence` that is not a duration.
 
 ## Roadmap
 

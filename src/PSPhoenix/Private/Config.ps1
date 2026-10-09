@@ -41,7 +41,30 @@ function Read-PhxConfig {
     if ($version -lt 1) { throw "config $path has version $version, which no PSPhoenix writes" }
     $merged = Merge-PhxConfig -Default (New-PhxDefaultConfig) -Config $config
     $merged.roots = @(ConvertTo-PhxConfigRoot -Roots $merged.roots -ConfigPath $path)
+    if (-not (Test-PhxInterval "$($merged.interval)")) { throw "config ${path}: interval '$($merged.interval)' must be 15m to 31d, like 30m, 1h or 1d" }
+    foreach ($name in @($merged.providers.Keys)) {
+        $settings = $merged.providers[$name]
+        if ($settings -isnot [System.Collections.IDictionary]) { throw "config ${path}: providers.$name must be an object" }
+        if ($settings.Contains('enabled') -and $settings.enabled -isnot [bool]) { throw "config ${path}: providers.$name.enabled must be true or false" }
+        if ($settings.Contains('cadence') -and -not (ConvertTo-PhxTimeSpan "$($settings.cadence)")) { throw "config ${path}: providers.$name.cadence '$($settings.cadence)' must look like 30m, 1h or 1d" }
+    }
     $merged
+}
+
+function ConvertTo-PhxTimeSpan {
+    # A duration as PSPhoenix writes one - a whole number of minutes, hours or days: 30m, 1h, 1d -
+    # as a TimeSpan; nothing when the text is not one. The interval, a provider's cadence and
+    # phx schedule -Every all read durations through here.
+    param([AllowEmptyString()][string]$Text)
+    if ($Text -cnotmatch '^(?<n>[1-9][0-9]{0,5})(?<unit>[mhd])$') { return }
+    [TimeSpan]::FromMinutes([long]$Matches.n * @{ m = 1; h = 60; d = 1440 }[$Matches.unit])
+}
+
+function Test-PhxInterval {
+    # 15m to 31d: more often makes a run overlap the next; Task Scheduler repeats at most every 31 days.
+    param([AllowEmptyString()][string]$Interval)
+    $span = ConvertTo-PhxTimeSpan $Interval
+    [bool]$span -and $span.TotalMinutes -ge 15 -and $span.TotalDays -le 31
 }
 
 function ConvertTo-PhxConfigRoot {
