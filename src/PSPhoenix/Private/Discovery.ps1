@@ -167,10 +167,13 @@ function Get-PhxPrimaryRemote {
 
 function Get-PhxCredentialAccount {
     # The account a repository's own credential helper asks gh for - `gh auth token --user <x>`,
-    # `-u <x>` or `--user=<x>`, as a WizX20-style .gitconfig include sets up - or nothing.
+    # `-u <x>` or `--user=<x>`, as a WizX20-style .gitconfig include sets up - or nothing. Only a
+    # helper that runs `gh auth`: another tool's --user names nobody gh could give a token for.
     param([object[]]$Settings)
     foreach ($entry in @($Settings)) {
-        if ($entry.key -like 'credential.*helper' -and "$($entry.value)" -match '(?:--user[=\s]\s*|\s-u\s+)["'']?(?<login>[A-Za-z0-9][A-Za-z0-9-]*)') { return $Matches.login }
+        $value = "$($entry.value)"
+        if ($entry.key -like 'credential.*helper' -and $value -match '\bgh(\.exe)?["'']?\s+auth\b' -and
+            $value -match '(?:--user[=\s]\s*|\s-u\s+)["'']?(?<login>[A-Za-z0-9][A-Za-z0-9-]*)') { return $Matches.login }
     }
 }
 
@@ -193,13 +196,27 @@ function Get-PhxWorktree {
     }
 }
 
-function Read-PhxGitFileRef {
-    # The branch a symbolic ref under .git points at (HEAD, refs/remotes/origin/HEAD), read from the
-    # file - nothing for a detached HEAD or a missing ref. Saves a git call per repository.
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Prefix)
-    if (-not [IO.File]::Exists($Path)) { return }
-    $line = [IO.File]::ReadAllText($Path).Trim()
-    if ($line.StartsWith("ref: $Prefix", [StringComparison]::Ordinal)) { $line.Substring(5 + $Prefix.Length) }
+function Get-PhxSymbolicRef {
+    # The branch a symbolic ref (HEAD, refs/remotes/origin/HEAD) points at, without $Prefix -
+    # nothing for a detached HEAD or a missing ref. Read from the file under .git, which saves a git
+    # call per repository; a repository on the reftable backend (git 3's default) keeps its refs in
+    # no such files - its HEAD file only holds the stub `ref: refs/heads/.invalid` - so git is asked.
+    param([Parameter(Mandatory)][string]$Repository, [Parameter(Mandatory)][string]$Ref, [Parameter(Mandatory)][string]$Prefix)
+    $gitDir = Join-Path $Repository '.git'
+    $target = if ([IO.Directory]::Exists((Join-Path $gitDir 'reftable'))) {
+        "$(Invoke-PhxGit -Repository $Repository -Arguments 'symbolic-ref', '-q', $Ref -AllowFailure)"
+    }
+    elseif ([IO.File]::Exists((Join-Path $gitDir $Ref))) {
+        $line = [IO.File]::ReadAllText((Join-Path $gitDir $Ref)).Trim()
+        if ($line.StartsWith('ref: ', [StringComparison]::Ordinal)) { $line.Substring(5) }
+    }
+    if ("$target".StartsWith($Prefix, [StringComparison]::Ordinal)) { "$target".Substring($Prefix.Length) }
+}
+
+function Get-PhxCloneUrl {
+    # The URL a recorded repository is cloned from: its primary remote's first URL.
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Record)
+    if ($Record.primaryRemote) { @($Record.remotes[$Record.primaryRemote].urls)[0] }
 }
 
 function Get-PhxRepoRecord {
@@ -225,8 +242,8 @@ function Get-PhxRepoRecord {
         path             = $relative
         remotes          = $local.Remotes
         primaryRemote    = $primary
-        defaultBranch    = if ($primary) { Read-PhxGitFileRef (Join-Path $gitDir "refs/remotes/$primary/HEAD") "refs/remotes/$primary/" }
-        branch           = Read-PhxGitFileRef (Join-Path $gitDir 'HEAD') 'refs/heads/'
+        defaultBranch    = if ($primary) { Get-PhxSymbolicRef -Repository $Path -Ref "refs/remotes/$primary/HEAD" -Prefix "refs/remotes/$primary/" }
+        branch           = Get-PhxSymbolicRef -Repository $Path -Ref 'HEAD' -Prefix 'refs/heads/'
         settings         = @($local.Settings)
         helperAccount    = Get-PhxCredentialAccount (@($local.Settings) + @($local.Included))
         externalIncludes = @($local.ExternalIncludes)
@@ -281,11 +298,13 @@ function Get-PhxRepoKey {
 }
 
 function Save-PhxRepoCache {
-    # Writes what a scan found: the roots it walked and their repositories.
-    param([object[]]$Roots = @(), [object[]]$Records = @())
+    # Writes what a scan found: the roots it walked and their repositories. -ScannedAt keeps the
+    # time of the scan when the cache is only trimmed.
+    param([object[]]$Roots = @(), [object[]]$Records = @(), $ScannedAt)
+    $stamp = if ($ScannedAt -is [datetime]) { $ScannedAt.ToUniversalTime().ToString('o') } elseif ($ScannedAt) { "$ScannedAt" } else { [DateTime]::UtcNow.ToString('o') }
     $cache = [ordered]@{
         version      = $script:PhxRepoCacheVersion
-        scannedAt    = [DateTime]::UtcNow.ToString('o')
+        scannedAt    = $stamp
         roots        = @($Roots)
         repositories = @($Records)
     }
@@ -325,6 +344,14 @@ function Invoke-PhxScan {
                     if ($last) { $last }
                 }
             })
+        # An empty root where the last scan found repositories is more likely a drive that is not
+        # mounted (Linux keeps the empty mount point) than every repository deleted at once.
+        $last = @($before.Values | Where-Object { [string]::Equals($_.root, $root.path, (Get-PhxPathComparison)) })
+        if (-not $found.Count -and $last.Count) {
+            foreach ($record in $last) { $record.offline = $true; $records.Add($record) }
+            Write-Host ('  {0,-48} no repositories where the last scan found {1} - kept them, marked offline (a drive not mounted?); gone for good: phx roots rm, then phx roots add' -f $root.path, $last.Count) -ForegroundColor Yellow
+            continue
+        }
         foreach ($record in $found) { $records.Add($record) }
         Write-Host ('  {0,-48} {1,4} repositories' -f $root.path, $found.Count)
     }

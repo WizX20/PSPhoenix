@@ -37,9 +37,10 @@ function Test-PhxWritableFolder {
 }
 
 function Get-PhxNeededAccount {
-    # The accounts the scanned repositories need, per host: { Host, Login, Count }.
+    # The accounts the scanned repositories need, per host: { Host, Login, Count }. Only a
+    # repository cloned over https takes a token from gh; over SSH the key decides.
     param([object[]]$Records = @(), [System.Collections.IDictionary]$Accounts = @{})
-    $Records | Where-Object { Get-PhxIdentityOwner $_.identity } | ForEach-Object {
+    $Records | Where-Object { (Get-PhxIdentityOwner $_.identity) -and "$(Get-PhxCloneUrl $_)" -match '^https://' } | ForEach-Object {
         $login = Get-PhxRepoAccount -Record $_ -Accounts $Accounts
         if ($login) { [pscustomobject]@{ Host = $_.identity.Split('/')[0]; Login = $login } }
     } | Group-Object Host, Login | ForEach-Object {
@@ -101,8 +102,9 @@ function Show-PhxStatus {
         if ($needed) {
             $logins = @(Get-PhxGhAccount)
             foreach ($need in $needed) {
-                $known = @($logins | Where-Object { $_.Host -eq $need.Host -and $_.Login -eq $need.Login }).Count
-                if ($known) { & $line 'account' "$($need.Login) on $($need.Host) ($($need.Count) repositories) - logged in to gh" }
+                $known = @($logins | Where-Object { $_.Host -eq $need.Host -and $_.Login -eq $need.Login })[0]
+                if ($known.Verified -eq $false) { & $line 'account' "$($need.Login) on $($need.Host) ($($need.Count) repositories) - logged in to gh, not checked (gh could not reach $($need.Host))" }
+                elseif ($known) { & $line 'account' "$($need.Login) on $($need.Host) ($($need.Count) repositories) - logged in to gh" }
                 else { & $line 'account' "$($need.Login) on $($need.Host) ($($need.Count) repositories) - not logged in to gh: gh auth login --hostname $($need.Host)" -Warn }
             }
         }

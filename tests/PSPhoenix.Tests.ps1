@@ -227,14 +227,17 @@ Describe 'config' {
 
     It 'round-trips through Save-PhxConfig' {
         Use-TestHome | Out-Null
-        $config = InModuleScope PSPhoenix {
+        # A full path on this platform: C:\Repos is not one on Linux, and a root must be.
+        $root = Join-Path $TestDrive 'Repos'
+        $config = InModuleScope PSPhoenix -Parameters @{ Root = $root } {
+            param($Root)
             $c = Read-PhxConfig
-            $c.roots = @(@{ path = 'C:\Repos'; depth = 3 })
+            $c.roots = @(@{ path = $Root; depth = 3 })
             $c.accounts['github.com/WizX20'] = 'WizX20'
             Save-PhxConfig $c
             Read-PhxConfig
         }
-        $config.roots[0].path | Should -Be 'C:\Repos'
+        $config.roots[0].path | Should -Be $root
         $config.roots[0].depth | Should -Be 3
         $config.accounts['github.com/WizX20'] | Should -Be 'WizX20'
         $dir = Split-Path (InModuleScope PSPhoenix { Get-PhxConfigPath })
@@ -310,6 +313,36 @@ Describe 'config' {
         $config.providers.winget.enabled | Should -BeFalse
         # The defaults' spelling and order survive: a save writes 'version', never 'Version'.
         @($config.Keys) | Should -Be @('version', 'roots', 'target', 'interval', 'providers', 'accounts', 'secrets', 'files')
+    }
+
+    It 'gives a hand-written root without a depth the default, and drops an empty entry' {
+        Use-TestHome | Out-Null
+        $root = (Join-Path $TestDrive 'hand-written') -replace '\\', '/'
+        $roots = InModuleScope PSPhoenix -Parameters @{ Root = $root } {
+            param($Root)
+            $path = Get-PhxConfigPath
+            [IO.Directory]::CreateDirectory((Split-Path $path)) | Out-Null
+            [IO.File]::WriteAllText($path, (@{ version = 1; roots = @($null, @{ path = $Root }) } | ConvertTo-Json -Depth 5))
+            , @((Read-PhxConfig).roots)
+        }
+        $roots | Should -HaveCount 1
+        $roots[0].depth | Should -Be 3
+    }
+
+    It 'refuses a hand-written root <Case>' -ForEach @(
+        @{ Case = 'with depth 0'; Root = @{ path = 'FULL'; depth = 0 }; Message = '*has depth 0 - a whole number from 1 to 10*' }
+        @{ Case = 'with a relative path'; Root = @{ path = 'Repos'; depth = 3 }; Message = '*root Repos is not a full path*' }
+        @{ Case = 'without a path'; Root = @{ depth = 3 }; Message = '*every root needs a path*' }
+    ) {
+        Use-TestHome | Out-Null
+        if ($Root.path -eq 'FULL') { $Root.path = Join-Path $TestDrive 'full' }
+        InModuleScope PSPhoenix -Parameters @{ Root = $Root } {
+            param($Root)
+            $path = Get-PhxConfigPath
+            [IO.Directory]::CreateDirectory((Split-Path $path)) | Out-Null
+            [IO.File]::WriteAllText($path, (@{ version = 1; roots = @($Root) } | ConvertTo-Json -Depth 5))
+        }
+        { InModuleScope PSPhoenix { Read-PhxConfig } } | Should -Throw $Message
     }
 }
 
@@ -639,6 +672,52 @@ Describe 'scan' {
         $script:ScanOutput -join "`n" | Should -Not -Match 'gone:'
     }
 
+    It 'keeps the repositories of a root that turned up empty, marked offline' {
+        # Linux keeps an unmounted drive's mount point: an empty folder, not a missing one.
+        $away = New-TestRepository (Join-Path $repos 'Away') -Remote 'origin=https://github.com/o/away.git'
+        phx roots add $repos 6>$null
+        Get-TestScan | Out-Null
+        Remove-Item -LiteralPath $away -Recurse -Force
+        $records = @(Get-TestScan)
+        $script:ScanOutput -join "`n" | Should -Match 'no repositories where the last scan found 1 - kept them, marked offline'
+        $records[0].offline | Should -BeTrue
+        # Gone for good: removing and adding the root again forgets them. Removing a root trims the
+        # last scan without pretending it was a new one.
+        $scannedAt = (InModuleScope PSPhoenix { Read-PhxRepoCache }).scannedAt
+        phx roots rm $repos 6>$null
+        $cache = InModuleScope PSPhoenix { Read-PhxRepoCache }
+        @($cache.repositories | Where-Object { $_ }) | Should -HaveCount 0
+        $cache.scannedAt | Should -Be $scannedAt
+        phx roots add $repos 6>$null
+        @(Get-TestScan) | Should -HaveCount 0
+    }
+
+    It 'treats owners that differ only in case as the same, as GitHub does' {
+        New-TestRepository (Join-Path $repos 'A') -Remote 'origin=https://github.com/WizX20/same.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'B') -Remote 'origin=https://github.com/wizx20/same.git' | Out-Null
+        phx roots add $repos 6>$null
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.accounts['github.com/WizX20'] = 'WizX20'; Save-PhxConfig $c }
+        Get-PhxOutput { phx scan } | Should -Match '(?i)github.com/wizx20/same is cloned 2 times'
+        $accounts = InModuleScope PSPhoenix {
+            $config = Read-PhxConfig
+            (Read-PhxRepoCache).repositories | ForEach-Object { Get-PhxRepoAccount -Record $_ -Accounts $config.accounts }
+        }
+        @($accounts) | Should -Be @('WizX20', 'WizX20')
+    }
+
+    It 'reads the branches of a repository on the reftable backend' {
+        $remote = Join-Path $testHome 'remote.git'
+        git -c init.defaultBranch=main init -q --bare $remote
+        $seed = New-TestRepository (Join-Path $testHome 'seed')
+        git -C $seed push -q $remote main 2>$null
+        git clone -q --ref-format=reftable $remote (Join-Path $repos 'Table') 2>$null
+        if ($LASTEXITCODE) { Set-ItResult -Skipped -Because 'this git cannot create a reftable repository (git 2.45+)'; return }
+        phx roots add $repos 6>$null
+        $record = @(Get-TestScan)[0]
+        $record.branch | Should -Be 'main'
+        $record.defaultBranch | Should -Be 'main'
+    }
+
     It "keeps a repository's last record when git cannot read it, and says so" {
         $broken = New-TestRepository (Join-Path $repos 'Broken') -Remote 'origin=https://github.com/o/broken.git'
         New-TestRepository (Join-Path $repos 'Fine') -Remote 'origin=https://github.com/o/fine.git' | Out-Null
@@ -943,6 +1022,22 @@ Describe 'repos provider' {
         $arguments | Should -BeLike '-c credential.helper= -c credential.helper=!gh auth git-credential clone --quiet --origin origin -- https://*/o/tok.git *'
     }
 
+    It 'gives the clone the recorded SSH command and credential settings, before the fetch' {
+        $arguments = InModuleScope PSPhoenix -Parameters @{ Target = (Join-Path $TestDrive 'clone-ssh/x') } {
+            param($Target)
+            $script:TestArguments = $null
+            Mock Invoke-PhxGit { $script:TestArguments = $Arguments }
+            $settings = @(
+                @{ key = 'user.email'; value = 'me@example.invalid' }
+                @{ key = 'core.sshcommand'; value = 'ssh -i ~/.ssh/id_work' }
+                @{ key = 'credential.https://dev.azure.com.usehttppath'; value = $null }
+            )
+            Invoke-PhxClone -Url 'git@github.com:o/r.git' -Target $Target -RemoteName origin -Settings $settings
+            $script:TestArguments
+        }
+        $arguments -join ' ' | Should -BeLike 'clone --quiet --origin origin --config core.sshcommand=ssh -i ~/.ssh/id_work --config credential.https://dev.azure.com.usehttppath=true -- git@github.com:o/r.git *'
+    }
+
     It 'asks no token for a host gh is not logged in to, nor for a repository without an account' {
         $calls = InModuleScope PSPhoenix -Parameters @{ Target = (Join-Path $TestDrive 'clone-plain/x') } {
             param($Target)
@@ -1123,6 +1218,8 @@ Describe 'repos provider' {
         @{ Helper = '!gh auth token --user=WizX20'; Account = 'WizX20' }
         @{ Helper = '!f() { t=$(gh auth token --user "Work-Acct") || return 1; }; f'; Account = 'Work-Acct' }
         @{ Helper = 'manager'; Account = $null }
+        @{ Helper = '!"C:/Program Files/GitHub CLI/gh.exe" auth token --user WizX20'; Account = 'WizX20' }
+        @{ Helper = '!f() { my-tool --user alice; }; f'; Account = $null }
     ) {
         InModuleScope PSPhoenix -Parameters @{ Helper = $Helper } {
             param($Helper)
@@ -1494,6 +1591,27 @@ Describe 'status' {
         $output | Should -Match 'nothing needs attention'
     }
 
+    It 'needs no gh account for a repository cloned over SSH' {
+        git -C (Join-Path $repos 'Work') remote set-url origin 'git@github.com:summitnl/work.git'
+        Set-TestConfig -WorkAccount 'Ghost'
+        phx scan 6>$null
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Not -Match 'Ghost on github.com'
+        $output | Should -Match 'nothing needs attention'
+    }
+
+    It 'says when gh could not check an account, without counting it as a problem' {
+        Set-TestConfig
+        phx scan 6>$null
+        Mock Get-PhxGhAccount -ModuleName PSPhoenix {
+            [pscustomobject]@{ Host = 'github.com'; Login = 'wpaap'; Active = $true; Verified = $false }
+            [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $false; Verified = $true }
+        }
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match 'wpaap on github.com \(1 repositories\) - logged in to gh, not checked'
+        $output | Should -Match 'nothing needs attention'
+    }
+
     It 'warns about an account gh is not logged in with' {
         Set-TestConfig -WorkAccount 'Ghost'
         phx scan 6>$null
@@ -1628,6 +1746,15 @@ Describe 'gh wrappers' {
             $accounts = @(Get-PhxGhAccount)
             $accounts.Login | Should -Be @('wpaap', 'WizX20')
             ($accounts | Where-Object Login -EQ 'wpaap').Active | Should -BeTrue
+        }
+    }
+
+    It 'keeps an account gh could not check while offline, as not verified' {
+        InModuleScope PSPhoenix {
+            Mock Invoke-PhxGh { '{"hosts":{"github.com":[{"state":"timeout","active":true,"host":"github.com","login":"wpaap"}]}}' }
+            $account = @(Get-PhxGhAccount)
+            $account.Login | Should -Be 'wpaap'
+            $account.Verified | Should -BeFalse
         }
     }
 
