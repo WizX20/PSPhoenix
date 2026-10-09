@@ -97,6 +97,13 @@ function Remove-PhxRoot {
     if ($keep.Count -eq $roots.Count) { throw "$full is not a root - see: phx roots list" }
     $config.roots = $keep
     Save-PhxConfig $config
+    # The last scan forgets the root too: added again later, it starts from what is there then.
+    $cache = Read-PhxRepoCache -Quiet
+    if ($cache) {
+        $comparison = Get-PhxPathComparison
+        Save-PhxRepoCache -Roots @(@($cache.roots) | Where-Object { -not [string]::Equals($_.path, $full, $comparison) }) `
+            -Records @(@($cache.repositories) | Where-Object { $_ -and -not [string]::Equals($_.root, $full, $comparison) }) -ScannedAt $cache.scannedAt
+    }
     Write-Host "removed root $full" -ForegroundColor Green
 }
 

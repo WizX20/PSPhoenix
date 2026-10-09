@@ -36,7 +36,27 @@ function Read-PhxConfig {
         throw "config $path has version $version; this PSPhoenix understands up to $script:PhxConfigVersion - update PSPhoenix"
     }
     if ($version -lt 1) { throw "config $path has version $version, which no PSPhoenix writes" }
-    Merge-PhxConfig -Default (New-PhxDefaultConfig) -Config $config
+    $merged = Merge-PhxConfig -Default (New-PhxDefaultConfig) -Config $config
+    $merged.roots = @(ConvertTo-PhxConfigRoot -Roots $merged.roots -ConfigPath $path)
+    $merged
+}
+
+function ConvertTo-PhxConfigRoot {
+    # config.roots as every caller may rely on it: { path, depth } each, a full path, a depth from 1
+    # to 10 - the default when a hand-edited root leaves it out (depth 0 would find nothing and
+    # report every repository gone). Empty entries are dropped; anything else is an error.
+    param($Roots, [Parameter(Mandatory)][string]$ConfigPath)
+    foreach ($root in @($Roots)) {
+        if ($null -eq $root) { continue }
+        if ($root -isnot [System.Collections.IDictionary] -or $root.path -isnot [string] -or -not $root.path) { throw "config ${ConfigPath}: every root needs a path" }
+        if (-not [IO.Path]::IsPathFullyQualified($root.path)) { throw "config ${ConfigPath}: root $($root.path) is not a full path" }
+        if ($null -eq $root.depth) { $root.depth = $script:PhxDefaultRootDepth }
+        if (($root.depth -isnot [int] -and $root.depth -isnot [long]) -or $root.depth -lt 1 -or $root.depth -gt 10) {
+            throw "config ${ConfigPath}: root $($root.path) has depth $($root.depth) - a whole number from 1 to 10"
+        }
+        $root.depth = [int]$root.depth
+        $root
+    }
 }
 
 function ConvertTo-PhxCaseInsensitive {

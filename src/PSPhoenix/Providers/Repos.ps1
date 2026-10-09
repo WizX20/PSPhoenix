@@ -101,11 +101,18 @@ function Invoke-PhxClone {
         [Parameter(Mandatory)][string]$Target,
         [Parameter(Mandatory)][string]$RemoteName,
         [string]$Account,
-        [string[]]$TokenHosts = @('github.com')
+        [string[]]$TokenHosts = @('github.com'),
+        # The recorded settings: the ones that decide how the fetch connects - a per-repository SSH
+        # key (core.sshCommand), credential settings - go into the clone itself (--config), so they
+        # count for its first fetch, not only from the next one.
+        [object[]]$Settings = @()
     )
     $parent = Split-Path $Target -Parent
     [IO.Directory]::CreateDirectory($parent) | Out-Null
     $options = @()
+    $configs = foreach ($entry in @($Settings | Where-Object { $_.key -match '^(core\.sshcommand|credential\..+)$' })) {
+        '--config', "$($entry.key)=$(if ($null -eq $entry.value) { 'true' } else { $entry.value })"
+    }
     $tokenHost = if ($Account -and $Url -match '^https://(?:[^@/]+@)?(?<host>[^/:]+)' -and $TokenHosts -contains $Matches.host) { $Matches.host }
     $variable = if ($tokenHost -eq 'github.com' -or $tokenHost -like '*.ghe.com') { 'GH_TOKEN' } else { 'GH_ENTERPRISE_TOKEN' }
     $saved = [Environment]::GetEnvironmentVariable($variable)
@@ -114,7 +121,7 @@ function Invoke-PhxClone {
             [Environment]::SetEnvironmentVariable($variable, (Get-PhxGhToken -Account $Account -HostName $tokenHost))
             $options = '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential'
         }
-        Invoke-PhxGit -Repository $parent -Arguments ($options + @('clone', '--quiet', '--origin', $RemoteName, '--', $Url, $Target)) | Out-Null
+        Invoke-PhxGit -Repository $parent -Arguments ($options + @('clone', '--quiet', '--origin', $RemoteName) + @($configs) + @('--', $Url, $Target)) | Out-Null
     }
     finally { [Environment]::SetEnvironmentVariable($variable, $saved) }
 }
@@ -183,13 +190,13 @@ function Restore-PhxRepo {
     }
     $primary = $Repo.primaryRemote
     if (-not $primary) { & $log "$($Repo.identity): no remote to clone from - it comes back from its bundle (M4)" 'Warn'; return 'skipped' }
-    $url = @($Repo.remotes[$primary].urls)[0]
+    $url = Get-PhxCloneUrl $Repo
     $as = if ($Repo.account) { " as $($Repo.account)" } else { '' }
     if ($Context.DryRun) { & $log "would clone $url -> $target$as" 'Action'; return 'cloned' }
     & $log "cloning $($Repo.identity) -> $target$as" 'Action'
-    Invoke-PhxClone -Url $url -Target $target -RemoteName $primary -Account $Repo.account -TokenHosts $TokenHosts
+    Invoke-PhxClone -Url $url -Target $target -RemoteName $primary -Account $Repo.account -TokenHosts $TokenHosts -Settings $Repo.settings
     Set-PhxRepoSetup -Repo $Repo -Path $target
-    $current = Read-PhxGitFileRef (Join-Path $target '.git/HEAD') 'refs/heads/'
+    $current = Get-PhxSymbolicRef -Repository $target -Ref 'HEAD' -Prefix 'refs/heads/'
     if ($Repo.branch -and $Repo.branch -cne $current) {
         if (Invoke-PhxGit -Repository $target -Arguments 'rev-parse', '--verify', '--quiet', "refs/remotes/$primary/$($Repo.branch)" -AllowExitCode 1) {
             Invoke-PhxGit -Repository $target -Arguments 'switch', '--quiet', $Repo.branch | Out-Null

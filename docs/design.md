@@ -51,11 +51,13 @@ machine from it with `phx restore`.
   worktrees with their branch) - to `repos.json` in the state folder. Links and junctions are
   not followed - a cloud-sync placeholder (OneDrive, Dropbox) is not a link and is searched - and
   build-output folders (`node_modules`, `bin`, `obj`, ...) are not entered. Nothing a scan cannot
-  see is dropped: a root whose folder is gone keeps the last scan's repositories, marked offline;
-  a repository git cannot read keeps its last record, with a warning - in full, so a backup taken
-  while a drive is out still records their settings. A backup scans first when there is no scan
-  yet or a configured root is missing from it. Remote URLs are recorded without credentials
-  (`user:password@`, or a token as user name).
+  see is dropped: a root whose folder is gone keeps the last scan's repositories, marked offline,
+  and so does a root that turns up empty where the last scan found repositories (Linux keeps an
+  unmounted drive's mount point as an empty folder); a repository git cannot read keeps its last
+  record, with a warning - in full, so a backup taken while a drive is out still records their
+  settings. `phx roots rm` forgets a root's repositories too. A backup scans first when there is
+  no scan yet or a configured root is missing from it. Remote URLs are recorded without
+  credentials (`user:password@`, or a token as user name).
 - **Worktree**: a linked worktree (including Claude Code's `.claude/worktrees/*`) belongs to its
   main repository and is recorded there, never as a repository of its own.
 - **Provider**: one unit of backup and restore (`repos`, `claude`, `winget`, ...). See
@@ -88,7 +90,8 @@ unknown keys are refused (a `Platform` typo would otherwise run the provider eve
 minutes, hours or days (`30m`, `1h`, `1d`).
 
 `$Context` carries the loaded config, the provider's staging folder in the snapshot, the state
-store, a logger, the secret writer (age) and a `DryRun` flag. A provider never writes outside its
+store, a logger, the secret writer (age) and a `DryRun` flag; on restore also the root map (an old
+root to its new path) and the repositories selected. A provider never writes outside its
 staging folder during backup, and every `Restore` is idempotent: a second run skips what exists.
 
 **Every provider ships with its `Restore` and a round-trip test** (backup into `$TestDrive`, restore
@@ -98,7 +101,7 @@ into a second `$TestDrive` home, compare). A backup nobody has restored is a hop
 
 | Provider | Captures | Restores via | Notes |
 |---|---|---|---|
-| `repos` | inventory per repository: path relative to its root, **all** remotes, default and current branch, repo-local identity (`user.*`, `include.path`, `credential.*`), worktrees, LFS and submodule flags, the GitHub account | clone (parallel, throttled), remotes, repo-local config | see [GitHub accounts](#github-accounts) |
+| `repos` | inventory per repository: path relative to its root, **all** remotes, default and current branch, repo-local identity (`user.*`, `include.path`, `credential.*`), worktrees, LFS and submodule flags, the GitHub account | clone (one at a time in M1; parallel and throttled once `phx restore` runs it, M6), remotes, repo-local config | see [GitHub accounts](#github-accounts) |
 | `wip` | `git bundle` of local-only work: branches without upstream or ahead of it, stashes; a full bundle for repositories without a remote | `git fetch <bundle>`, stashes re-applied as branches | squash-merged branches are not WIP: reuse the merge detection of PSWorktree's `wt clean` |
 | `repo-files` | gitignored files that pass the filters and the review | copy back | secret-classified files only as `.age` |
 | `claude` | `~/.claude/projects/*/memory`, `settings.json`, `CLAUDE.md`, `skills/`, `commands/`, `agents/`, `statusline*`, `keybindings.json`; selected keys of `~/.claude.json` (`mcpServers`, with `env` values that look secret encrypted) | copy; memory lands in the folder name Claude Code derives from the **new** path | never `.credentials.json`; session transcripts opt-in |
@@ -171,12 +174,15 @@ repository, or commits authored with the wrong identity.
 1. **Preflight** (`phx restore`, M6): `gh auth status` must list every account the selected
    repositories need. A missing account stops the restore before anything is cloned, with the exact
    `gh auth login` to run. The `repos` provider has no preflight of its own; `phx status` warns
-   about a missing account ahead of time.
+   about a missing account ahead of time. Only a repository cloned over https needs one - over SSH
+   the key decides, and the recorded `core.sshCommand` goes into the clone itself. An account `gh`
+   could not check because the host was out of reach counts as logged in.
 2. **Clone with that account's token** for the clone process only:
    `GH_TOKEN = gh auth token --user <account>` (`GH_TOKEN` for github.com and `*.ghe.com`,
-   `GH_ENTERPRISE_TOKEN` for a GitHub Enterprise Server host `gh` is logged in to). Never `gh auth switch`, never a token on disk. Clones that run side by
-   side, each with its own account, need the token in each child process's environment, not in
-   the shared process environment.
+   `GH_ENTERPRISE_TOKEN` for a GitHub Enterprise Server host `gh` is logged in to). Never
+   `gh auth switch`, never a token on disk. Clones that run side by side, each with its own
+   account, need the token in each child process's environment, not in the shared process
+   environment.
 3. **Re-apply the repo-local config** (`include.path`, `user.*`, credential helper) right after the
    clone, before any fetch or push; then check out the recorded branch when the remote has it.
    A repository already in place gets the same re-apply and nothing else. Linked worktrees are
@@ -355,6 +361,9 @@ itself is part of every snapshot.
   }
 }
 ```
+
+A root needs a full path; a hand-written one without `depth` gets 3, and a depth outside 1-10 is an
+error, like any other invalid config.
 
 ## Roadmap
 

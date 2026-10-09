@@ -11,7 +11,9 @@ function Invoke-PhxGh {
 }
 
 function Get-PhxGhAccount {
-    # The accounts gh is logged in with: { Host, Login, Active }. Nothing when gh is missing or
+    # The accounts gh is logged in with: { Host, Login, Active, Verified }. Verified is false when
+    # gh could not reach the host to check the token (offline) - still logged in, the token still
+    # there. An account whose token gh found invalid is left out. Nothing when gh is missing or
     # reports nothing usable - callers then treat every account as missing.
     try {
         $json = Invoke-PhxGh -Arguments 'auth', 'status', '--json', 'hosts'
@@ -21,8 +23,8 @@ function Get-PhxGhAccount {
     if ($status -isnot [System.Collections.IDictionary] -or $status.hosts -isnot [System.Collections.IDictionary]) { return }
     foreach ($hostName in @($status.hosts.Keys)) {
         foreach ($entry in @($status.hosts[$hostName])) {
-            if ($entry.login -and $entry.state -eq 'success') {
-                [pscustomobject]@{ Host = $hostName; Login = $entry.login; Active = [bool]$entry.active }
+            if ($entry.login -and $entry.state -in 'success', 'timeout') {
+                [pscustomobject]@{ Host = $hostName; Login = $entry.login; Active = [bool]$entry.active; Verified = $entry.state -eq 'success' }
             }
         }
     }

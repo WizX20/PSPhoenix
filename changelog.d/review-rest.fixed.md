@@ -1,0 +1,6 @@
+- fix: repos - a clone gets the recorded `core.sshCommand` and credential settings before its first fetch, so a repository reachable only with its own SSH key comes back
+- fix: repos - the branch of a repository on the reftable backend is read correctly instead of as `.invalid`
+- fix: scan - a root that turns up empty where the last scan found repositories (an unmounted drive on Linux) keeps them, marked offline; `phx roots rm` makes the last scan forget its root
+- fix: config - a hand-written root without `depth` gets the default; one with a depth outside 1-10 or without a full path is an error instead of a root that finds nothing
+- fix: `phx status` needs no `gh` account for a repository cloned over SSH, and says "not checked" instead of "not logged in" for an account gh could not verify offline
+- fix: an account is taken only from a credential helper that runs `gh auth`, not from another tool's `--user`
