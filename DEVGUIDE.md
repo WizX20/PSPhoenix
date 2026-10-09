@@ -10,6 +10,7 @@ src/PSPhoenix/PSPhoenix.psd1        module manifest (ModuleVersion is the releas
 src/PSPhoenix/Private/*.ps1         helpers, one file per concern (paths, config, provider registry, ...)
 src/PSPhoenix/Providers/*.ps1       one file per backup unit; each calls Register-PhxProvider at import
 tests/PSPhoenix.Tests.ps1           Pester 5+ suite; never touches the real home, registry or Task Scheduler
+tests/Scripts.Tests.ps1             the dev scripts in scripts/ (dev-link, cut-changelog), each pointed at $TestDrive
 docs/design.md                      the design and the roadmap - the contract the code builds towards
 changelog.d/                        one release-notes fragment per pull request; the release folds them into CHANGELOG.md
 scripts/                            lint / test / pack / set-version / cut-changelog / dev-link

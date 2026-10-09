@@ -9,11 +9,8 @@
         # State-changing helpers are driven by `phx` sub-commands that carry their own
         # confirmation flow (the wizard, restore's per-step prompts) instead of ShouldProcess.
         'PSUseShouldProcessForStateChangingFunctions',
-        'PSUseSingularNouns',
-        # Argument-completer script blocks must declare the leading positions of the
-        # ($commandName, $parameterName, $wordToComplete, ...) signature to reach the later
-        # ones; and `phx` declares the flags of milestones that are not built yet, so the help
-        # and the command line agree from the start.
-        'PSReviewUnusedParameter'
+        'PSUseSingularNouns'
+        # PSReviewUnusedParameter stays on: the one intended exception, phx's flags of later
+        # milestones, carries a SuppressMessage attribute of its own.
     )
 }
