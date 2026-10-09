@@ -1,8 +1,9 @@
 # Build output (task pack / CI): the release zip, the staged module folder, test results
 dist/
 
-# Claude Code session state
-.claude/
+# Claude Code session state (worktrees, locks); the project skills are shared
+.claude/*
+!.claude/skills/
 
 # Editor / OS noise
 .vscode/
