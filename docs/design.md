@@ -47,8 +47,12 @@ machine from it with `phx restore`.
   `local/<path relative to its root>` and a full bundle, since there is nothing to clone it from.
   The same remote cloned twice keeps one identity in two places; `phx scan` points it out.
 - **Discovery cache**: `phx scan` writes what it found (root, relative path, remotes, identity,
-  linked worktrees) to `repos.json` in the state folder. Links and junctions are not followed, and
-  build-output folders (`node_modules`, `bin`, `obj`, ...) are not entered.
+  linked worktrees with their branch) to `repos.json` in the state folder. Links and junctions are
+  not followed - a cloud-sync placeholder (OneDrive, Dropbox) is not a link and is searched - and
+  build-output folders (`node_modules`, `bin`, `obj`, ...) are not entered. Nothing a scan cannot
+  see is dropped: a root whose folder is gone keeps the last scan's repositories, marked offline;
+  a repository git cannot read keeps its last record, with a warning. Remote URLs are recorded
+  without credentials (`user:password@`, or a token as user name).
 - **Worktree**: a linked worktree (including Claude Code's `.claude/worktrees/*`) belongs to its
   main repository and is recorded there, never as a repository of its own.
 - **Provider**: one unit of backup and restore (`repos`, `claude`, `winget`, ...). See

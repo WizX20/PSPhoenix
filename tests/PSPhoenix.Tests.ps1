@@ -437,6 +437,41 @@ Describe 'repository identity' {
         InModuleScope PSPhoenix -Parameters @{ Url = $Url } { param($Url) ConvertTo-PhxRepoIdentity -Url $Url } | Should -BeExactly $Identity
     }
 
+    It 'removes credentials from <Url>' -ForEach @(
+        @{ Url = 'https://user:secret@github.com/o/r.git'; Clean = 'https://user@github.com/o/r.git' }
+        @{ Url = 'https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/o/r.git'; Clean = 'https://github.com/o/r.git' }
+        @{ Url = 'https://org@dev.azure.com/org/p/_git/r'; Clean = 'https://org@dev.azure.com/org/p/_git/r' }
+        @{ Url = 'ssh://git@github.com/o/r.git'; Clean = 'ssh://git@github.com/o/r.git' }
+        @{ Url = 'git@github.com:o/r.git'; Clean = 'git@github.com:o/r.git' }
+    ) {
+        InModuleScope PSPhoenix -Parameters @{ Url = $Url } { param($Url) Remove-PhxUrlSecret $Url } | Should -BeExactly $Clean
+    }
+
+    It 'masks credentials in text such as a git error' {
+        InModuleScope PSPhoenix {
+            Hide-PhxSecret 'git clone https://user:secret@github.com/o/r.git failed' | Should -Be 'git clone https://user:***@github.com/o/r.git failed'
+            Hide-PhxSecret 'remote https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/o/r' | Should -Be 'remote https://***@github.com/o/r'
+            Hide-PhxSecret 'https://org@dev.azure.com/org' | Should -Be 'https://org@dev.azure.com/org'
+            $failure = { Invoke-PhxGit -Repository $TestDrive -Arguments 'ls-remote', 'https://user:secret@invalid.invalid/x.git' } | Should -Throw -PassThru
+            $failure.Exception.Message | Should -Not -Match 'secret'
+        }
+    }
+
+    It 'tells a link from a folder - a cloud placeholder has no link target' {
+        $real = Join-Path $TestDrive 'real-folder'
+        $link = Join-Path $TestDrive 'link-folder'
+        New-Item -ItemType Directory -Path $real | Out-Null
+        New-Item -ItemType ($IsWindows ? 'Junction' : 'SymbolicLink') -Path $link -Target $real | Out-Null
+        try {
+            InModuleScope PSPhoenix -Parameters @{ Real = $real; Link = $link } {
+                param($Real, $Link)
+                Test-PhxLinkFolder $Link | Should -BeTrue
+                Test-PhxLinkFolder $Real | Should -BeFalse
+            }
+        }
+        finally { (Get-Item -LiteralPath $link -Force).Delete() }
+    }
+
     It 'resolves a relative local remote against the repository' {
         $base = Join-Path $TestDrive 'a/b'
         $identity = InModuleScope PSPhoenix -Parameters @{ Base = $base } { param($Base) ConvertTo-PhxRepoIdentity -Url '../origin.git' -BasePath $Base }
@@ -477,18 +512,23 @@ Describe 'scan' {
 
     It 'records a linked worktree on its main repository, not as a repository of its own' {
         $main = New-TestRepository (Join-Path $repos 'Main') -Remote 'origin=https://github.com/o/main.git'
-        git -C $main worktree add -q (Join-Path $repos 'Main-feature') -b feature 2>$null
+        $worktree = Join-Path $repos 'Main-feature'
+        git -C $main worktree add -q $worktree -b feature 2>$null
+        # A repository inside the worktree folder: found only if the .git file were not respected.
+        New-TestRepository (Join-Path $worktree 'nested') -Remote 'origin=https://github.com/o/nested.git' | Out-Null
         phx roots add $repos 6>$null
         $records = @(Get-TestScan)
         @($records.identity) | Should -Be @('github.com/o/main')
         @($records[0].worktrees).Count | Should -Be 1
-        $records[0].worktrees[0] | Should -Match 'Main-feature$'
+        $records[0].worktrees[0].path | Should -Be 'Main-feature'
+        $records[0].worktrees[0].branch | Should -Be 'feature'
     }
 
     It 'skips a submodule and build-output folders' {
-        $submodule = Join-Path $repos 'App/../Sub'
+        $submodule = Join-Path $repos 'Sub'
         New-Item -ItemType Directory -Path $submodule -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $submodule '.git') -Value 'gitdir: ../App/.git/modules/Sub'
+        New-TestRepository (Join-Path $submodule 'nested') -Remote 'origin=https://github.com/o/nested.git' | Out-Null
         New-TestRepository (Join-Path $repos 'web/node_modules/pkg') -Remote 'origin=https://github.com/o/pkg.git' | Out-Null
         New-TestRepository (Join-Path $repos 'Real') -Remote 'origin=https://github.com/o/real.git' | Out-Null
         phx roots add $repos 6>$null
@@ -560,10 +600,74 @@ Describe 'scan' {
         Get-PhxOutput { phx scan } | Should -Match 'github.com/o/same is cloned 2 times'
     }
 
-    It 'skips a root whose folder is gone' {
+    It 'keeps the repositories of a root whose folder is gone, marked offline' {
+        # An unplugged drive must not make a backup forget what lives on it.
+        New-TestRepository (Join-Path $repos 'Away') -Remote 'origin=https://github.com/o/away.git' | Out-Null
         phx roots add $repos 6>$null
+        Get-TestScan | Out-Null
         Remove-Item -LiteralPath $repos -Recurse -Force
-        Get-PhxOutput { phx scan } | Should -Match 'folder not found - skipped'
+        $records = @(Get-TestScan)
+        $script:ScanOutput -join "`n" | Should -Match 'folder not found - kept 1 repositories from the last scan, marked offline'
+        $script:ScanOutput -join "`n" | Should -Match '1 repositories, 1 offline'
+        $records[0].identity | Should -Be 'github.com/o/away'
+        $records[0].offline | Should -BeTrue
+        $script:ScanOutput -join "`n" | Should -Not -Match 'gone:'
+    }
+
+    It "keeps a repository's last record when git cannot read it, and says so" {
+        $broken = New-TestRepository (Join-Path $repos 'Broken') -Remote 'origin=https://github.com/o/broken.git'
+        New-TestRepository (Join-Path $repos 'Fine') -Remote 'origin=https://github.com/o/fine.git' | Out-Null
+        phx roots add $repos 6>$null
+        Get-TestScan | Out-Null
+        Add-Content -LiteralPath (Join-Path $broken '.git/config') -Value '[this is not valid'
+        $records = @(Get-TestScan)
+        $script:ScanOutput -join "`n" | Should -Match 'skipped .*Broken: git config .* failed.* - kept what the last scan recorded'
+        @($records.identity | Sort-Object) | Should -Be @('github.com/o/broken', 'github.com/o/fine')
+    }
+
+    It 'does not record a repository git cannot read and never could, and scans the rest' {
+        $broken = New-TestRepository (Join-Path $repos 'Broken') -Remote 'origin=https://github.com/o/broken.git'
+        New-TestRepository (Join-Path $repos 'Fine') -Remote 'origin=https://github.com/o/fine.git' | Out-Null
+        Add-Content -LiteralPath (Join-Path $broken '.git/config') -Value '[this is not valid'
+        phx roots add $repos 6>$null
+        $records = @(Get-TestScan)
+        $script:ScanOutput -join "`n" | Should -Match 'skipped .*Broken: .* - not recorded'
+        @($records.identity) | Should -Be @('github.com/o/fine')
+    }
+
+    It 'ignores a remote without a URL instead of failing the scan' {
+        $odd = New-TestRepository (Join-Path $repos 'Odd')
+        git -C $odd config remote.pushonly.pushurl 'https://github.com/o/odd.git'
+        New-TestRepository (Join-Path $repos 'Fine') -Remote 'origin=https://github.com/o/fine.git' | Out-Null
+        phx roots add $repos 6>$null
+        $records = @(Get-TestScan)
+        ($records | Where-Object path -EQ 'Odd').identity | Should -Be 'local/Odd'
+        @($records).Count | Should -Be 2
+    }
+
+    It 'records a remote URL without the credentials in it, and says so' {
+        $token = 'ghp_' + ('a1' * 18)
+        New-TestRepository (Join-Path $repos 'Tok') -Remote "origin=https://x-access-token:$token@github.com/o/tok.git" | Out-Null
+        New-TestRepository (Join-Path $repos 'AsUser') -Remote "origin=https://$token@github.com/o/asuser.git" | Out-Null
+        phx roots add $repos 6>$null
+        $records = @(Get-TestScan)
+        ($records | Where-Object path -EQ 'Tok').remotes.origin | Should -Be 'https://x-access-token@github.com/o/tok.git'
+        ($records | Where-Object path -EQ 'AsUser').remotes.origin | Should -Be 'https://github.com/o/asuser.git'
+        $script:ScanOutput -join "`n" | Should -Match 'carries credentials in its URL - recorded without them'
+        Get-Content -LiteralPath (Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'repos.json') -Raw | Should -Not -Match $token
+        ($script:ScanOutput -join "`n") | Should -Not -Match $token
+    }
+
+    It 'shows a root added after the last scan as not scanned' {
+        New-TestRepository (Join-Path $repos 'One') -Remote 'origin=https://github.com/o/one.git' | Out-Null
+        $later = Join-Path $testHome 'Later'
+        New-Item -ItemType Directory -Path $later | Out-Null
+        phx roots add $repos 6>$null
+        Get-TestScan | Out-Null
+        phx roots add $later 6>$null
+        $output = Get-PhxOutput { phx roots list }
+        $output | Should -Match ([regex]::Escape($repos) + '\s+depth 3\s+1 repositories')
+        $output | Should -Match ([regex]::Escape($later) + '\s+depth 3\s+not scanned yet')
     }
 
     It 'keeps non-ASCII paths and URLs intact' {
