@@ -67,6 +67,12 @@ function Show-PhxStatus {
     elseif (-not [IO.Directory]::Exists($config.target.path)) { & $line 'target' "$($config.target.path) - folder not found (a disconnected drive? phx init changes it)" -Warn }
     elseif (-not (Test-PhxWritableFolder $config.target.path)) { & $line 'target' "$($config.target.path) - cannot write there (read-only, full, or no permission)" -Warn }
     else { & $line 'target' $config.target.path }
+    if ($config.target -and $config.target.path) {
+        $snapshot = Get-PhxSnapshotPath $config
+        $mine = try { Assert-PhxSnapshotWritable -Path $snapshot -Config $config; $null } catch { $_.Exception.Message }
+        if ($mine) { & $line 'machine' $mine -Warn }
+        else { & $line 'machine' "$(Get-PhxMachineName $config)   snapshot in $snapshot" }
+    }
     & $line 'interval' "$($config.interval) - the background run arrives with M2 (phx schedule)"
 
     $roots = @($config.roots | Where-Object { $_ })

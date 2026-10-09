@@ -1,9 +1,9 @@
-# phx init (docs/design.md -> Commands): the wizard that decides what to back up and where. M1 asks
-# for the roots, the GitHub account per owner, the target folder and the interval; secrets (M3), the
-# review of gitignored files (M3) and the schedule (M2) join with their milestones. Nothing is saved
-# before the last question - not the config, not the scan of the chosen roots; `q` at any prompt,
-# Ctrl+C or the end of input stops without saving. A second run starts from the current values, so
-# Enter all the way changes nothing.
+# phx init (docs/design.md -> Commands): the wizard that decides what to back up and where. It asks
+# for the roots, the GitHub account per owner, the target folder, this machine's name in it and the
+# interval; secrets (M3), the review of gitignored files (M3) and the schedule (M2) join with their
+# milestones. Nothing is saved before the last question - not the config, not the scan of the chosen
+# roots; `q` at any prompt, Ctrl+C or the end of input stops without saving. A second run starts
+# from the current values, so Enter all the way changes nothing.
 
 function Get-PhxRootCandidate {
     # Folders that commonly hold repositories; the wizard offers the ones that exist and hold any.
@@ -175,6 +175,30 @@ function Select-PhxInitTarget {
     }
 }
 
+function Select-PhxInitMachine {
+    # Step 5: this machine's folder in the target - the computer name unless chosen otherwise. A
+    # folder another installation wrote (a machine reinstalled under the same name) is not taken:
+    # its snapshot is what a restore needs.
+    param([Parameter(Mandatory)][string]$TargetPath, [System.Collections.IDictionary]$Current)
+    Write-PhxInitStep 'Machine - the name of this machine''s folder in the target' 'several machines can share one target side by side; letters, digits, dot, dash, underscore'
+    $id = if ($Current -and $Current.id) { "$($Current.id)" } else { [guid]::NewGuid().ToString() }
+    $default = if ($Current -and $Current.name) { "$($Current.name)" } else { [Environment]::MachineName }
+    while ($true) {
+        $name = Read-PhxInitAnswer -Prompt '  Machine' -Default $default
+        if (-not (Test-PhxMachineName $name)) { Write-Host '  letters, digits, dot, dash and underscore, please' -ForegroundColor Yellow; continue }
+        $folder = Join-Path $TargetPath $name
+        try { $info = Read-PhxSnapshotInfo $folder }
+        catch { Write-Host "  $($_.Exception.Message) - pick another name" -ForegroundColor Yellow; continue }
+        if ($info -and $info.machine.id -and $info.machine.id -ne $id) {
+            Write-Host "  $folder holds the snapshot of another installation (last written $(ConvertTo-PhxTimestamp $info.updatedAt)) - restore from it first (phx restore, M6), or pick another name" -ForegroundColor Yellow
+            for ($n = 2; [IO.Directory]::Exists((Join-Path $TargetPath "$name-$n")); $n++) { }
+            $default = "$name-$n"
+            continue
+        }
+        return [ordered]@{ name = $name; id = $id }
+    }
+}
+
 function Test-PhxInterval {
     # 15m to 31d: more often makes a run overlap the next; Task Scheduler repeats at most every 31 days.
     param([string]$Interval)
@@ -184,7 +208,7 @@ function Test-PhxInterval {
 }
 
 function Select-PhxInitInterval {
-    # Step 5: how often the background run goes (phx schedule, M2, turns it on).
+    # Step 6: how often the background run goes (phx schedule, M2, turns it on).
     param([string]$Current)
     Write-PhxInitStep 'Interval - how often the background run backs up' 'minutes, hours or days: 30m, 1h, 4h, 1d; phx schedule turns the run on (M2)'
     $default = if ($Current) { $Current } else { '1h' }
@@ -206,6 +230,7 @@ function Invoke-PhxInit {
         $records = @(Invoke-PhxScan -Roots $roots -NoSave -PassThru)
         $accounts = Select-PhxInitAccount -Records $records -Current $config.accounts
         $target = Select-PhxInitTarget -Current $config.target
+        $machine = Select-PhxInitMachine -TargetPath $target.path -Current $config.machine
         $interval = Select-PhxInitInterval -Current $config.interval
         Write-PhxInitStep 'Later milestones' 'secrets (an age key, M3), the review of gitignored files (M3) and the background schedule (M2) are asked here once they exist'
 
@@ -213,6 +238,7 @@ function Invoke-PhxInit {
         foreach ($root in $roots) { Write-Host "  root      $($root.path)   depth $($root.depth)" }
         foreach ($owner in $accounts.Keys) { Write-Host "  account   $owner -> $($accounts[$owner])" }
         Write-Host "  target    $($target.path)"
+        Write-Host "  machine   $($machine.name)   snapshot in $(Join-Path $target.path $machine.name)"
         Write-Host "  interval  $interval"
         if (-not (Read-PhxInitYesNo -Prompt "Save to ${configPath}?")) { throw [OperationCanceledException]::new('not confirmed') }
     }
@@ -224,6 +250,7 @@ function Invoke-PhxInit {
     $config.roots = @($roots)
     $config.accounts = $accounts
     $config.target = $target
+    $config.machine = $machine
     $config.interval = $interval
     Save-PhxConfig $config
     Save-PhxRepoCache -Roots $roots -Records $records
