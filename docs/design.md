@@ -64,6 +64,9 @@ machine from it with `phx restore`.
   [Provider contract](#provider-contract).
 - **Target**: where snapshots go. v1 is a folder; a git target follows.
 - **Snapshot**: the per-machine folder in the target, see [Snapshot layout](#snapshot-layout).
+- **Machine**: the name of this machine's folder in the target (the computer name unless `phx init`
+  is told otherwise) and the id of this installation, which `phx init` makes. The id guards the
+  folder: see [Snapshot layout](#snapshot-layout).
 - **State**: local, never backed up: hashes and timestamps that make change detection cheap.
 
 ## Provider contract
@@ -89,7 +92,7 @@ unknown keys are refused (a `Platform` typo would otherwise run the provider eve
 `Platforms` defaults to all three but may not be empty; `Cadence` is absent or a whole number of
 minutes, hours or days (`30m`, `1h`, `1d`).
 
-`$Context` carries the loaded config, the provider's staging folder in the snapshot, the state
+`$Context` carries the loaded config, the provider's staging folder (in the state folder), the state
 store, a logger, the secret writer (age) and a `DryRun` flag; on restore also the root map (an old
 root to its new path) and the repositories selected. A provider never writes outside its
 staging folder during backup, and every `Restore` is idempotent: a second run skips what exists.
@@ -227,20 +230,36 @@ organisation-private repository), not a personal account.
 
 ## Snapshot layout
 
+One folder per provider, which that provider alone fills:
+
 ```
 <target>/<machine>/
-  phoenix.json                      format version, machine, user, timestamps, per-provider summary
+  phoenix.json                      format, machine name and id, user, platform, PSPhoenix version,
+                                    created/updated, per provider when its files last changed
   config.json                       the PSPhoenix config (roots, accounts, review decisions)
-  repos.json                        the repository inventory
-  repos/<host>/<owner>/<name>/
-    files/<relative path>           gitignored files
-    files/<relative path>.age       secret-classified ones
-    wip.bundle
+  repos/repos.json                  the repository inventory
+  repo-files/<host>/<owner>/<name>/
+    <relative path>                 gitignored files
+    <relative path>.age             secret-classified ones
+  wip/<host>/<owner>/<name>.bundle  local-only work
   claude/home/                      selection from ~/.claude
   claude/projects/<repo id>/memory/ memory keyed by repository identity, not by encoded path
-  git/  pwsh/  terminal/  wsl/
-  env.json  env.secret.json.age  winget.json  scoop.json
+  git/  pwsh/  terminal/  wsl/  env/  winget/  scoop/
 ```
+
+**Publishing.** A provider writes into a staging folder of its own in the state folder - never into
+the target - and the run then publishes it into the provider's folder of the snapshot: a new or
+changed file is copied in under a temporary name and renamed into place, an identical one is left
+alone, a file the provider no longer produced is removed (a stale temporary one too), and so are the
+folders left empty. A sync client never sees half a file, and a run with nothing changed writes
+nothing - not even `phoenix.json`, which is rewritten only when something changed. Owning one folder
+each is what makes the removal safe: no provider can remove another's files.
+
+**Machine id.** `phx init` names the machine (the computer name by default) and makes an id for this
+installation; `phoenix.json` carries both. A run refuses to write into a folder whose `phoenix.json`
+names another id - a machine reinstalled under the same name must not overwrite the snapshot it is
+about to be restored from - and into one of a newer format. `phx init` does not offer such a folder,
+and `phx status` warns about it. A restore (M6) takes over the old id.
 
 Claude Code names a project's folder after its path (`C:\Repos\Org\App` becomes
 `C--Repos-Org-App`), and that encoding loses information (a `-` in a name is indistinguishable from
@@ -288,8 +307,8 @@ macOS and Linux (later): a launchd agent with `StartInterval`, a systemd `--user
 ## Commands
 
 ```
-phx init                          wizard: roots, discovery, accounts, target, interval, secrets,
-                                  review of gitignored candidates, schedule on
+phx init                          wizard: roots, discovery, accounts, target, machine, interval,
+                                  secrets, review of gitignored candidates, schedule on
 phx run [-Provider <name>]        one backup run now (what the scheduled task calls)
 phx status                        last run, changes, pending review items, local-only work, warnings
 phx review                        decide on pending gitignored candidates
@@ -313,8 +332,9 @@ repositories (`~/source/repos`, `C:\Repos`, `~/src`, ...) with their repository 
 owner on a host `gh` is logged in to, which account its repositories use - defaulting to the account
 set before (kept, with a warning, when `gh` is not logged in with it), else what their credential
 helpers say, else the active account; suggests the OneDrive for Business folder as target, with a
-note on where company data belongs when another folder is chosen; takes an interval from 15 minutes
-to 31 days (Task Scheduler's longest repetition). Each later milestone adds its step.
+note on where company data belongs when another folder is chosen; names the machine (the computer
+name, not a folder another installation wrote); takes an interval from 15 minutes to 31 days (Task
+Scheduler's longest repetition). Each later milestone adds its step.
 
 ## Restore sequence
 
@@ -344,6 +364,7 @@ itself is part of every snapshot.
   "version": 1,
   "roots": [ { "path": "C:\\Repos", "depth": 3 } ],
   "target": { "type": "folder", "path": "C:\\Users\\me\\OneDrive - Company\\PSPhoenix" },
+  "machine": { "name": "WOUTER-LT", "id": "6f0e8c1a-..." },
   "interval": "1h",
   "providers": { "winget": { "enabled": true, "cadence": "1d" } },
   "accounts": { "github.com/WizX20": "WizX20", "github.com/summitnl": "wpaap" },

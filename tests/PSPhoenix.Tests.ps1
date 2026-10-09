@@ -312,7 +312,7 @@ Describe 'config' {
         $config.interval | Should -Be '1h'
         $config.providers.winget.enabled | Should -BeFalse
         # The defaults' spelling and order survive: a save writes 'version', never 'Version'.
-        @($config.Keys) | Should -Be @('version', 'roots', 'target', 'interval', 'providers', 'accounts', 'secrets', 'files')
+        @($config.Keys) | Should -Be @('version', 'roots', 'target', 'machine', 'interval', 'providers', 'accounts', 'secrets', 'files')
     }
 
     It 'gives a hand-written root without a depth the default, and drops an empty entry' {
@@ -1393,9 +1393,9 @@ Describe 'init' {
         }
     }
 
-    It 'sets up roots, accounts, target and interval from the defaults and a few answers' {
-        # roots, WizX20 account, summitnl account, target, create it?, interval (bad, good), save?
-        Set-TestAnswer '' '' '' '' '' 'soon' '2h' ''
+    It 'sets up roots, accounts, target, machine and interval from the defaults and a few answers' {
+        # roots, WizX20 account, summitnl account, target, create it?, machine, interval (bad, good), save?
+        Set-TestAnswer '' '' '' '' '' '' 'soon' '2h' ''
         $output = Get-PhxOutput { phx init }
         $script:Answers.Count | Should -Be 0
         $config = InModuleScope PSPhoenix { Read-PhxConfig }
@@ -1408,6 +1408,9 @@ Describe 'init' {
         $config.target.path | Should -Be (Join-Path $script:InitOneDrive 'PSPhoenix')
         Test-Path -LiteralPath $config.target.path | Should -BeTrue
         $config.interval | Should -Be '2h'
+        $config.machine.name | Should -Be ([Environment]::MachineName)
+        [guid]::Parse($config.machine.id) | Should -Not -BeNullOrEmpty
+        $output | Should -Match ('machine\s+' + [regex]::Escape([Environment]::MachineName) + '\s+snapshot in')
         $output | Should -Match '1\. .*Work\s+3 repositories'
         $output | Should -Not -Match 'NoRepos'
         $output | Should -Match 'like 30m, 1h or 1d'
@@ -1421,11 +1424,11 @@ Describe 'init' {
     }
 
     It 'changes nothing when run again with Enter all the way' {
-        Set-TestAnswer '' '' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' '' '' ''
         phx init 6>$null
         $before = Read-TestConfig
-        # roots, two accounts, target (exists now), interval, save?
-        Set-TestAnswer '' '' '' '' '' ''
+        # roots, two accounts, target (exists now), machine, interval, save?
+        Set-TestAnswer '' '' '' '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match '\(current\)'
         $script:Answers.Count | Should -Be 0
         Read-TestConfig | Should -Be $before
@@ -1437,8 +1440,9 @@ Describe 'init' {
         @{ Question = 'second account'; At = 2 }
         @{ Question = 'target'; At = 3 }
         @{ Question = 'create-the-target'; At = 4 }
-        @{ Question = 'interval'; At = 5 }
-        @{ Question = 'save'; At = 6 }
+        @{ Question = 'machine'; At = 5 }
+        @{ Question = 'interval'; At = 6 }
+        @{ Question = 'save'; At = 7 }
     ) {
         $answers = @(@('') * $At) + 'q'
         Set-TestAnswer @answers
@@ -1450,7 +1454,7 @@ Describe 'init' {
     }
 
     It 'leaves the last scan alone when stopped after scanning other roots' {
-        Set-TestAnswer '' '' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' '' '' ''
         phx init 6>$null
         $cachePath = InModuleScope PSPhoenix { Get-PhxRepoCachePath }
         $before = Get-Content -LiteralPath $cachePath -Raw
@@ -1461,14 +1465,14 @@ Describe 'init' {
     }
 
     It 'saves nothing when the last answer is no' {
-        Set-TestAnswer '' '' '' '' '' '' 'n'
+        Set-TestAnswer '' '' '' '' '' '' '' 'n'
         Get-PhxOutput { phx init } | Should -Match 'not confirmed - nothing saved'
         Test-Path -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) | Should -BeFalse
     }
 
     It 'asks again for roots it cannot use, and takes a typed path' {
         $nope = Join-Path $testHome 'nope'
-        Set-TestAnswer '7' $nope '1,1' $script:InitOther '' '' '' ''
+        Set-TestAnswer '7' $nope '1,1' $script:InitOther '' '' '' '' ''
         $output = Get-PhxOutput { phx init }
         $output | Should -Match 'there is no number 7 in the list'
         $output | Should -Match ([regex]::Escape("no such folder: $nope"))
@@ -1478,20 +1482,20 @@ Describe 'init' {
 
     It 'asks again for an account gh does not have, and stores its exact spelling' {
         # WizX20's owner first (two repositories): a login gh lacks, then Enter; summitnl: typed in lower case.
-        Set-TestAnswer '1' 'nobody' '' 'wizx20' '' '' '' ''
+        Set-TestAnswer '1' 'nobody' '' 'wizx20' '' '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'one of: wpaap, WizX20'
         $script:Answers.Count | Should -Be 0
         (InModuleScope PSPhoenix { Read-PhxConfig }).accounts['github.com/summitnl'] | Should -BeExactly 'WizX20'
     }
 
     It 'keeps an account that is set when gh is not logged in with it' {
-        Set-TestAnswer '' '' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' '' '' ''
         phx init 6>$null
         $before = Read-TestConfig
         # gh now knows only WizX20: summitnl's wpaap stays the default, and Enter keeps it.
         Mock Get-PhxGhAccount -ModuleName PSPhoenix { [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $true } }
-        # roots, summitnl account (asked: its account is not logged in), target, interval, save?
-        Set-TestAnswer '' '' '' '' ''
+        # roots, summitnl account (asked: its account is not logged in), target, machine, interval, save?
+        Set-TestAnswer '' '' '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'github.com/summitnl uses wpaap, but gh is not logged in as wpaap'
         $script:Answers.Count | Should -Be 0
         Read-TestConfig | Should -Be $before
@@ -1499,14 +1503,14 @@ Describe 'init' {
 
     It 'skips the accounts when gh is not logged in' {
         Mock Get-PhxGhAccount -ModuleName PSPhoenix { }
-        Set-TestAnswer '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'gh is not logged in'
         (InModuleScope PSPhoenix { Read-PhxConfig }).accounts.Count | Should -Be 0
     }
 
     It 'asks again for a target number that is not in the list' {
-        # roots, two accounts, target (5, a number too big for an int, Enter), create it?, interval, save?
-        Set-TestAnswer '' '' '' '5' '99999999999' '' '' '' ''
+        # roots, two accounts, target (5, a number too big for an int, Enter), create it?, machine, interval, save?
+        Set-TestAnswer '' '' '' '5' '99999999999' '' '' '' '' ''
         $output = Get-PhxOutput { phx init }
         $output | Should -Match 'there is no number 5 in the list'
         $output | Should -Match 'there is no number 99999999999 in the list'
@@ -1515,8 +1519,8 @@ Describe 'init' {
     }
 
     It 'takes an interval from 15m to 31d' {
-        # roots, two accounts, target, create it?, interval (three refused), save?
-        Set-TestAnswer '' '' '' '' '' '14m' '99999999999m' '32d' '31d' ''
+        # roots, two accounts, target, create it?, machine, interval (three refused), save?
+        Set-TestAnswer '' '' '' '' '' '' '14m' '99999999999m' '32d' '31d' ''
         $output = Get-PhxOutput { phx init }
         [regex]::Matches($output, 'from 15m to 31d').Count | Should -Be 3
         (InModuleScope PSPhoenix { Read-PhxConfig }).interval | Should -Be '31d'
@@ -1526,10 +1530,31 @@ Describe 'init' {
         }
     }
 
+    It 'asks again for a machine name that is no folder name, and stores the typed one' {
+        # roots, two accounts, target, create it?, machine (bad, good), interval, save?
+        Set-TestAnswer '' '' '' '' '' 'my laptop' 'Laptop-2026' '' ''
+        Get-PhxOutput { phx init } | Should -Match 'letters, digits, dot, dash and underscore, please'
+        $script:Answers.Count | Should -Be 0
+        (InModuleScope PSPhoenix { Read-PhxConfig }).machine.name | Should -Be 'Laptop-2026'
+    }
+
+    It 'does not take the folder of another installation of this machine' {
+        # A reinstalled machine with the same name: its old snapshot is what a restore needs.
+        $other = Join-Path (Join-Path $script:InitOneDrive 'PSPhoenix') 'Box'
+        New-Item -ItemType Directory -Force -Path $other | Out-Null
+        Set-Content -LiteralPath (Join-Path $other 'phoenix.json') -Value '{ "format": 1, "machine": { "name": "Box", "id": "11111111-1111-1111-1111-111111111111" }, "updatedAt": "2026-10-01T08:00:00Z" }'
+        # roots, two accounts, target, machine (taken, then the suggested free one), interval, save?
+        Set-TestAnswer '' '' '' '' 'Box' '' '' ''
+        $output = Get-PhxOutput { phx init }
+        $output | Should -Match 'Box holds the snapshot of another installation'
+        $script:Answers.Count | Should -Be 0
+        (InModuleScope PSPhoenix { Read-PhxConfig }).machine.name | Should -Be 'Box-2'
+    }
+
     It 'takes a typed target folder, and says where company data belongs' {
         $usb = Join-Path $testHome 'USB'
         New-Item -ItemType Directory -Path $usb | Out-Null
-        Set-TestAnswer '' '' '' $usb '' ''
+        Set-TestAnswer '' '' '' $usb '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'company storage'
         (InModuleScope PSPhoenix { Read-PhxConfig }).target.path | Should -Be $usb
     }
@@ -1652,6 +1677,18 @@ Describe 'status' {
         }
     }
 
+    It 'names the snapshot folder, and warns when another installation wrote it' {
+        Set-TestConfig
+        phx scan 6>$null
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.machine = [ordered]@{ name = 'Box'; id = 'mine' }; Save-PhxConfig $c }
+        Get-PhxOutput { phx status } | Should -Match ('machine\s+Box\s+snapshot in ' + [regex]::Escape((Join-Path $target 'Box')))
+        New-Item -ItemType Directory -Path (Join-Path $target 'Box') | Out-Null
+        Set-Content -LiteralPath (Join-Path $target 'Box/phoenix.json') -Value '{ "format": 1, "machine": { "id": "theirs" } }'
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match 'holds the snapshot of another installation'
+        $output | Should -Match '1 thing\(s\) need attention'
+    }
+
     It 'warns about a target it cannot write to' {
         Set-TestConfig
         phx scan 6>$null
@@ -1722,6 +1759,131 @@ Describe 'init without a console' {
         Test-Path -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) | Should -BeFalse
     }
 
+}
+
+Describe 'snapshot' {
+    BeforeEach {
+        $testHome = Use-TestHome
+        $script:Target = Join-Path $testHome 'Target'
+        function Set-TestMachine {
+            # A config whose target is $script:Target, as machine $Name with id $Id.
+            param([string]$Name, [string]$Id)
+            InModuleScope PSPhoenix -Parameters @{ Target = $script:Target; Name = $Name; Id = $Id } {
+                param($Target, $Name, $Id)
+                $c = Read-PhxConfig
+                $c.target = [ordered]@{ type = 'folder'; path = $Target }
+                $c.machine = [ordered]@{ name = $Name; id = $Id }
+                Save-PhxConfig $c
+            }
+        }
+        function Set-TestStaged {
+            # The staged files of a provider: relative path -> content; an empty value removes it.
+            param([string]$Provider, [hashtable]$Files)
+            $staging = InModuleScope PSPhoenix -Parameters @{ Provider = $Provider } { param($Provider) Get-PhxStagingPath $Provider }
+            foreach ($relative in $Files.Keys) {
+                $path = Join-Path $staging $relative
+                if ($Files[$relative]) {
+                    New-Item -ItemType Directory -Force -Path (Split-Path $path) | Out-Null
+                    [IO.File]::WriteAllText($path, $Files[$relative])
+                }
+                elseif (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path }
+            }
+        }
+        function Invoke-TestPublish {
+            param([string[]]$Provider)
+            InModuleScope PSPhoenix -Parameters @{ Provider = $Provider } { param($Provider) Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider $Provider }
+        }
+    }
+
+    It 'publishes each provider into its own folder, with phoenix.json and the config' {
+        Set-TestMachine 'Box' 'id-1'
+        Set-TestStaged repos @{ 'repos.json' = '{ "format": 1 }' }
+        Set-TestStaged wip @{ 'github.com/o/r.bundle' = 'bundle' }
+        $results = Invoke-TestPublish repos, wip
+        $results['repos'].Written | Should -Be 1
+        $snapshot = Join-Path $script:Target 'Box'
+        Get-Content -LiteralPath (Join-Path $snapshot 'repos/repos.json') -Raw | Should -Be '{ "format": 1 }'
+        Test-Path -LiteralPath (Join-Path $snapshot 'wip/github.com/o/r.bundle') | Should -BeTrue
+        $info = Get-Content -LiteralPath (Join-Path $snapshot 'phoenix.json') -Raw | ConvertFrom-Json -AsHashtable
+        $info.format | Should -Be 1
+        $info.machine.name | Should -Be 'Box'
+        $info.machine.id | Should -Be 'id-1'
+        @($info.providers.Keys) | Should -Be @('repos', 'wip')
+        $info.providers.repos.files | Should -Be 1
+        (Get-Content -LiteralPath (Join-Path $snapshot 'config.json') -Raw | ConvertFrom-Json -AsHashtable).machine.name | Should -Be 'Box'
+    }
+
+    It 'writes nothing when nothing changed' {
+        Set-TestMachine 'Box' 'id-1'
+        Set-TestStaged repos @{ 'repos.json' = 'one'; 'sub/extra.txt' = 'two' }
+        Invoke-TestPublish repos | Out-Null
+        $snapshot = Join-Path $script:Target 'Box'
+        $before = @(Get-ChildItem -LiteralPath $snapshot -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.LastWriteTimeUtc.Ticks)" })
+        Start-Sleep -Milliseconds 50
+        $results = Invoke-TestPublish repos
+        $results['repos'].Written | Should -Be 0
+        $results['repos'].Unchanged | Should -Be 2
+        @(Get-ChildItem -LiteralPath $snapshot -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.LastWriteTimeUtc.Ticks)" }) | Should -Be $before
+    }
+
+    It 'writes a changed file, removes one no longer staged, and the folders left empty' {
+        Set-TestMachine 'Box' 'id-1'
+        Set-TestStaged repos @{ 'repos.json' = 'one'; 'deep/er/old.txt' = 'old' }
+        Invoke-TestPublish repos | Out-Null
+        Set-TestStaged repos @{ 'repos.json' = 'changed'; 'deep/er/old.txt' = '' }
+        # A temporary file a crashed run left behind goes too.
+        $stale = Join-Path $script:Target 'Box/repos/.repos.json.dead.tmp'
+        Set-Content -LiteralPath $stale -Value 'half'
+        $result = (Invoke-TestPublish repos)['repos']
+        $result.Written | Should -Be 1
+        $result.Removed | Should -Be 2
+        Get-Content -LiteralPath (Join-Path $script:Target 'Box/repos/repos.json') -Raw | Should -Be 'changed'
+        Test-Path -LiteralPath (Join-Path $script:Target 'Box/repos/deep') | Should -BeFalse
+        Test-Path -LiteralPath $stale | Should -BeFalse
+        $info = Get-Content -LiteralPath (Join-Path $script:Target 'Box/phoenix.json') -Raw | ConvertFrom-Json -AsHashtable
+        $info.providers.repos.files | Should -Be 1
+    }
+
+    It 'keeps two machines side by side in one target' {
+        Set-TestMachine 'Desk' 'id-desk'
+        Set-TestStaged repos @{ 'repos.json' = 'desk' }
+        Invoke-TestPublish repos | Out-Null
+        Use-TestHome | Out-Null
+        Set-TestMachine 'Laptop' 'id-laptop'
+        Set-TestStaged repos @{ 'repos.json' = 'laptop' }
+        Invoke-TestPublish repos | Out-Null
+        Get-Content -LiteralPath (Join-Path $script:Target 'Desk/repos/repos.json') -Raw | Should -Be 'desk'
+        Get-Content -LiteralPath (Join-Path $script:Target 'Laptop/repos/repos.json') -Raw | Should -Be 'laptop'
+    }
+
+    It 'refuses the folder of another installation, and one of a newer PSPhoenix' {
+        Set-TestMachine 'Box' 'id-old'
+        Set-TestStaged repos @{ 'repos.json' = 'the old one' }
+        Invoke-TestPublish repos | Out-Null
+        # Reinstalled under the same name: a new installation, a new id.
+        Use-TestHome | Out-Null
+        Set-TestMachine 'Box' 'id-new'
+        Set-TestStaged repos @{ 'repos.json' = 'empty new machine' }
+        { Invoke-TestPublish repos } | Should -Throw '*holds the snapshot of another installation*'
+        Get-Content -LiteralPath (Join-Path $script:Target 'Box/repos/repos.json') -Raw | Should -Be 'the old one'
+
+        Set-TestMachine 'Next' 'id-new'
+        New-Item -ItemType Directory -Path (Join-Path $script:Target 'Next') | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:Target 'Next/phoenix.json') -Value '{ "format": 99 }'
+        { Invoke-TestPublish repos } | Should -Throw '*written by a newer PSPhoenix*'
+    }
+
+    It 'needs a machine id' {
+        Set-TestMachine 'Box' ''
+        { Invoke-TestPublish repos } | Should -Throw '*no id yet - run phx init*'
+    }
+
+    It 'accepts only folder-safe machine names' {
+        InModuleScope PSPhoenix {
+            foreach ($good in 'Box', 'WOUTER-LT', 'box.home', 'a_b') { Test-PhxMachineName $good | Should -BeTrue -Because $good }
+            foreach ($bad in '', 'my laptop', '../x', 'a/b', 'trailing.', '-x', ('x' * 64)) { Test-PhxMachineName $bad | Should -BeFalse -Because $bad }
+        }
+    }
 }
 
 Describe 'prompts' {

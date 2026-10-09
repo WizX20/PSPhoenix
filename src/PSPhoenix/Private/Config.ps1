@@ -8,6 +8,9 @@ function New-PhxDefaultConfig {
         version   = $script:PhxConfigVersion
         roots     = @()
         target    = $null
+        # This machine's folder in the target (the computer name when empty), and the id of this
+        # installation, which phx init makes: see Snapshot.ps1.
+        machine   = [ordered]@{ name = $null; id = $null }
         interval  = '1h'
         providers = [ordered]@{}
         accounts  = [ordered]@{}
