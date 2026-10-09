@@ -276,16 +276,30 @@ function Get-PhxRepoKey {
     Get-PhxRepoPath -Root $Record.root -RelativePath $Record.path
 }
 
+function Save-PhxRepoCache {
+    # Writes what a scan found: the roots it walked and their repositories.
+    param([object[]]$Roots = @(), [object[]]$Records = @())
+    $cache = [ordered]@{
+        version      = $script:PhxRepoCacheVersion
+        scannedAt    = [DateTime]::UtcNow.ToString('o')
+        roots        = @($Roots)
+        repositories = @($Records)
+    }
+    Write-PhxTextFile -Path (Get-PhxRepoCachePath) -Value ($cache | ConvertTo-Json -Depth 10)
+}
+
 function Invoke-PhxScan {
     # Discovers the repositories under every root, saves the cache and says what changed since the
-    # last scan. -PassThru also returns the records.
+    # last scan. -Roots scans those instead of the configured ones, and -NoSave leaves the cache as
+    # it is: the wizard scans the roots it is offered and saves them only with the config.
+    # -PassThru also returns the records.
     #
     # Nothing a scan cannot see is dropped: a root whose folder is gone (an unplugged drive, a
     # disconnected share) keeps the repositories the last scan found there, marked offline; a
     # repository git cannot read keeps its last record. A backup must not lose them because a drive
     # was out for an hour.
-    param([switch]$PassThru)
-    $roots = Get-PhxRoot
+    param([object[]]$Roots, [switch]$NoSave, [switch]$PassThru)
+    $roots = if ($PSBoundParameters.ContainsKey('Roots')) { @($Roots) } else { Get-PhxRoot }
     if (-not $roots) { throw 'no roots yet - add the folders that hold your repositories: phx roots add <path>' }
     $previous = Read-PhxRepoCache
     $before = [ordered]@{}
@@ -310,13 +324,7 @@ function Invoke-PhxScan {
         foreach ($record in $found) { $records.Add($record) }
         Write-Host ('  {0,-48} {1,4} repositories' -f $root.path, $found.Count)
     }
-    $cache = [ordered]@{
-        version      = $script:PhxRepoCacheVersion
-        scannedAt    = [DateTime]::UtcNow.ToString('o')
-        roots        = @($roots)
-        repositories = @($records)
-    }
-    Write-PhxTextFile -Path (Get-PhxRepoCachePath) -Value ($cache | ConvertTo-Json -Depth 10)
+    if (-not $NoSave) { Save-PhxRepoCache -Roots $roots -Records $records }
 
     Write-Host (Format-PhxRepoCount $records) -ForegroundColor Green
     if ($previous) {

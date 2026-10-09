@@ -24,6 +24,8 @@ BeforeAll {
         $env:LOCALAPPDATA = Join-Path $root 'Local'
         $env:XDG_CONFIG_HOME = Join-Path $root 'config'
         $env:XDG_STATE_HOME = Join-Path $root 'state'
+        # No OneDrive either: phx init would offer the real one.
+        $env:OneDriveCommercial = $env:OneDriveConsumer = $env:OneDrive = $null
         $root
     }
 
@@ -41,8 +43,8 @@ BeforeAll {
     }
 
     $script:SavedEnv = @{}
-    foreach ($name in 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'GH_TOKEN', 'GH_ENTERPRISE_TOKEN',
-        'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0') {
+    foreach ($name in 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'OneDriveCommercial', 'OneDriveConsumer', 'OneDrive',
+        'GH_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0') {
         $script:SavedEnv[$name] = [Environment]::GetEnvironmentVariable($name)
     }
     # git without the developer's global and system config: a global commit.gpgsign, hooksPath or
@@ -122,7 +124,7 @@ Describe 'module surface' {
     }
 
     It 'fails a command that is not built yet, naming its milestone' {
-        { phx init -ErrorAction Stop } | Should -Throw '*not built yet*M1*'
+        { phx schedule -ErrorAction Stop } | Should -Throw '*not built yet*M2*'
         { phx restore -ErrorAction Stop } | Should -Throw '*not built yet*M6*'
         phx run -ErrorAction SilentlyContinue
         $? | Should -BeFalse
@@ -365,6 +367,11 @@ Describe 'roots' {
     It 'treats the same path in another case as the same root on Windows' -Skip:(-not $IsWindows) {
         phx roots add $repos 6>$null
         { phx roots add $repos.ToUpperInvariant() -ErrorAction Stop 6>$null } | Should -Throw '*is a root already*'
+    }
+
+    It 'stores a path typed in another case as the folder spells it, on Windows' -Skip:(-not $IsWindows) {
+        phx roots add $repos.ToLowerInvariant() 6>$null
+        @(InModuleScope PSPhoenix { Get-PhxRoot })[0].path | Should -BeExactly $repos
     }
 
     It 'does not take a sibling with a longer name for a root inside it' {
@@ -1121,6 +1128,196 @@ Describe 'repos provider' {
         $lines[0] | Should -Be '4 repositories, 1 without a remote'
         $lines | Should -Contain '  WizX20: 1'
         $lines | Should -Contain '  (host default): 1'
+    }
+}
+
+Describe 'init' {
+    BeforeAll {
+        function script:Set-TestAnswer {
+            # The answers the next phx init gets, in order; '' is Enter (the default).
+            foreach ($answer in $args) { $script:Answers.Enqueue([string]$answer) }
+        }
+        function script:Read-TestConfig { Get-Content -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) -Raw }
+    }
+
+    BeforeEach {
+        $testHome = Use-TestHome
+        $script:InitWork = Join-Path $testHome 'Work'
+        $script:InitOther = Join-Path $testHome 'Other'
+        New-TestRepository (Join-Path $script:InitWork 'Personal') -Remote 'origin=https://github.com/WizX20/personal.git' | Out-Null
+        $helped = New-TestRepository (Join-Path $script:InitWork 'Helped') -Remote 'origin=https://github.com/WizX20/helped.git'
+        git -C $helped config --add credential.https://github.com.helper ''
+        git -C $helped config --add credential.https://github.com.helper '!f() { gh auth token --user WizX20; }; f'
+        New-TestRepository (Join-Path $script:InitWork 'Company') -Remote 'origin=https://github.com/summitnl/app.git' | Out-Null
+        New-TestRepository (Join-Path $script:InitOther 'Lab') -Remote 'origin=https://dev.azure.com/org/proj/_git/lab' | Out-Null
+        $script:InitEmpty = Join-Path $testHome 'NoRepos'
+        New-Item -ItemType Directory -Path $script:InitEmpty | Out-Null
+        $script:InitOneDrive = Join-Path $testHome 'OneDrive - Company'
+        New-Item -ItemType Directory -Path $script:InitOneDrive | Out-Null
+        $env:OneDriveCommercial = $script:InitOneDrive
+
+        $script:Answers = [Collections.Generic.Queue[string]]::new()
+        $script:Prompts = [Collections.Generic.List[string]]::new()
+        Mock Read-PhxAnswer -ModuleName PSPhoenix {
+            $script:Prompts.Add($Prompt)
+            $next = $script:Answers.Dequeue()
+            if ($next) { $next } else { $Default }
+        }
+        Mock Get-PhxRootCandidate -ModuleName PSPhoenix { $script:InitWork; $script:InitOther; $script:InitEmpty; (Join-Path $script:InitEmpty 'Missing') }
+        Mock Get-PhxGhAccount -ModuleName PSPhoenix {
+            [pscustomobject]@{ Host = 'github.com'; Login = 'wpaap'; Active = $true }
+            [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $false }
+        }
+    }
+
+    It 'sets up roots, accounts, target and interval from the defaults and a few answers' {
+        # roots, WizX20 account, summitnl account, target, create it?, interval (bad, good), save?
+        Set-TestAnswer '' '' '' '' '' 'soon' '2h' ''
+        $output = Get-PhxOutput { phx init }
+        $script:Answers.Count | Should -Be 0
+        $config = InModuleScope PSPhoenix { Read-PhxConfig }
+        @($config.roots.path) | Should -Be @($script:InitWork, $script:InitOther)
+        @($config.roots.depth) | Should -Be @(3, 3)
+        $config.accounts['github.com/WizX20'] | Should -Be 'WizX20'      # from its credential helper
+        $config.accounts['github.com/summitnl'] | Should -Be 'wpaap'    # the active account
+        $config.accounts.Contains('dev.azure.com/org') | Should -BeFalse # not a gh host
+        $config.target.type | Should -Be 'folder'
+        $config.target.path | Should -Be (Join-Path $script:InitOneDrive 'PSPhoenix')
+        Test-Path -LiteralPath $config.target.path | Should -BeTrue
+        $config.interval | Should -Be '2h'
+        $output | Should -Match '1\. .*Work\s+3 repositories'
+        $output | Should -Not -Match 'NoRepos'
+        $output | Should -Match 'like 30m, 1h or 1d'
+        $output | Should -Not -Match 'company storage'
+        $output | Should -Match 'saved .*next: phx status'
+        $script:Prompts[-1] | Should -BeExactly "Save to $(InModuleScope PSPhoenix { Get-PhxConfigPath })? (Y/n)"
+        # The scan of the chosen roots is saved with the config.
+        $cache = InModuleScope PSPhoenix { Read-PhxRepoCache }
+        @($cache.roots.path) | Should -Be @($script:InitWork, $script:InitOther)
+        @($cache.repositories).Count | Should -Be 4
+    }
+
+    It 'changes nothing when run again with Enter all the way' {
+        Set-TestAnswer '' '' '' '' '' '' ''
+        phx init 6>$null
+        $before = Read-TestConfig
+        # roots, two accounts, target (exists now), interval, save?
+        Set-TestAnswer '' '' '' '' '' ''
+        Get-PhxOutput { phx init } | Should -Match '\(current\)'
+        $script:Answers.Count | Should -Be 0
+        Read-TestConfig | Should -Be $before
+    }
+
+    It 'stops without saving on q, at any question' {
+        Set-TestAnswer '' 'q'
+        Get-PhxOutput { phx init } | Should -Match 'stopped - nothing saved'
+        $? | Should -BeTrue
+        Test-Path -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) | Should -BeFalse
+        Test-Path -LiteralPath (InModuleScope PSPhoenix { Get-PhxRepoCachePath }) | Should -BeFalse
+    }
+
+    It 'leaves the last scan alone when stopped after scanning other roots' {
+        Set-TestAnswer '' '' '' '' '' '' ''
+        phx init 6>$null
+        $cachePath = InModuleScope PSPhoenix { Get-PhxRepoCachePath }
+        $before = Get-Content -LiteralPath $cachePath -Raw
+        # Other holds only an Azure DevOps repository: no account questions, so q answers the target.
+        Set-TestAnswer $script:InitOther 'q'
+        Get-PhxOutput { phx init } | Should -Match 'Other\s+1 repositories'
+        Get-Content -LiteralPath $cachePath -Raw | Should -Be $before
+    }
+
+    It 'saves nothing when the last answer is no' {
+        Set-TestAnswer '' '' '' '' '' '' 'n'
+        Get-PhxOutput { phx init } | Should -Match 'not confirmed - nothing saved'
+        Test-Path -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) | Should -BeFalse
+    }
+
+    It 'asks again for roots it cannot use, and takes a typed path' {
+        $nope = Join-Path $testHome 'nope'
+        Set-TestAnswer '7' $nope '1,1' $script:InitOther '' '' '' ''
+        $output = Get-PhxOutput { phx init }
+        $output | Should -Match 'there is no number 7 in the list'
+        $output | Should -Match ([regex]::Escape("no such folder: $nope"))
+        $output | Should -Match 'is a root already'
+        @((InModuleScope PSPhoenix { Read-PhxConfig }).roots.path) | Should -Be @($script:InitOther)
+    }
+
+    It 'asks again for an account gh does not have, and stores its exact spelling' {
+        # WizX20's owner first (two repositories): a login gh lacks, then Enter; summitnl: typed in lower case.
+        Set-TestAnswer '1' 'nobody' '' 'wizx20' '' '' '' ''
+        Get-PhxOutput { phx init } | Should -Match 'one of: wpaap, WizX20'
+        $script:Answers.Count | Should -Be 0
+        (InModuleScope PSPhoenix { Read-PhxConfig }).accounts['github.com/summitnl'] | Should -BeExactly 'WizX20'
+    }
+
+    It 'skips the accounts when gh is not logged in' {
+        Mock Get-PhxGhAccount -ModuleName PSPhoenix { }
+        Set-TestAnswer '' '' '' '' ''
+        Get-PhxOutput { phx init } | Should -Match 'gh is not logged in'
+        (InModuleScope PSPhoenix { Read-PhxConfig }).accounts.Count | Should -Be 0
+    }
+
+    It 'asks again for a target number that is not in the list' {
+        # roots, two accounts, target (5, a number too big for an int, Enter), create it?, interval, save?
+        Set-TestAnswer '' '' '' '5' '99999999999' '' '' '' ''
+        $output = Get-PhxOutput { phx init }
+        $output | Should -Match 'there is no number 5 in the list'
+        $output | Should -Match 'there is no number 99999999999 in the list'
+        $script:Answers.Count | Should -Be 0
+        (InModuleScope PSPhoenix { Read-PhxConfig }).target.path | Should -Be (Join-Path $script:InitOneDrive 'PSPhoenix')
+    }
+
+    It 'takes an interval from 15m to 31d' {
+        # roots, two accounts, target, create it?, interval (three refused), save?
+        Set-TestAnswer '' '' '' '' '' '14m' '99999999999m' '32d' '31d' ''
+        $output = Get-PhxOutput { phx init }
+        [regex]::Matches($output, 'from 15m to 31d').Count | Should -Be 3
+        (InModuleScope PSPhoenix { Read-PhxConfig }).interval | Should -Be '31d'
+        InModuleScope PSPhoenix {
+            foreach ($good in '15m', '1h', '1d', '44640m', '744h') { Test-PhxInterval $good | Should -BeTrue -Because $good }
+            foreach ($bad in '', '14m', '0h', '1w', '32d', '1.5h', '99999999999m', ' 1h') { Test-PhxInterval $bad | Should -BeFalse -Because $bad }
+        }
+    }
+
+    It 'takes a typed target folder, and says where company data belongs' {
+        $usb = Join-Path $testHome 'USB'
+        New-Item -ItemType Directory -Path $usb | Out-Null
+        Set-TestAnswer '' '' '' $usb '' ''
+        Get-PhxOutput { phx init } | Should -Match 'company storage'
+        (InModuleScope PSPhoenix { Read-PhxConfig }).target.path | Should -Be $usb
+    }
+}
+
+Describe 'init without a console' {
+    BeforeEach {
+        Use-TestHome | Out-Null
+        Mock Get-PhxRootCandidate -ModuleName PSPhoenix { }
+        Mock Get-PhxGhAccount -ModuleName PSPhoenix { }
+    }
+
+    It 'stops at the end of input instead of asking again or taking every default' {
+        # Read-Host gives nothing at all once redirected input has run out.
+        Mock Read-Host -ModuleName PSPhoenix { }
+        Get-PhxOutput { phx init } | Should -Match 'input ended - nothing saved'
+        Should -Invoke Read-Host -ModuleName PSPhoenix -Times 1 -Exactly
+        Test-Path -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) | Should -BeFalse
+    }
+
+}
+
+Describe 'prompts' {
+    It 'reads an answer with its default, and refuses a console without input' {
+        InModuleScope PSPhoenix {
+            Mock Read-Host { '  typed  ' }
+            Read-PhxAnswer -Prompt 'Q' -Default 'd' | Should -Be 'typed'
+            Mock Read-Host { '' }
+            Read-PhxAnswer -Prompt 'Q' -Default 'd' | Should -Be 'd'
+            Mock Read-Host { }
+            { Read-PhxAnswer -Prompt 'Q' -Default 'd' } | Should -Throw -ExceptionType ([OperationCanceledException])
+            Mock Read-Host { throw [System.Management.Automation.PSInvalidOperationException]::new('NonInteractive mode') }
+            { Read-PhxAnswer -Prompt 'Q' } | Should -Throw '*interactive console*'
+        }
     }
 }
 
