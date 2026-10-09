@@ -1,0 +1,2 @@
+- security: repos - a credential setting is not recorded when its user name is a token (an Azure DevOps PAT) or the URL it is scoped to carries credentials, and GitLab, Slack and AWS tokens are recognised next to GitHub's; log lines mask any token with a known prefix
+- security: repos - restore refuses a repository path from the inventory that is absolute or leads out of its root

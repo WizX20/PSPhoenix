@@ -91,8 +91,9 @@ function Backup-PhxRepos {
 
 function Invoke-PhxClone {
     # git clone. When the repository has an account and its remote is https on a host gh is logged
-    # in to, the clone gets that account's token for this one process - GH_TOKEN for github.com,
-    # GH_ENTERPRISE_TOKEN for a GitHub Enterprise host - plus gh's own credential helper, every other
+    # in to, the clone gets that account's token for this one process - GH_TOKEN for github.com and
+    # *.ghe.com, GH_ENTERPRISE_TOKEN for a GitHub Enterprise Server host, as gh reads them (gh help
+    # environment) - plus gh's own credential helper, every other
     # helper switched off for the call. Never a token on disk, never `gh auth switch`. Other hosts
     # (Azure DevOps, GitLab) go through Git Credential Manager as usual.
     param(
@@ -106,7 +107,7 @@ function Invoke-PhxClone {
     [IO.Directory]::CreateDirectory($parent) | Out-Null
     $options = @()
     $tokenHost = if ($Account -and $Url -match '^https://(?:[^@/]+@)?(?<host>[^/:]+)' -and $TokenHosts -contains $Matches.host) { $Matches.host }
-    $variable = if ($tokenHost -eq 'github.com') { 'GH_TOKEN' } else { 'GH_ENTERPRISE_TOKEN' }
+    $variable = if ($tokenHost -eq 'github.com' -or $tokenHost -like '*.ghe.com') { 'GH_TOKEN' } else { 'GH_ENTERPRISE_TOKEN' }
     $saved = [Environment]::GetEnvironmentVariable($variable)
     try {
         if ($tokenHost) {
@@ -167,7 +168,10 @@ function Restore-PhxRepo {
         [string[]]$TokenHosts = @('github.com')
     )
     $log = $Context.Log
+    # The inventory names a place under the root, nothing else: not a full path, not ../.. out of it.
+    if ([IO.Path]::IsPathRooted("$($Repo.path)")) { throw "its path $($Repo.path) is not relative to its root - refused" }
     $target = Get-PhxRepoPath -Root $Root -RelativePath $Repo.path
+    if (-not (Test-PhxPathWithin $target $Root)) { throw "its path $($Repo.path) leads out of the root $Root - refused" }
     $occupied = [IO.Directory]::Exists($target) -and @([IO.Directory]::EnumerateFileSystemEntries($target)).Count
     if ($occupied) {
         if (-not [IO.Directory]::Exists((Join-Path $target '.git'))) { & $log "$target exists and is not a repository - $($Repo.identity) skipped" 'Warn'; return 'skipped' }
