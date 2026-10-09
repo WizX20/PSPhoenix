@@ -21,11 +21,13 @@ This repo is published under the **WizX20** account from a machine whose active 
 ```powershell
 task check        # lint + test — run before every push
 task test         # Pester (needs Pester 5+); `task test -- tests/PSPhoenix.Tests.ps1`
+task test:linux   # the suite in a Linux container (Docker) - run it at the top of a stack
 task lint         # PSScriptAnalyzer; exclusions + reasons in PSScriptAnalyzerSettings.psd1
 task help         # `phx --help` from the working copy — README quotes it, keep both in sync
 task link         # dev junction into the CurrentUser module path; `task unlink` undoes
 task pack         # dist/PSPhoenix-<version>.zip + sha256
 task release [VERSION=x.y.z] # dispatch the Release workflow; it also runs weekly and auto-bumps the patch
+task merge-stack -- 38 39 40 # merge stacked PRs bottom-up (only when asked) - skill: .claude/skills/pr-stack
 ```
 
 ## Rules
