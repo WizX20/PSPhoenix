@@ -148,20 +148,30 @@ repository, or commits authored with the wrong identity.
 
 **Backup** records per repository:
 
-- every remote URL (the owner is visible in it);
-- the repo-local identity: `user.name`, `user.email`, `include.path`, `credential.<url>.helper`;
-- `account`: detected from the credential helper (`gh auth token --user <x>`), else taken from the
-  `accounts` map in the config, which the wizard fills per owner
-  (`"github.com/WizX20": "WizX20"`, `"github.com/summitnl": "wpaap"`), else the host's default.
+- every remote URL and push URL (the owner is visible in it);
+- the repo-local identity, in order and with repeated keys: `user.name`, `user.email`,
+  `user.signingkey`, `include.path`, `credential.*` (a reset `helper =` followed by the real one;
+  a helper that carries a password or token is not recorded, with a warning),
+  `core.sshCommand` (a per-repository SSH key), and the signing settings (`commit.gpgsign`,
+  `tag.gpgsign`, `gpg.format`, `gpg.ssh.allowedSignersFile`). Values from a file the local config
+  includes (a `.gitconfig` tracked in the repository) are not copied - the clone brings that file
+  back - but they count for the account;
+- `account`: detected from a credential helper (`gh auth token --user <x>`), in the local config or
+  an included file, else taken from the `accounts` map in the config, which the wizard fills per
+  owner (`"github.com/WizX20": "WizX20"`, `"github.com/summitnl": "wpaap"`), else the host's default.
 
 **Restore**:
 
 1. **Preflight**: `gh auth status` must list every account the selected repositories need. A
    missing account stops the restore with the exact `gh auth login` to run.
 2. **Clone with that account's token** for the clone process only:
-   `GH_TOKEN = gh auth token --user <account>`. Never `gh auth switch`, never a token on disk.
+   `GH_TOKEN = gh auth token --user <account>` (`GH_ENTERPRISE_TOKEN` for a GitHub Enterprise host
+   `gh` is logged in to). Never `gh auth switch`, never a token on disk.
 3. **Re-apply the repo-local config** (`include.path`, `user.*`, credential helper) right after the
-   clone, before any fetch or push.
+   clone, before any fetch or push; then check out the recorded branch when the remote has it.
+   A repository already in place gets the same re-apply and nothing else. Linked worktrees are
+   listed, not recreated. A repository that fails (no token, a remote that is gone) does not stop
+   the others: the run reports it and fails at the end.
 
 Other hosts (Azure DevOps, GitLab, self-hosted) authenticate through Git Credential Manager; they are
 cloned one at a time because GCM may prompt.

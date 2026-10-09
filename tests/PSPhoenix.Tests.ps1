@@ -41,9 +41,16 @@ BeforeAll {
     }
 
     $script:SavedEnv = @{}
-    foreach ($name in 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME') {
+    foreach ($name in 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'GH_TOKEN', 'GH_ENTERPRISE_TOKEN',
+        'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0') {
         $script:SavedEnv[$name] = [Environment]::GetEnvironmentVariable($name)
     }
+    # git without the developer's global and system config: a global commit.gpgsign, hooksPath or
+    # credential helper must neither change what the tests see nor reach real keys or accounts.
+    $script:EmptyGitConfig = Join-Path $TestDrive 'gitconfig-empty'
+    New-Item -ItemType File -Path $script:EmptyGitConfig -Force | Out-Null
+    $env:GIT_CONFIG_GLOBAL = $script:EmptyGitConfig
+    $env:GIT_CONFIG_NOSYSTEM = '1'
     # From here on no test derives anything from the real home - not even a path printed in the
     # help. A test that needs a folder of its own calls Use-TestHome again for its path. (Pester
     # has no root-level BeforeEach.)
@@ -700,6 +707,455 @@ Describe 'scan' {
         Get-PhxOutput { phx roots list } | Should -Match 'not scanned yet'
         Get-PhxOutput { phx scan } | Should -Match 'ignoring .*repos.json'
         Get-PhxOutput { phx roots list } | Should -Match '1 repositories'
+    }
+}
+
+Describe 'repos provider' {
+    BeforeAll {
+        function script:New-TestRemote {
+            # A bare repository with a commit on main and one on each -Branch. Returns its path.
+            param([Parameter(Mandatory)][string]$Path, [string[]]$Branch = @())
+            git -c init.defaultBranch=main init -q --bare $Path
+            $seed = Join-Path $TestDrive ('seed-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            git -c init.defaultBranch=main init -q $seed
+            git -C $seed -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m init
+            git -C $seed push -q $Path main 2>$null
+            foreach ($name in $Branch) {
+                git -C $seed switch -q -c $name
+                git -C $seed -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m $name
+                git -C $seed push -q $Path $name 2>$null
+            }
+            $Path
+        }
+
+        function script:Invoke-ReposBackup {
+            InModuleScope PSPhoenix -Parameters @{ Staging = $args[0] } {
+                param($Staging)
+                Backup-PhxRepos -Context (New-PhxContext -Provider repos -Staging $Staging)
+            } 6>&1 | Out-String
+        }
+
+        function script:Invoke-ReposRestore {
+            # The restore's output as one string. When it fails, the output travels in the error
+            # message - the per-repository warnings say why.
+            param([string]$Staging, [hashtable]$RootMap = @{}, [string[]]$Select = @(), [switch]$DryRun)
+            $lines = [Collections.Generic.List[string]]::new()
+            try {
+                InModuleScope PSPhoenix -Parameters @{ Staging = $Staging; RootMap = $RootMap; Select = $Select; DryRun = [bool]$DryRun } {
+                    param($Staging, $RootMap, $Select, $DryRun)
+                    Restore-PhxRepos -Context (New-PhxContext -Provider repos -Staging $Staging -RootMap $RootMap -Select $Select -DryRun:$DryRun)
+                } 6>&1 | ForEach-Object { $lines.Add("$_") }
+            }
+            catch { throw "$($_.Exception.Message)`n$($lines -join "`n")" }
+            $lines -join "`n"
+        }
+
+        function script:Read-TestInventory {
+            param([string]$Staging)
+            (Get-Content -LiteralPath (Join-Path $Staging 'repos.json') -Raw | ConvertFrom-Json -AsHashtable).repositories
+        }
+
+        $remotes = Join-Path $TestDrive 'remotes'
+        $script:RemoteOne = New-TestRemote (Join-Path $remotes 'one.git') -Branch 'feature'
+        $script:RemoteUp = New-TestRemote (Join-Path $remotes 'one-upstream.git')
+        $script:Helper = '!f() { t=$(gh auth token --user WizX20) || return 1; GH_TOKEN=$t gh auth git-credential "$@"; }; f'
+    }
+
+    BeforeEach {
+        # Machine A: a clone on a feature branch with a second remote, a push URL and the
+        # repo-local identity of a WizX20-style .gitconfig include; and a repository without remotes.
+        $machineA = Use-TestHome
+        $reposA = Join-Path $machineA 'Repos'
+        $one = Join-Path $reposA 'One'
+        git clone -q $script:RemoteOne $one 2>$null
+        git -C $one switch -q feature 2>$null
+        git -C $one remote add upstream $script:RemoteUp
+        git -C $one remote set-url --push origin 'https://example.invalid/push/one.git'
+        git -C $one config user.name 'Test Person'
+        git -C $one config user.email 'person@example.invalid'
+        git -C $one config include.path '../.gitconfig'
+        git -C $one config core.sshCommand 'ssh -i ~/.ssh/id_test'
+        git -C $one config --add credential.https://github.com.helper ''
+        git -C $one config --add credential.https://github.com.helper $script:Helper
+        New-TestRepository (Join-Path $reposA 'Scratch') | Out-Null
+        phx roots add $reposA 6>$null
+        phx scan 6>$null
+        $snapshot = Join-Path $machineA 'snapshot/repos'
+        New-Item -ItemType Directory -Force -Path $snapshot | Out-Null
+        # A local remote never needs a token; a call would mean a token went somewhere it should not.
+        Mock Get-PhxGhToken { throw 'no token expected' } -ModuleName PSPhoenix
+    }
+
+    It 'records remotes, branches, identity settings and the account' {
+        Invoke-ReposBackup $snapshot | Should -Match '2 repositories recorded'
+        $inventory = @(Read-TestInventory $snapshot)
+        $repo = $inventory | Where-Object path -EQ 'One'
+        $repo.identity | Should -BeLike 'file/*/remotes/one'
+        $repo.branch | Should -Be 'feature'
+        $repo.defaultBranch | Should -Be 'main'
+        $repo.primaryRemote | Should -Be 'origin'
+        @($repo.remotes.Keys) | Should -Be @('origin', 'upstream')
+        @($repo.remotes.origin.pushUrls) | Should -Be @('https://example.invalid/push/one.git')
+        @($repo.remotes.origin.urls) | Should -Be @($script:RemoteOne)
+        $repo.account | Should -Be 'WizX20'
+        $repo.accountSource | Should -Be 'credential helper'
+        $helper = @($repo.settings | Where-Object key -EQ 'credential.https://github.com.helper' | ForEach-Object value)
+        $helper | Should -Be @('', $script:Helper)
+        ($repo.settings | Where-Object key -EQ 'core.sshcommand').value | Should -Be 'ssh -i ~/.ssh/id_test'
+        ($inventory | Where-Object path -EQ 'Scratch').identity | Should -Be 'local/Scratch'
+    }
+
+    It 'restores into another root: clone, remotes, settings and branch' {
+        Invoke-ReposBackup $snapshot | Out-Null
+        $machineB = Use-TestHome
+        $reposB = Join-Path $machineB 'Repos'
+        $output = Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB }
+        $output | Should -Match '1 cloned, 0 already in place, 1 skipped, 0 failed'
+        $output | Should -Match 'local/Scratch: no remote to clone from'
+        $restored = Join-Path $reposB 'One'
+        git -C $restored branch --show-current | Should -Be 'feature'
+        git -C $restored remote get-url origin | Should -Be $script:RemoteOne
+        git -C $restored remote get-url --push origin | Should -Be 'https://example.invalid/push/one.git'
+        git -C $restored remote get-url upstream | Should -Be $script:RemoteUp
+        git -C $restored config --local user.email | Should -Be 'person@example.invalid'
+        git -C $restored config --local include.path | Should -Be '../.gitconfig'
+        @(git -C $restored config --local --get-all credential.https://github.com.helper) | Should -Be @('', $script:Helper)
+        Should -Invoke Get-PhxGhToken -ModuleName PSPhoenix -Times 0
+    }
+
+    It 'changes nothing on a second restore' {
+        Invoke-ReposBackup $snapshot | Out-Null
+        $reposB = Join-Path (Use-TestHome) 'Repos'
+        Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } | Out-Null
+        $before = git -C (Join-Path $reposB 'One') config --local --list
+        Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } | Should -Match '0 cloned, 1 already in place, 1 skipped, 0 failed'
+        git -C (Join-Path $reposB 'One') config --local --list | Should -Be $before
+    }
+
+    It "re-applies the recorded settings to a repository that is already there" {
+        Invoke-ReposBackup $snapshot | Out-Null
+        git -C $one config user.email 'someone-else@example.invalid'
+        git -C $one remote remove upstream
+        Invoke-ReposRestore $snapshot | Should -Match '0 cloned, 2 already in place, 0 skipped, 0 failed'
+        git -C $one config --local user.email | Should -Be 'person@example.invalid'
+        git -C $one remote get-url upstream | Should -Be $script:RemoteUp
+    }
+
+    It "gives a clone from <HostName> <Account>'s token in <Variable>, and puts the old value back" -ForEach @(
+        @{ Account = 'WorkAccount'; HostName = 'github.com'; Variable = 'GH_TOKEN'; Other = 'GH_ENTERPRISE_TOKEN' }
+        @{ Account = 'EnterpriseUser'; HostName = 'ghe.example.com'; Variable = 'GH_ENTERPRISE_TOKEN'; Other = 'GH_TOKEN' }
+    ) {
+        [Environment]::SetEnvironmentVariable($Variable, 'was-set-before')
+        try {
+            $seen = InModuleScope PSPhoenix -Parameters @{ Account = $Account; HostName = $HostName; Variable = $Variable; Other = $Other; Target = (Join-Path $TestDrive "clone-$Variable/tok") } {
+                param($Account, $HostName, $Variable, $Other, $Target)
+                $script:TestSeen = $null
+                $script:TestVariables = $Variable, $Other
+                Mock Get-PhxGhToken { "token-for-$Account" }
+                # What git would get: its arguments and the environment of that moment.
+                Mock Invoke-PhxGit {
+                    $script:TestSeen = @{
+                        Arguments = $Arguments
+                        Token     = [Environment]::GetEnvironmentVariable($script:TestVariables[0])
+                        Other     = [Environment]::GetEnvironmentVariable($script:TestVariables[1])
+                    }
+                }
+                Invoke-PhxClone -Url "https://$HostName/o/tok.git" -Target $Target -RemoteName origin -Account $Account -TokenHosts 'github.com', 'ghe.example.com'
+                Should -Invoke Get-PhxGhToken -Times 1 -Exactly
+                $script:TestSeen
+            }
+            [Environment]::GetEnvironmentVariable($Variable) | Should -Be 'was-set-before'
+        }
+        finally { [Environment]::SetEnvironmentVariable($Variable, $null) }
+        $seen.Token | Should -Be "token-for-$Account"
+        $seen.Other | Should -BeNullOrEmpty
+        $arguments = $seen.Arguments -join ' '
+        $arguments | Should -BeLike '-c credential.helper= -c credential.helper=!gh auth git-credential clone --quiet --origin origin -- https://*/o/tok.git *'
+    }
+
+    It 'asks no token for a host gh is not logged in to, nor for a repository without an account' {
+        $calls = InModuleScope PSPhoenix -Parameters @{ Target = (Join-Path $TestDrive 'clone-plain/x') } {
+            param($Target)
+            $script:TestCalls = [Collections.Generic.List[string]]::new()
+            Mock Get-PhxGhToken { 'unexpected' }
+            Mock Invoke-PhxGit { $script:TestCalls.Add($Arguments -join ' ') }
+            Invoke-PhxClone -Url 'https://dev.azure.com/org/proj/_git/ado' -Target $Target -RemoteName origin -Account 'Someone' -TokenHosts 'github.com'
+            Invoke-PhxClone -Url 'https://github.com/o/r.git' -Target $Target -RemoteName origin -TokenHosts 'github.com'
+            Should -Invoke Get-PhxGhToken -Times 0
+            $script:TestCalls
+        }
+        $calls | Should -HaveCount 2
+        $calls | ForEach-Object { $_ | Should -Not -Match 'credential.helper' }
+    }
+
+    It 'restores with the account the inventory names, and the hosts gh is logged in to' {
+        New-TestRepository (Join-Path $reposA 'Tok') -Remote 'origin=https://github.com/o/tok.git' | Out-Null
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.accounts['github.com/o'] = 'WorkAccount'; Save-PhxConfig $c }
+        phx scan 6>$null
+        Invoke-ReposBackup $snapshot | Out-Null
+        Mock Get-PhxGhAccount -ModuleName PSPhoenix { [pscustomobject]@{ Host = 'ghe.example.com'; Login = 'EnterpriseUser'; Active = $true } }
+        $script:CloneCall = $null
+        Mock Invoke-PhxClone -ModuleName PSPhoenix {
+            $script:CloneCall = @{ Url = $Url; Account = $Account; TokenHosts = $TokenHosts; RemoteName = $RemoteName }
+            git clone -q $script:RemoteOne $Target 2>$null
+        }
+        $reposB = Join-Path (Use-TestHome) 'Repos'
+        Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } -Select 'github.com/o/tok' | Should -Match 'cloning github.com/o/tok .* as WorkAccount'
+        $script:CloneCall.Url | Should -Be 'https://github.com/o/tok.git'
+        $script:CloneCall.Account | Should -Be 'WorkAccount'
+        $script:CloneCall.RemoteName | Should -Be 'origin'
+        @($script:CloneCall.TokenHosts) | Should -Be @('github.com', 'ghe.example.com')
+    }
+
+    It 'restores a lone empty value, a value-less key, a value with a newline and every URL' {
+        git -C $one config --unset-all credential.https://github.com.helper
+        git -C $one config --add credential.https://github.com.helper ''
+        Add-Content -LiteralPath (Join-Path $one '.git/config') -Value "[commit]`n`tgpgsign"
+        git -C $one config user.name "Two`nLines"
+        git -C $one config --add remote.origin.url 'https://example.invalid/mirror/one.git'
+        Invoke-ReposBackup $snapshot | Out-Null
+        $repo = Read-TestInventory $snapshot | Where-Object path -EQ 'One'
+        ($repo.settings | Where-Object key -EQ 'commit.gpgsign').value | Should -BeNullOrEmpty
+        ($repo.settings | Where-Object key -EQ 'user.name').value | Should -Be "Two`nLines"
+        $reposB = Join-Path (Use-TestHome) 'Repos'
+        Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } | Out-Null
+        $restored = Join-Path $reposB 'One'
+        @(git -C $restored config --local --get-all credential.https://github.com.helper) | Should -Be @('')
+        git -C $restored config --local --type=bool commit.gpgsign | Should -Be 'true'
+        (git -C $restored config --local user.name) -join "`n" | Should -Be "Two`nLines"
+        @(git -C $restored config --local --get-all remote.origin.url) | Should -Be @($script:RemoteOne, 'https://example.invalid/mirror/one.git')
+        # And a second restore finds nothing to change.
+        $before = git -C $restored config --local --list
+        Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } | Out-Null
+        git -C $restored config --local --list | Should -Be $before
+    }
+
+    It 'finds a remote-less repository below the first level in place' {
+        New-TestRepository (Join-Path $reposA 'org/Scratch2') | Out-Null
+        phx scan 6>$null
+        Invoke-ReposBackup $snapshot | Out-Null
+        Invoke-ReposRestore $snapshot -Select 'local/org/Scratch2' | Should -Match '0 cloned, 1 already in place, 0 skipped'
+    }
+
+    It 'restores a root that is itself a repository' {
+        $single = Join-Path $machineA 'Single'
+        git clone -q $script:RemoteOne $single 2>$null
+        phx roots add $single 6>$null
+        phx scan 6>$null
+        Invoke-ReposBackup $snapshot | Out-Null
+        $newSingle = Join-Path (Use-TestHome) 'Single'
+        Invoke-ReposRestore $snapshot -RootMap @{ $single = $newSingle } -Select ((Read-TestInventory $snapshot | Where-Object path -EQ '.').identity) | Out-Null
+        Test-Path -LiteralPath (Join-Path $newSingle '.git') | Should -BeTrue
+    }
+
+    It 'skips a root that is not a path on this machine unless it is mapped' {
+        $foreign = if ($IsWindows) { '/home/someone/src' } else { 'C:\Repos' }
+        $inventory = @{ format = 1; repositories = @(@{ identity = 'github.com/o/x'; root = $foreign; path = 'x'; remotes = @{ origin = @{ urls = @('https://github.com/o/x.git'); pushUrls = @() } }; primaryRemote = 'origin'; settings = @() }) }
+        Set-Content -LiteralPath (Join-Path $snapshot 'repos.json') -Value ($inventory | ConvertTo-Json -Depth 10)
+        Invoke-ReposRestore $snapshot | Should -Match "github.com/o/x: its root .* is not a path on this machine - map it"
+    }
+
+    It 'refuses settings and URLs a tampered inventory slips in' {
+        Invoke-ReposBackup $snapshot | Out-Null
+        $file = Join-Path $snapshot 'repos.json'
+        $document = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json -AsHashtable
+        ($document.repositories | Where-Object path -EQ 'One').settings += @{ key = 'core.hooksPath'; value = 'C:/evil' }
+        Set-Content -LiteralPath $file -Value ($document | ConvertTo-Json -Depth 10)
+        $reposB = Join-Path (Use-TestHome) 'Repos'
+        { Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } } | Should -Throw '*could not be restored*'
+        git -C (Join-Path $reposB 'One') config --local core.hooksPath | Should -BeNullOrEmpty
+    }
+
+    It 'records from the last scan what this run cannot read: an offline root, an unreadable repository' {
+        $broken = New-TestRepository (Join-Path $reposA 'Broken') -Remote 'origin=https://github.com/o/broken.git'
+        phx scan 6>$null
+        Add-Content -LiteralPath (Join-Path $broken '.git/config') -Value '[not valid'
+        Invoke-ReposBackup $snapshot | Should -Match 'could not read .*Broken.* - recorded from the last scan'
+        (Read-TestInventory $snapshot | Where-Object path -EQ 'Broken').fromScan | Should -Be 'unreadable'
+
+        $offlineRoot = Join-Path $machineA 'Usb'
+        New-TestRepository (Join-Path $offlineRoot 'Away') -Remote 'origin=https://github.com/o/away.git' | Out-Null
+        phx roots add $offlineRoot 6>$null
+        phx scan 6>$null
+        Remove-Item -LiteralPath $offlineRoot -Recurse -Force
+        phx scan 6>$null
+        Invoke-ReposBackup $snapshot | Should -Match 'offline - recorded from the last scan'
+        $away = Read-TestInventory $snapshot | Where-Object identity -EQ 'github.com/o/away'
+        $away.fromScan | Should -Be 'offline'
+        @($away.remotes.origin.urls) | Should -Be @('https://github.com/o/away.git')
+    }
+
+    It 'records only the repositories under the configured roots' {
+        phx roots rm $reposA 6>$null
+        $other = Join-Path $machineA 'Other'
+        New-TestRepository (Join-Path $other 'Elsewhere') -Remote 'origin=https://github.com/o/elsewhere.git' | Out-Null
+        phx roots add $other 6>$null
+        # No new scan: the cache still holds reposA's repositories, which no longer count.
+        Invoke-ReposBackup $snapshot | Should -Match '0 repositories recorded'
+    }
+
+    It 'reads <Helper> as the account <Account>' -ForEach @(
+        @{ Helper = '!gh auth token --user WizX20'; Account = 'WizX20' }
+        @{ Helper = '!gh auth token -u WizX20'; Account = 'WizX20' }
+        @{ Helper = '!gh auth token --user=WizX20'; Account = 'WizX20' }
+        @{ Helper = '!f() { t=$(gh auth token --user "Work-Acct") || return 1; }; f'; Account = 'Work-Acct' }
+        @{ Helper = 'manager'; Account = $null }
+    ) {
+        InModuleScope PSPhoenix -Parameters @{ Helper = $Helper } {
+            param($Helper)
+            Get-PhxCredentialAccount @(@{ key = 'credential.helper'; value = $Helper })
+        } | Should -Be $Account
+    }
+
+    It 'does not record a credential setting that holds a secret' {
+        git -C $one config credential.https://example.invalid.helper '!f() { echo password=hunter2; }; f'
+        Invoke-ReposBackup $snapshot | Should -Match 'holds a secret - not recorded'
+        Get-Content -LiteralPath (Join-Path $snapshot 'repos.json') -Raw | Should -Not -Match 'hunter2'
+    }
+
+    It 'leaves a path alone that holds <Case>' -ForEach @(
+        @{ Case = 'another repository'; Make = { param($Path) New-TestRepository $Path -Remote 'origin=https://github.com/x/other.git' | Out-Null }; Message = 'holds github.com/x/other' }
+        @{ Case = 'other files'; Make = { param($Path) New-Item -ItemType Directory -Force -Path $Path | Out-Null; Set-Content (Join-Path $Path 'notes.txt') 'x' }; Message = 'exists and is not a repository' }
+    ) {
+        Invoke-ReposBackup $snapshot | Out-Null
+        $reposB = Join-Path (Use-TestHome) 'Repos'
+        & $Make (Join-Path $reposB 'One')
+        Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } | Should -Match $Message
+    }
+
+    It 'restores only the selected repositories, and nothing with -DryRun' {
+        Invoke-ReposBackup $snapshot | Out-Null
+        $reposB = Join-Path (Use-TestHome) 'Repos'
+        $identity = (Read-TestInventory $snapshot | Where-Object path -EQ 'One').identity
+        Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } -Select $identity -DryRun | Should -Match "would clone .* -> $([regex]::Escape((Join-Path $reposB 'One')))"
+        Test-Path -LiteralPath $reposB | Should -BeFalse
+        Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } -Select 'local/Scratch' | Should -Match '0 cloned, 0 already in place, 1 skipped, 0 failed'
+    }
+
+    It 'says when the recorded branch is not on the remote' {
+        git -C $one switch -q -c only-here 2>$null
+        Invoke-ReposBackup $snapshot | Out-Null
+        $reposB = Join-Path (Use-TestHome) 'Repos'
+        Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } | Should -Match 'branch only-here is not on origin'
+        git -C (Join-Path $reposB 'One') branch --show-current | Should -Be 'main'
+    }
+
+    It "takes the account from an included .gitconfig, without copying the included settings" {
+        # The WizX20 set-up: the helper lives in a .gitconfig tracked in the repository and pulled
+        # in by include.path; the clone brings that file back, so only include.path is re-applied.
+        $inc = New-TestRepository (Join-Path $reposA 'Included') -Remote 'origin=https://github.com/o/inc.git'
+        Set-Content -LiteralPath (Join-Path $inc '.gitconfig') -Value @(
+            '[user]', '    name = Included Person',
+            '[credential "https://github.com"]', '    helper =', "    helper = `"$($script:Helper)`"")
+        git -C $inc config include.path '../.gitconfig'
+        phx scan 6>$null
+        Invoke-ReposBackup $snapshot | Out-Null
+        $repo = Read-TestInventory $snapshot | Where-Object path -EQ 'Included'
+        $repo.account | Should -Be 'WizX20'
+        $repo.accountSource | Should -Be 'credential helper'
+        @($repo.settings.key) | Should -Be @('include.path')
+        (InModuleScope PSPhoenix { Read-PhxRepoCache }).repositories | Where-Object path -EQ 'Included' | ForEach-Object account | Should -Be 'WizX20'
+    }
+
+    It 'keeps going when one repository cannot be cloned, and fails at the end' {
+        New-TestRepository (Join-Path $reposA 'Locked') -Remote 'origin=https://github.com/o/locked.git' | Out-Null
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.accounts['github.com/o'] = 'Missing'; Save-PhxConfig $c }
+        phx scan 6>$null
+        Invoke-ReposBackup $snapshot | Out-Null
+        Mock Get-PhxGhToken { throw 'gh has no token for Missing on github.com - run: gh auth login' } -ModuleName PSPhoenix
+        $env:GH_TOKEN = 'left-alone'
+        try {
+            $reposB = Join-Path (Use-TestHome) 'Repos'
+            { Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } -ErrorAction Stop } | Should -Throw '*1 repositories could not be restored*'
+            $env:GH_TOKEN | Should -Be 'left-alone'
+        }
+        finally { $env:GH_TOKEN = $null }
+        Test-Path -LiteralPath (Join-Path $reposB 'One/.git') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $reposB 'Locked') | Should -BeFalse
+    }
+
+    It 'flags LFS and submodules' {
+        Set-Content -LiteralPath (Join-Path $one '.gitattributes') -Value '*.psd filter=lfs diff=lfs merge=lfs -text'
+        Set-Content -LiteralPath (Join-Path $one '.gitmodules') -Value '[submodule "lib"]'
+        Invoke-ReposBackup $snapshot | Out-Null
+        $repo = Read-TestInventory $snapshot | Where-Object path -EQ 'One'
+        $repo.lfs | Should -BeTrue
+        $repo.submodules | Should -BeTrue
+        (Read-TestInventory $snapshot | Where-Object path -EQ 'Scratch').lfs | Should -BeFalse
+    }
+
+    It 'writes nothing on a -DryRun backup' {
+        InModuleScope PSPhoenix -Parameters @{ Staging = $snapshot } {
+            param($Staging)
+            Backup-PhxRepos -Context (New-PhxContext -Provider repos -Staging $Staging -DryRun)
+        } 6>&1 | Out-String | Should -Match 'would record 2 repositories'
+        Test-Path -LiteralPath (Join-Path $snapshot 'repos.json') | Should -BeFalse
+    }
+
+    It 'does not record a repository gone since the last scan' {
+        Remove-Item -LiteralPath (Join-Path $reposA 'Scratch') -Recurse -Force
+        Invoke-ReposBackup $snapshot | Should -Match 'gone since the last scan'
+        @(Read-TestInventory $snapshot).Count | Should -Be 1
+    }
+
+    It 'scans first when there is no scan yet' {
+        Remove-Item -LiteralPath (Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'repos.json')
+        Invoke-ReposBackup $snapshot | Should -Match 'no scan yet - scanning'
+        @(Read-TestInventory $snapshot).Count | Should -Be 2
+    }
+
+    It 'refuses an inventory from a newer PSPhoenix' {
+        New-Item -ItemType Directory -Force -Path $snapshot | Out-Null
+        Set-Content -LiteralPath (Join-Path $snapshot 'repos.json') -Value '{ "format": 99, "repositories": [] }'
+        { Invoke-ReposRestore $snapshot } | Should -Throw '*newer PSPhoenix*'
+    }
+
+    It 'is a registered provider with status lines per account' {
+        # One (a local file/ remote) needs no account; the GitHub ones do.
+        New-TestRepository (Join-Path $reposA 'Mine') -Remote 'origin=https://github.com/WizX20/mine.git' | Out-Null
+        New-TestRepository (Join-Path $reposA 'Work') -Remote 'origin=https://github.com/summitnl/work.git' | Out-Null
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.accounts['github.com/WizX20'] = 'WizX20'; Save-PhxConfig $c }
+        phx scan 6>$null
+        Get-PhxOutput { phx providers } | Should -Match 'repos\s+Repositories'
+        $lines = @(InModuleScope PSPhoenix { & (Get-PhxProvider 'repos').Status (New-PhxContext -Provider repos -Staging $TestDrive) })
+        $lines[0] | Should -Be '4 repositories, 1 without a remote'
+        $lines | Should -Contain '  WizX20: 1'
+        $lines | Should -Contain '  (host default): 1'
+    }
+}
+
+Describe 'gh wrappers' {
+    It 'lists the logged-in accounts from gh auth status --json' {
+        InModuleScope PSPhoenix {
+            Mock Invoke-PhxGh { '{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"wpaap"},{"state":"success","active":false,"host":"github.com","login":"WizX20"},{"state":"error","active":false,"host":"github.com","login":"Broken"}]}}' }
+            $accounts = @(Get-PhxGhAccount)
+            $accounts.Login | Should -Be @('wpaap', 'WizX20')
+            ($accounts | Where-Object Login -EQ 'wpaap').Active | Should -BeTrue
+        }
+    }
+
+    It 'lists nothing when gh says nothing usable' {
+        InModuleScope PSPhoenix {
+            Mock Invoke-PhxGh { 'not json' }
+            @(Get-PhxGhAccount).Count | Should -Be 0
+        }
+    }
+
+    It "gets one account's token, or says which login to run" {
+        InModuleScope PSPhoenix {
+            Mock Invoke-PhxGh { $global:LASTEXITCODE = 0; 'secret-token' } -ParameterFilter { $Arguments -contains 'WizX20' }
+            Get-PhxGhToken -Account WizX20 | Should -Be 'secret-token'
+            Mock Invoke-PhxGh { $global:LASTEXITCODE = 1 } -ParameterFilter { $Arguments -contains 'Nobody' }
+            { Get-PhxGhToken -Account Nobody } | Should -Throw '*no token for Nobody*gh auth login*'
+        }
+    }
+
+    It 'copes with gh not being installed' {
+        InModuleScope PSPhoenix {
+            Mock Invoke-PhxGh { throw [System.Management.Automation.CommandNotFoundException]::new('gh') }
+            @(Get-PhxGhAccount).Count | Should -Be 0
+            { Get-PhxGhToken -Account WizX20 } | Should -Throw '*gh is not installed*'
+        }
     }
 }
 

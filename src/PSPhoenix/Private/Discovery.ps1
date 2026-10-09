@@ -129,6 +129,67 @@ function ConvertTo-PhxRepoIdentity {
     "$hostName/$path"
 }
 
+# Repo-local settings that make up who you are in a repository (docs/design.md -> GitHub accounts):
+# recorded by the repos provider and re-applied right after a clone, before any fetch or push.
+$script:PhxRepoSettingPattern = '^(user\.(name|email|signingkey)|include\.path|includeif\..+\.path|credential\..+|core\.sshcommand|commit\.gpgsign|tag\.gpgsign|gpg\.format|gpg\.ssh\.allowedsignersfile)$'
+
+function Read-PhxRepoConfig {
+    # A repository's local config in one git call: its remotes ({ urls, pushUrls } per name, in
+    # config order, credentials removed) and its identity settings ({ key, value } in order, repeated
+    # keys kept - a reset `credential.helper =` before the real one; a key without a value, which
+    # git reads as true, has the value $null). Files the local config includes (`include.path =
+    # ../.gitconfig`, tracked in the repository) are read too but kept apart as Included: they come
+    # back with the clone, so a restore must not copy them into the local config - yet their
+    # credential helper still tells which account the repository uses. Read with -z, as origin NUL
+    # key LF value NUL, so values keep their newlines. Throws when git cannot read the repository.
+    param([Parameter(Mandatory)][string]$Path)
+    $remotes = [ordered]@{}
+    $settings = [Collections.Generic.List[object]]::new()
+    $included = [Collections.Generic.List[object]]::new()
+    $raw = @(Invoke-PhxGit -Repository $Path -Arguments 'config', '-z', '--local', '--includes', '--list', '--show-origin') -join "`n"
+    $parts = $raw.Split([char]0)
+    for ($i = 0; $i + 1 -lt $parts.Count; $i += 2) {
+        $origin = $parts[$i]
+        $entry = $parts[$i + 1]
+        $newline = $entry.IndexOf("`n")
+        $key, $value = if ($newline -ge 0) { $entry.Substring(0, $newline), $entry.Substring($newline + 1) } else { $entry, $null }
+        if ($key -notmatch $script:PhxRepoSettingPattern -and $key -notmatch '^remote\..+\.(url|pushurl)$') { continue }
+        if ($key -like 'credential.*' -and "$value" -match '(?i)password\s*=|\bgh[pousr]_[A-Za-z0-9]{20,}|github_pat_') {
+            Write-Host "  ${Path}: $key holds a secret - not recorded" -ForegroundColor Yellow
+            continue
+        }
+        if ($origin -ne 'file:.git/config') { $included.Add([ordered]@{ key = $key; value = $value }); continue }
+        if ($key -match '^remote\.(?<name>.+)\.(?<kind>url|pushurl)$') {
+            $name = $Matches.name
+            $field = if ($Matches.kind -eq 'url') { 'urls' } else { 'pushUrls' }
+            if (-not $value) { continue }
+            $url = Remove-PhxUrlSecret $value
+            if ($url -cne $value) { Write-Host "  ${Path}: remote $name carries credentials in its URL - recorded without them" -ForegroundColor Yellow }
+            if (-not $remotes.Contains($name)) { $remotes[$name] = [ordered]@{ urls = @(); pushUrls = @() } }
+            $remotes[$name][$field] += $url
+        }
+        else { $settings.Add([ordered]@{ key = $key; value = $value }) }
+    }
+    # A remote with only a push URL is nothing to clone from.
+    foreach ($name in @($remotes.Keys)) { if (-not $remotes[$name].urls.Count) { $remotes.Remove($name) } }
+    [pscustomobject]@{ Remotes = $remotes; Settings = @($settings); Included = @($included) }
+}
+
+function Get-PhxPrimaryRemote {
+    # origin, else the first remote; nothing for a repository without remotes.
+    param([System.Collections.IDictionary]$Remotes)
+    if ($Remotes.Contains('origin')) { 'origin' } elseif ($Remotes.Count) { @($Remotes.Keys)[0] }
+}
+
+function Get-PhxCredentialAccount {
+    # The account a repository's own credential helper asks gh for - `gh auth token --user <x>`,
+    # `-u <x>` or `--user=<x>`, as a WizX20-style .gitconfig include sets up - or nothing.
+    param([object[]]$Settings)
+    foreach ($entry in @($Settings)) {
+        if ($entry.key -like 'credential.*helper' -and "$($entry.value)" -match '(?:--user[=\s]\s*|\s-u\s+)["'']?(?<login>[A-Za-z0-9][A-Za-z0-9-]*)') { return $Matches.login }
+    }
+}
+
 function Get-PhxWorktree {
     # The linked worktrees of a repository: { path, branch }, the path relative to the root when it
     # lies under it. Only a repository with .git/worktrees has any - most have none, and every git
@@ -150,24 +211,25 @@ function Get-PhxWorktree {
 
 function Get-PhxRepoRecord {
     # What discovery knows about one repository: where it is, its remotes (credentials removed), its
-    # identity, its linked worktrees. One git call, two with worktrees. Throws when git cannot read
-    # the repository (dubious ownership, a broken .git/config) - recording it as remote-less would
-    # quietly lose it.
+    # identity, the account its credential helper names, its linked worktrees. One git call, two
+    # with worktrees. Throws when git cannot read the repository (dubious ownership, a broken
+    # .git/config) - recording it as remote-less would quietly lose it.
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Path)
     $relative = [IO.Path]::GetRelativePath($Root, $Path) -replace '\\', '/'
+    $local = Read-PhxRepoConfig -Path $Path
     $remotes = [ordered]@{}
-    # Exit code 1 only means "no remote".
-    foreach ($line in @(Invoke-PhxGit -Repository $Path -Arguments 'config', '--local', '--get-regexp', '^remote\..+\.url$' -AllowExitCode 1)) {
-        if ($line -match '^remote\.(?<name>.+?)\.url (?<url>.+)$' -and -not $remotes.Contains($Matches.name)) {
-            $url = Remove-PhxUrlSecret $Matches.url
-            if ($url -cne $Matches.url) { Write-Host "  ${Path}: remote $($Matches.name) carries credentials in its URL - recorded without them" -ForegroundColor Yellow }
-            $remotes[$Matches.name] = $url
-        }
-    }
-    $primary = if ($remotes.Contains('origin')) { 'origin' } elseif ($remotes.Count) { @($remotes.Keys)[0] }
+    foreach ($name in $local.Remotes.Keys) { $remotes[$name] = $local.Remotes[$name].urls[0] }
+    $primary = Get-PhxPrimaryRemote $remotes
     $identity = if ($primary) { ConvertTo-PhxRepoIdentity -Url $remotes[$primary] -BasePath $Path }
     else { 'local/' + $(if ($relative -eq '.') { [IO.Path]::GetFileName($Root) } else { $relative }) }
-    [ordered]@{ identity = $identity; root = $Root; path = $relative; remotes = $remotes; worktrees = @(Get-PhxWorktree -Root $Root -Path $Path) }
+    [ordered]@{
+        identity  = $identity
+        root      = $Root
+        path      = $relative
+        remotes   = $remotes
+        account   = Get-PhxCredentialAccount (@($local.Settings) + @($local.Included))
+        worktrees = @(Get-PhxWorktree -Root $Root -Path $Path)
+    }
 }
 
 function Get-PhxRepoCachePath { Join-Path (Get-PhxStateDir) 'repos.json' }
@@ -194,6 +256,18 @@ function Get-PhxRootRepoCount {
     $comparison = Get-PhxPathComparison
     if (-not @(@($Cache.roots) | Where-Object { [string]::Equals($_.path, $Root, $comparison) }).Count) { return }
     @(@($Cache.repositories) | Where-Object { [string]::Equals($_.root, $Root, $comparison) }).Count
+}
+
+function Get-PhxScannedRecord {
+    # The last scan's repositories under the configured roots. A root removed since, or a scan of
+    # other roots, does not count.
+    param([System.Collections.IDictionary]$Cache, [System.Collections.IDictionary]$Config)
+    $roots = @($Config.roots | Where-Object { $_ } | ForEach-Object { $_.path })
+    $comparison = Get-PhxPathComparison
+    @($Cache.repositories | Where-Object { $_ }) | Where-Object {
+        $root = $_.root
+        @($roots | Where-Object { [string]::Equals($_, $root, $comparison) }).Count
+    }
 }
 
 function Get-PhxRepoKey {
