@@ -46,31 +46,6 @@ function Find-PhxRepository {
     }
 }
 
-function Test-PhxTokenLike {
-    # A user name that is itself a credential: a GitHub, GitLab or Slack token, or a long opaque
-    # string such as an Azure DevOps PAT.
-    param([string]$Text)
-    $Text -match '^(gh[pousr]_|github_pat_|glpat-|xox[abps]-)' -or ($Text.Length -ge 32 -and $Text -match '^[A-Za-z0-9_-]+$')
-}
-
-function Remove-PhxUrlSecret {
-    # A remote URL as PSPhoenix may record it: the password of `user:password@` is dropped, and so is
-    # a user name that is itself a token. Snapshots and logs never carry a credential.
-    param([AllowEmptyString()][string]$Url)
-    if ($Url -match '^(?<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?<user>[^/@:]*)(?::[^/@]*)?@(?<rest>.*)$') {
-        $user = if (Test-PhxTokenLike $Matches.user) { '' } else { $Matches.user }
-        return $Matches.scheme + $(if ($user) { "$user@" } else { '' }) + $Matches.rest
-    }
-    $Url
-}
-
-function Hide-PhxSecret {
-    # Text for a log line or an error message, with credentials in any URL inside it masked.
-    param([AllowEmptyString()][string]$Text)
-    $Text = [regex]::Replace($Text, '(?<=://)(?<user>[^/@:\s]*):[^/@\s]*@', { "$($args[0].Groups['user'].Value):***@" })
-    [regex]::Replace($Text, '(?<=://)(?<user>[^/@:\s]+)@', { if (Test-PhxTokenLike $args[0].Groups['user'].Value) { '***@' } else { $args[0].Value } })
-}
-
 function Get-PhxIdentityOwner {
     # host/owner of a remote-based identity - what the accounts map is keyed by. Nothing for local/
     # and file/ identities: there is no account to sign in as.
@@ -163,8 +138,8 @@ function Read-PhxRepoConfig {
             if ((-not (Test-PhxPathWithin $file $Path) -or (Test-PhxPathWithin $file (Join-Path $Path '.git'))) -and $external -notcontains $file) { $external.Add($file) }
         }
         if ($key -notmatch $script:PhxRepoSettingPattern -and $key -notmatch '^remote\..+\.(url|pushurl)$') { continue }
-        if ($key -like 'credential.*' -and "$value" -match '(?i)password\s*=|\bgh[pousr]_[A-Za-z0-9]{20,}|github_pat_') {
-            Write-Host "  ${Path}: $key holds a secret - not recorded" -ForegroundColor Yellow
+        if ($key -like 'credential.*' -and ($reason = Get-PhxCredentialSecret -Key $key -Value $value)) {
+            Write-Host "  ${Path}: $(Hide-PhxSecret $key) $reason - not recorded" -ForegroundColor Yellow
             continue
         }
         if ($origin -ne 'file:.git/config') { $included.Add([ordered]@{ key = $key; value = $value }); continue }

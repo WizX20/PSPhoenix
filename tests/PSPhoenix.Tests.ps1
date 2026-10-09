@@ -475,6 +475,8 @@ Describe 'repository identity' {
             Hide-PhxSecret 'git clone https://user:secret@github.com/o/r.git failed' | Should -Be 'git clone https://user:***@github.com/o/r.git failed'
             Hide-PhxSecret 'remote https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/o/r' | Should -Be 'remote https://***@github.com/o/r'
             Hide-PhxSecret 'https://org@dev.azure.com/org' | Should -Be 'https://org@dev.azure.com/org'
+            # A token on its own, by its prefix (built here, so no token-like text is committed).
+            Hide-PhxSecret "gh said $('glpat-' + 'x' * 20) is wrong" | Should -Be 'gh said *** is wrong'
             $failure = { Invoke-PhxGit -Repository $TestDrive -Arguments 'ls-remote', 'https://user:secret@invalid.invalid/x.git' } | Should -Throw -PassThru
             $failure.Exception.Message | Should -Not -Match 'secret'
         }
@@ -908,6 +910,8 @@ Describe 'repos provider' {
     It "gives a clone from <HostName> <Account>'s token in <Variable>, and puts the old value back" -ForEach @(
         @{ Account = 'WorkAccount'; HostName = 'github.com'; Variable = 'GH_TOKEN'; Other = 'GH_ENTERPRISE_TOKEN' }
         @{ Account = 'EnterpriseUser'; HostName = 'ghe.example.com'; Variable = 'GH_ENTERPRISE_TOKEN'; Other = 'GH_TOKEN' }
+        # GitHub Enterprise Cloud with data residency: gh reads GH_TOKEN there, as for github.com.
+        @{ Account = 'CloudUser'; HostName = 'acme.ghe.com'; Variable = 'GH_TOKEN'; Other = 'GH_ENTERPRISE_TOKEN' }
     ) {
         # Both variables set here: what the case before this one left must not decide the outcome.
         [Environment]::SetEnvironmentVariable($Other, $null)
@@ -926,7 +930,7 @@ Describe 'repos provider' {
                         Other     = [Environment]::GetEnvironmentVariable($script:TestVariables[1])
                     }
                 }
-                Invoke-PhxClone -Url "https://$HostName/o/tok.git" -Target $Target -RemoteName origin -Account $Account -TokenHosts 'github.com', 'ghe.example.com'
+                Invoke-PhxClone -Url "https://$HostName/o/tok.git" -Target $Target -RemoteName origin -Account $Account -TokenHosts 'github.com', 'ghe.example.com', 'acme.ghe.com'
                 Should -Invoke Get-PhxGhToken -Times 1 -Exactly
                 $script:TestSeen
             }
@@ -1021,15 +1025,25 @@ Describe 'repos provider' {
         Invoke-ReposRestore $snapshot | Should -Match "github.com/o/x: its root .* is not a path on this machine - map it"
     }
 
-    It 'refuses settings and URLs a tampered inventory slips in' {
+    It 'refuses a tampered inventory: <Case>' -ForEach @(
+        @{ Case = 'a setting PSPhoenix does not record'; Tamper = { param($r) $r.settings += @{ key = 'core.hooksPath'; value = 'C:/evil' } }; InPlace = $false; Message = '*core.hooksPath is not a setting PSPhoenix records*' }
+        @{ Case = 'a path out of the root'; Tamper = { param($r) $r.path = '../../escaped' }; InPlace = $false; Message = '*leads out of the root*' }
+        @{ Case = 'a full path'; Tamper = { param($r) $r.path = (Join-Path $TestDrive 'full-path') }; InPlace = $false; Message = '*is not relative to its root*' }
+        @{ Case = 'a URL that reads as an option'; Tamper = { param($r) $r.remotes.upstream.urls = @('--upload-pack=touch pwned') }; InPlace = $true; Message = "*has a URL starting with '-'*" }
+    ) {
         Invoke-ReposBackup $snapshot | Out-Null
         $file = Join-Path $snapshot 'repos.json'
         $document = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json -AsHashtable
-        ($document.repositories | Where-Object path -EQ 'One').settings += @{ key = 'core.hooksPath'; value = 'C:/evil' }
+        & $Tamper ($document.repositories | Where-Object identity -NotLike 'local/*')
         Set-Content -LiteralPath $file -Value ($document | ConvertTo-Json -Depth 10)
-        $reposB = Join-Path (Use-TestHome) 'Repos'
-        { Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } } | Should -Throw '*could not be restored*'
-        git -C (Join-Path $reposB 'One') config --local core.hooksPath | Should -BeNullOrEmpty
+        $reposB = if ($InPlace) { $reposA } else { Join-Path (Use-TestHome) 'Repos' }
+        { Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } } | Should -Throw $Message
+        if (-not $InPlace) {
+            git -C (Join-Path $reposB 'One') config --local core.hooksPath 2>$null | Should -BeNullOrEmpty
+            Test-Path -LiteralPath ([IO.Path]::GetFullPath((Join-Path $reposB '../../escaped'))) | Should -BeFalse
+            Test-Path -LiteralPath (Join-Path $TestDrive 'full-path') | Should -BeFalse
+        }
+        @(git -C $one remote get-url --all upstream) | Should -Be @($script:RemoteUp)
     }
 
     It 'records from the last scan what this run cannot read: an offline root, an unreadable repository' {
@@ -1116,10 +1130,20 @@ Describe 'repos provider' {
         } | Should -Be $Account
     }
 
-    It 'does not record a credential setting that holds a secret' {
-        git -C $one config credential.https://example.invalid.helper '!f() { echo password=hunter2; }; f'
-        Invoke-ReposBackup $snapshot | Should -Match 'holds a secret - not recorded'
-        Get-Content -LiteralPath (Join-Path $snapshot 'repos.json') -Raw | Should -Not -Match 'hunter2'
+    It 'does not record a credential setting that <Case>' -ForEach @(
+        # Token-like values are built at run time: nothing token-like is committed.
+        @{ Case = 'writes out a password'; Key = 'credential.https://example.invalid.helper'; Value = '!f() { echo password=hunter2; }; f'; Secret = 'hunter2'; Reason = 'holds a secret' }
+        @{ Case = 'holds a GitLab token'; Key = 'credential.https://gitlab.example.invalid.helper'; Value = "!f() { echo username=x; echo secret=$('glpat-' + 'q' * 20); }; f"; Secret = 'glpat-qqqq'; Reason = 'holds a secret' }
+        @{ Case = 'has an Azure DevOps PAT as user name'; Key = 'credential.https://dev.azure.com.username'; Value = ('p' * 52); Secret = ('p' * 52); Reason = 'has a token as its user name' }
+        @{ Case = 'is scoped to a URL with a token in it'; Key = "credential.https://x:$('glpat-' + 'r' * 20)@gitlab.example.invalid.helper"; Value = 'store'; Secret = 'glpat-rrrr'; Reason = 'carries credentials in its URL' }
+    ) {
+        git -C $one config --add $Key $Value
+        phx scan 6>$null
+        $output = Invoke-ReposBackup $snapshot
+        $output | Should -Match ([regex]::Escape($Reason) + ' - not recorded')
+        $output | Should -Not -Match ([regex]::Escape($Secret))
+        Get-Content -LiteralPath (Join-Path $snapshot 'repos.json') -Raw | Should -Not -Match ([regex]::Escape($Secret))
+        Get-Content -LiteralPath (InModuleScope PSPhoenix { Get-PhxRepoCachePath }) -Raw | Should -Not -Match ([regex]::Escape($Secret))
     }
 
     It 'leaves a path alone that holds <Case>' -ForEach @(

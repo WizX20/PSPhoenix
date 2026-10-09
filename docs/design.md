@@ -154,7 +154,8 @@ repository, or commits authored with the wrong identity.
 - every remote URL and push URL (the owner is visible in it);
 - the repo-local identity, in order and with repeated keys: `user.name`, `user.email`,
   `user.signingkey`, `include.path`, `credential.*` (a reset `helper =` followed by the real one;
-  a helper that carries a password or token is not recorded, with a warning),
+  a credential setting that carries a password or token - in its value, as its user name, or in
+  the URL it is scoped to - is not recorded, with a warning),
   `core.sshCommand` (a per-repository SSH key), and the signing settings (`commit.gpgsign`,
   `tag.gpgsign`, `gpg.format`, `gpg.ssh.allowedSignersFile`). Values from a file the local config
   includes (a `.gitconfig` tracked in the repository) are not copied - the clone brings that file
@@ -172,8 +173,8 @@ repository, or commits authored with the wrong identity.
    `gh auth login` to run. The `repos` provider has no preflight of its own; `phx status` warns
    about a missing account ahead of time.
 2. **Clone with that account's token** for the clone process only:
-   `GH_TOKEN = gh auth token --user <account>` (`GH_ENTERPRISE_TOKEN` for a GitHub Enterprise host
-   `gh` is logged in to). Never `gh auth switch`, never a token on disk. Clones that run side by
+   `GH_TOKEN = gh auth token --user <account>` (`GH_TOKEN` for github.com and `*.ghe.com`,
+   `GH_ENTERPRISE_TOKEN` for a GitHub Enterprise Server host `gh` is logged in to). Never `gh auth switch`, never a token on disk. Clones that run side by
    side, each with its own account, need the token in each child process's environment, not in
    the shared process environment.
 3. **Re-apply the repo-local config** (`include.path`, `user.*`, credential helper) right after the
@@ -184,6 +185,13 @@ repository, or commits authored with the wrong identity.
 
 Other hosts (Azure DevOps, GitLab, self-hosted) authenticate through Git Credential Manager; they are
 cloned one at a time because GCM may prompt.
+
+**A snapshot is trusted input.** It is the user's own backup, but what it re-applies can run code:
+a credential helper starting with `!`, `core.sshCommand`, and an `include.path` that pulls in more
+config. Restore therefore refuses whatever PSPhoenix itself would never have written - a setting
+key outside the recorded set (`core.hooksPath`, `core.fsmonitor`), a URL git could read as an
+option, a repository path that is absolute or leads out of its root - and `phx restore` (M6) shows
+the helpers, SSH commands and include paths it is about to apply before it applies them.
 
 ## Secrets
 
