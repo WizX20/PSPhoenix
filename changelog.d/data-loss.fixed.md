@@ -1,0 +1,5 @@
+- fix: repos - a repository on an offline root, or one git cannot read, is recorded in full from the last scan (settings, push URLs, branch) instead of with its remote only
+- fix: repos - a backup scans first when a configured root is missing from the last scan, instead of leaving its repositories out; a `-DryRun` backup scans only in memory
+- fix: repos - restoring a repository in place keeps the credentials of a remote URL that the snapshot records without them
+- fix: repos - a file a repository includes from outside its work tree (`~/.gitconfig-work`) is named in the scan, and a backup warns that it does not hold it
+- fix: `phx init` keeps an account set for an owner when `gh` is not logged in with it, instead of replacing it with the only login `gh` has

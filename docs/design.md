@@ -46,13 +46,16 @@ machine from it with `phx restore`.
   gives `file/<path>` - still clonable where that path exists. A repository without any remote gets
   `local/<path relative to its root>` and a full bundle, since there is nothing to clone it from.
   The same remote cloned twice keeps one identity in two places; `phx scan` points it out.
-- **Discovery cache**: `phx scan` writes what it found (root, relative path, remotes, identity,
-  linked worktrees with their branch) to `repos.json` in the state folder. Links and junctions are
+- **Discovery cache**: `phx scan` writes what it found - per repository everything the `repos`
+  provider records (root, relative path, identity, remotes, branches, repo-local settings, linked
+  worktrees with their branch) - to `repos.json` in the state folder. Links and junctions are
   not followed - a cloud-sync placeholder (OneDrive, Dropbox) is not a link and is searched - and
   build-output folders (`node_modules`, `bin`, `obj`, ...) are not entered. Nothing a scan cannot
   see is dropped: a root whose folder is gone keeps the last scan's repositories, marked offline;
-  a repository git cannot read keeps its last record, with a warning. Remote URLs are recorded
-  without credentials (`user:password@`, or a token as user name).
+  a repository git cannot read keeps its last record, with a warning - in full, so a backup taken
+  while a drive is out still records their settings. A backup scans first when there is no scan
+  yet or a configured root is missing from it. Remote URLs are recorded without credentials
+  (`user:password@`, or a token as user name).
 - **Worktree**: a linked worktree (including Claude Code's `.claude/worktrees/*`) belongs to its
   main repository and is recorded there, never as a repository of its own.
 - **Provider**: one unit of backup and restore (`repos`, `claude`, `winget`, ...). See
@@ -99,7 +102,7 @@ into a second `$TestDrive` home, compare). A backup nobody has restored is a hop
 | `wip` | `git bundle` of local-only work: branches without upstream or ahead of it, stashes; a full bundle for repositories without a remote | `git fetch <bundle>`, stashes re-applied as branches | squash-merged branches are not WIP: reuse the merge detection of PSWorktree's `wt clean` |
 | `repo-files` | gitignored files that pass the filters and the review | copy back | secret-classified files only as `.age` |
 | `claude` | `~/.claude/projects/*/memory`, `settings.json`, `CLAUDE.md`, `skills/`, `commands/`, `agents/`, `statusline*`, `keybindings.json`; selected keys of `~/.claude.json` (`mcpServers`, with `env` values that look secret encrypted) | copy; memory lands in the folder name Claude Code derives from the **new** path | never `.credentials.json`; session transcripts opt-in |
-| `git` | `~/.gitconfig` and the files it includes, `~/.ssh/config`, `known_hosts`; private keys as `.age` | copy | |
+| `git` | `~/.gitconfig` and the files it includes, files that repositories include from outside their work tree, `~/.ssh/config`, `known_hosts`; private keys as `.age` | copy | |
 | `pwsh` | profile files of PowerShell 7 and Windows PowerShell (all four scopes), installed modules (name, version, repository) | copy profiles, `Install-PSResource` the list | PSReadLine history opt-in: it holds whatever was typed, secrets included |
 | `terminal` | Windows Terminal `settings.json` (stable, preview, unpackaged) | copy | |
 | `winget` | `winget export` | `winget import` | |
@@ -155,7 +158,9 @@ repository, or commits authored with the wrong identity.
   `core.sshCommand` (a per-repository SSH key), and the signing settings (`commit.gpgsign`,
   `tag.gpgsign`, `gpg.format`, `gpg.ssh.allowedSignersFile`). Values from a file the local config
   includes (a `.gitconfig` tracked in the repository) are not copied - the clone brings that file
-  back - but they count for the account;
+  back - but they count for the account. A file included from outside the work tree
+  (`include.path = ~/.gitconfig-work`) does not come back with a clone: the scan lists it, a backup
+  warns about it, and the `git` provider backs it up;
 - `account`: detected from a credential helper (`gh auth token --user <x>`), in the local config or
   an included file, else taken from the `accounts` map in the config, which the wizard fills per
   owner (`"github.com/WizX20": "WizX20"`, `"github.com/summitnl": "wpaap"`), else the host's default.
@@ -291,11 +296,11 @@ An unknown command, or one whose milestone has not arrived yet, is an error - `$
 offers; `q` at any prompt, Ctrl+C or the end of input stops without saving - and starts from the
 current values when run again. It offers the current roots and the usual folders that hold
 repositories (`~/source/repos`, `C:\Repos`, `~/src`, ...) with their repository counts; asks, per
-owner on a host `gh` is logged in to, which account its repositories use - defaulting to what their
-credential helpers say, else the active account; suggests the OneDrive for Business folder as
-target, with a note on where company data belongs when another folder is chosen; takes an interval
-from 15 minutes to 31 days (Task Scheduler's longest repetition). Each later milestone adds its
-step.
+owner on a host `gh` is logged in to, which account its repositories use - defaulting to the account
+set before (kept, with a warning, when `gh` is not logged in with it), else what their credential
+helpers say, else the active account; suggests the OneDrive for Business folder as target, with a
+note on where company data belongs when another folder is chosen; takes an interval from 15 minutes
+to 31 days (Task Scheduler's longest repetition). Each later milestone adds its step.
 
 ## Restore sequence
 

@@ -674,8 +674,8 @@ Describe 'scan' {
         New-TestRepository (Join-Path $repos 'AsUser') -Remote "origin=https://$token@github.com/o/asuser.git" | Out-Null
         phx roots add $repos 6>$null
         $records = @(Get-TestScan)
-        ($records | Where-Object path -EQ 'Tok').remotes.origin | Should -Be 'https://x-access-token@github.com/o/tok.git'
-        ($records | Where-Object path -EQ 'AsUser').remotes.origin | Should -Be 'https://github.com/o/asuser.git'
+        @(($records | Where-Object path -EQ 'Tok').remotes.origin.urls) | Should -Be @('https://x-access-token@github.com/o/tok.git')
+        @(($records | Where-Object path -EQ 'AsUser').remotes.origin.urls) | Should -Be @('https://github.com/o/asuser.git')
         $script:ScanOutput -join "`n" | Should -Match 'carries credentials in its URL - recorded without them'
         Get-Content -LiteralPath (Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'repos.json') -Raw | Should -Not -Match $token
         ($script:ScanOutput -join "`n") | Should -Not -Match $token
@@ -1040,7 +1040,9 @@ Describe 'repos provider' {
         (Read-TestInventory $snapshot | Where-Object path -EQ 'Broken').fromScan | Should -Be 'unreadable'
 
         $offlineRoot = Join-Path $machineA 'Usb'
-        New-TestRepository (Join-Path $offlineRoot 'Away') -Remote 'origin=https://github.com/o/away.git' | Out-Null
+        $awayRepo = New-TestRepository (Join-Path $offlineRoot 'Away') -Remote 'origin=https://github.com/o/away.git'
+        git -C $awayRepo config user.email 'away@example.invalid'
+        git -C $awayRepo remote set-url --push origin 'https://github.com/o/away-push.git'
         phx roots add $offlineRoot 6>$null
         phx scan 6>$null
         Remove-Item -LiteralPath $offlineRoot -Recurse -Force
@@ -1048,7 +1050,47 @@ Describe 'repos provider' {
         Invoke-ReposBackup $snapshot | Should -Match 'offline - recorded from the last scan'
         $away = Read-TestInventory $snapshot | Where-Object identity -EQ 'github.com/o/away'
         $away.fromScan | Should -Be 'offline'
+        # In full, as the scan saw it: a snapshot written while the drive is out loses nothing.
         @($away.remotes.origin.urls) | Should -Be @('https://github.com/o/away.git')
+        @($away.remotes.origin.pushUrls) | Should -Be @('https://github.com/o/away-push.git')
+        $away.branch | Should -Be 'main'
+        ($away.settings | Where-Object key -EQ 'user.email').value | Should -Be 'away@example.invalid'
+    }
+
+    It 'scans a configured root the last scan did not cover before it backs up' {
+        $later = Join-Path $machineA 'Later'
+        New-TestRepository (Join-Path $later 'New') -Remote 'origin=https://github.com/o/new.git' | Out-Null
+        phx roots add $later 6>$null
+        Invoke-ReposBackup $snapshot | Should -Match ('not scanned yet: ' + [regex]::Escape($later) + ' - scanning the roots first')
+        @(Read-TestInventory $snapshot).identity | Should -Contain 'github.com/o/new'
+    }
+
+    It 'scans only in memory on a -DryRun backup without a scan' {
+        $cachePath = InModuleScope PSPhoenix { Get-PhxRepoCachePath }
+        Remove-Item -LiteralPath $cachePath
+        InModuleScope PSPhoenix -Parameters @{ Staging = $snapshot } {
+            param($Staging)
+            Backup-PhxRepos -Context (New-PhxContext -Provider repos -Staging $Staging -DryRun)
+        } 6>&1 | Out-String | Should -Match 'would record 2 repositories'
+        Test-Path -LiteralPath $cachePath | Should -BeFalse
+    }
+
+    It 'warns about a file a repository includes from outside its work tree' {
+        $external = Join-Path $machineA 'work.gitconfig'
+        Set-Content -LiteralPath $external -Value "[user]`n`temail = work@example.invalid"
+        git -C $one config --add include.path ($external -replace '\\', '/')
+        phx scan 6>$null
+        $record = InModuleScope PSPhoenix { (Read-PhxRepoCache).repositories } | Where-Object path -EQ 'One'
+        @($record.externalIncludes) | Should -Be @([IO.Path]::GetFullPath($external))
+        Invoke-ReposBackup $snapshot | Should -Match ('One: includes ' + [regex]::Escape([IO.Path]::GetFullPath($external)) + ' from outside the repository')
+    }
+
+    It 'keeps the credentials of a remote in place that the snapshot records without them' {
+        git -C $one remote set-url upstream 'https://x-access-token:tok-123@example.invalid/up.git'
+        Invoke-ReposBackup $snapshot | Out-Null
+        @((Read-TestInventory $snapshot | Where-Object path -EQ 'One').remotes.upstream.urls) | Should -Be @('https://x-access-token@example.invalid/up.git')
+        Invoke-ReposRestore $snapshot | Should -Match '0 cloned, 2 already in place'
+        git -C $one remote get-url upstream | Should -Be 'https://x-access-token:tok-123@example.invalid/up.git'
     }
 
     It 'records only the repositories under the configured roots' {
@@ -1056,8 +1098,9 @@ Describe 'repos provider' {
         $other = Join-Path $machineA 'Other'
         New-TestRepository (Join-Path $other 'Elsewhere') -Remote 'origin=https://github.com/o/elsewhere.git' | Out-Null
         phx roots add $other 6>$null
-        # No new scan: the cache still holds reposA's repositories, which no longer count.
-        Invoke-ReposBackup $snapshot | Should -Match '0 repositories recorded'
+        # The cache still holds reposA's repositories, which no longer count; Other it has not seen.
+        Invoke-ReposBackup $snapshot | Should -Match '1 repositories recorded'
+        @(Read-TestInventory $snapshot).identity | Should -Be @('github.com/o/elsewhere')
     }
 
     It 'reads <Helper> as the account <Account>' -ForEach @(
@@ -1120,7 +1163,7 @@ Describe 'repos provider' {
         $repo.account | Should -Be 'WizX20'
         $repo.accountSource | Should -Be 'credential helper'
         @($repo.settings.key) | Should -Be @('include.path')
-        (InModuleScope PSPhoenix { Read-PhxRepoCache }).repositories | Where-Object path -EQ 'Included' | ForEach-Object account | Should -Be 'WizX20'
+        (InModuleScope PSPhoenix { Read-PhxRepoCache }).repositories | Where-Object path -EQ 'Included' | ForEach-Object helperAccount | Should -Be 'WizX20'
     }
 
     It 'keeps going when one repository cannot be cloned, and fails at the end' {
@@ -1318,6 +1361,19 @@ Describe 'init' {
         Get-PhxOutput { phx init } | Should -Match 'one of: wpaap, WizX20'
         $script:Answers.Count | Should -Be 0
         (InModuleScope PSPhoenix { Read-PhxConfig }).accounts['github.com/summitnl'] | Should -BeExactly 'WizX20'
+    }
+
+    It 'keeps an account that is set when gh is not logged in with it' {
+        Set-TestAnswer '' '' '' '' '' '' ''
+        phx init 6>$null
+        $before = Read-TestConfig
+        # gh now knows only WizX20: summitnl's wpaap stays the default, and Enter keeps it.
+        Mock Get-PhxGhAccount -ModuleName PSPhoenix { [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $true } }
+        # roots, summitnl account (asked: its account is not logged in), target, interval, save?
+        Set-TestAnswer '' '' '' '' ''
+        Get-PhxOutput { phx init } | Should -Match 'github.com/summitnl uses wpaap, but gh is not logged in as wpaap'
+        $script:Answers.Count | Should -Be 0
+        Read-TestConfig | Should -Be $before
     }
 
     It 'skips the accounts when gh is not logged in' {

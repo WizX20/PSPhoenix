@@ -122,17 +122,25 @@ function Select-PhxInitAccount {
         $hostName = $owner.Name.Split('/')[0]
         $names = @($logins | Where-Object Host -EQ $hostName | ForEach-Object Login)
         if (-not $names) { continue }
-        if ($names.Count -eq 1) { $result[$owner.Name] = $names[0]; Write-Host "  $($owner.Name): $($names[0])"; continue }
+        # An account set before stays a choice - the default even - when gh is not logged in with
+        # it on this machine: Enter all the way must change nothing.
+        $configured = $result[$owner.Name]
+        $choices = @($names)
+        if ($configured -and $names -notcontains $configured) {
+            Write-Host "  $($owner.Name) uses $configured, but gh is not logged in as $configured - gh auth login --hostname $hostName" -ForegroundColor Yellow
+            $choices = @($configured) + $names
+        }
+        if ($choices.Count -eq 1) { $result[$owner.Name] = $choices[0]; Write-Host "  $($owner.Name): $($choices[0])"; continue }
         # Default: what is set, else what the repositories' own credential helpers say, else the
         # active account.
-        $fromHelpers = @($owner.Group | Where-Object { $_.account } | Group-Object { $_.account } | Sort-Object Count -Descending | ForEach-Object Name)
+        $fromHelpers = @($owner.Group | Where-Object { $_.helperAccount } | Group-Object { $_.helperAccount } | Sort-Object Count -Descending | ForEach-Object Name)
         $active = @($logins | Where-Object { $_.Host -eq $hostName -and $_.Active } | ForEach-Object Login)
-        $default = @(@($result[$owner.Name]) + $fromHelpers + $active + $names | Where-Object { $_ -and $names -contains $_ })[0]
+        $default = @(@($configured) + $fromHelpers + $active + $names | Where-Object { $_ -and $choices -contains $_ })[0]
         while ($true) {
-            $answer = Read-PhxInitAnswer -Prompt "  $($owner.Name) ($($owner.Count) repositories) - $($names -join ' / ')" -Default $default
-            $match = @($names | Where-Object { $_ -eq $answer })[0]
+            $answer = Read-PhxInitAnswer -Prompt "  $($owner.Name) ($($owner.Count) repositories) - $($choices -join ' / ')" -Default $default
+            $match = @($choices | Where-Object { $_ -eq $answer })[0]
             if ($match) { $result[$owner.Name] = $match; break }
-            Write-Host "  one of: $($names -join ', ')" -ForegroundColor Yellow
+            Write-Host "  one of: $($choices -join ', ')" -ForegroundColor Yellow
         }
     }
     $result
