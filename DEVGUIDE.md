@@ -41,6 +41,7 @@ Requires **PowerShell 7.4+**, git, and [Task](https://taskfile.dev) for the `tas
 task check                      # lint + test, what CI runs
 task lint                       # PSScriptAnalyzer over src/, scripts/, tests/
 task test                       # Pester; `task test -- tests/PSPhoenix.Tests.ps1` for one file
+task test:linux                 # the same suite in a Linux container (Docker), like CI's pwsh-linux job
 task help                       # print `phx --help` (the README quotes it)
 ```
 
@@ -48,7 +49,7 @@ task help                       # print `phx --help` (the README quotes it)
 - **Nothing in the suite may touch the real machine.** Config and state paths derive from `APPDATA`/`LOCALAPPDATA` (Windows) and `XDG_CONFIG_HOME`/`XDG_STATE_HOME` (elsewhere); `Use-TestHome` points them into `$TestDrive`. Providers follow the same rule: a fake home per test, and anything that reaches outside the file system (the registry, Task Scheduler, `winget`, `scoop`, `gh`) goes through a small wrapper function the tests mock.
 - **Every provider gets a round-trip test**: back up into one `$TestDrive` home, restore into another, compare. Git-backed tests build throwaway repositories (a bare `origin` plus a clone) the way PSWorktree's suite does.
 - `phx` prints through `Write-Host`; tests capture it with `6>&1` (the `Get-PhxOutput { phx ... }` helper). Call `phx` with real switches inside the block — splatting `'-Provider'` as a string would bind it positionally.
-- CI runs the suite on Windows and Linux (pwsh). No `\` in a path that reaches git or gets compared: build paths with `Join-Path`, match separators in test regexes with `[\\/]`.
+- CI runs the suite on Windows and Linux (pwsh); `task test:linux` runs the Linux half locally in a throwaway `mcr.microsoft.com/powershell` container, with the working copy mounted read-only. No `\` in a path that reaches git or gets compared: build paths with `Join-Path`, match separators in test regexes with `[\\/]`.
 - When `task help` changes, paste it into the README's help block. Three lines differ per machine or release — keep `PSPhoenix <version>`, `config: %APPDATA%\PSPhoenix\config.json` and `module: <module folder>` there. A test compares the two with those three lines normalised, so a help change without the README fails `task test`.
 
 ## Adding a provider
@@ -114,6 +115,14 @@ To set up on GitHub: **Settings → Rules → Rulesets → main**. Pull request 
 - Manifest: `bucket/psphoenix.json`. The release workflow bumps `version`/`url`/`hash`; `checkver: github` + `autoupdate` let `scoop update` find new releases.
 - Users subscribe straight from this repo: `scoop bucket add psphoenix https://github.com/WizX20/PSPhoenix`. With three WizX20 tools now, moving the manifests into one `WizX20/scoop-bucket` repo is worth doing (#1).
 - `psmodule.name: PSPhoenix` junctions `~/scoop/modules/PSPhoenix` to the install dir; `post_install` patches `PSModulePath` in the running process. No `depends: pwsh`: that would install a second PowerShell next to a winget or MSI one.
+
+## Stacked pull requests
+
+A feature too big for one review goes in as a stack of PRs, each based on the branch below it. How to build one, carry review fixes up it and merge it is in [`.claude/skills/pr-stack/SKILL.md`](.claude/skills/pr-stack/SKILL.md) (a Claude Code project skill, plain Markdown for everyone else). The merge itself is one command:
+
+```powershell
+task merge-stack -- 38 39 40      # bottom first: waits for checks, squash-merges each, keeps the next one mergeable
+```
 
 ## Conventions
 

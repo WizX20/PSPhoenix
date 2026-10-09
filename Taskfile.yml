@@ -23,6 +23,11 @@ tasks:
     cmds:
       - '{{.PS}} -File scripts/test.ps1 {{.CLI_ARGS}}'
 
+  test:linux:
+    desc: The Pester suite in a Linux container (needs Docker), like the pwsh-linux CI job. Pass a path after -- for one file
+    cmds:
+      - '{{.PS}} -File scripts/test-linux.ps1 {{.CLI_ARGS}}'
+
   check:
     desc: lint + test, what CI runs
     cmds:
@@ -53,6 +58,11 @@ tasks:
     desc: Run the GitHub CLI as WizX20 without switching accounts, e.g. task gh -- pr status
     cmds:
       - git gh {{.CLI_ARGS}}
+
+  merge-stack:
+    desc: Merge stacked PRs bottom-up, each as its own squash, e.g. task merge-stack -- 38 39 40 (see .claude/skills/pr-stack)
+    cmds:
+      - '{{.PS}} -File scripts/merge-stack.ps1 {{.CLI_ARGS}}'
 
   release:
     desc: Dispatch the Release workflow now (also runs weekly on its own). VERSION=x.y.z forces a version, else next patch
