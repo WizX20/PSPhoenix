@@ -10,8 +10,9 @@
 # the JSON handling lean on PowerShell 7.
 
 $script:OnWindows = [System.Environment]::OSVersion.Platform -eq 'Win32NT'
-# Native tools write progress to stderr; a caller with 'Stop' must not turn that into a throw.
-$ErrorActionPreference = 'Continue'
+# No module-wide $ErrorActionPreference: a caller's 'Stop' must reach phx's errors. (From
+# PowerShell 7.2 on, a native tool's stderr is no error record unless redirected, so 'Stop' does
+# not turn git's progress output into a throw.)
 
 # A foreach statement, not ForEach-Object: dot-sourcing must land in the module scope.
 foreach ($folder in 'Private', 'Providers') {
@@ -78,9 +79,11 @@ function phx {
     # Stop throws, and `pwsh -Command phx ...` - what a scheduled task runs - exits with 1. The
     # aliases keep -P and -E unambiguous next to the common parameters (-PipelineVariable,
     # -ProgressAction, -ErrorAction, ...). It declares the flags of milestones that are not built
-    # yet, so the help and the command line agree from the start; each loses the suppression's
-    # cover once its milestone uses it.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'Flags of commands from later milestones.')]
+    # yet, so the help and the command line agree from the start. One suppression per flag, so
+    # the rule stays live for every other parameter; each goes once its milestone uses the flag.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Provider', Justification = 'phx run -Provider arrives with M2.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Every', Justification = 'phx schedule -Every arrives with M2.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'From', Justification = 'phx restore -From arrives with M6.')]
     [CmdletBinding()]
     param(
         [Parameter(Position = 0)][string]$Command,
@@ -99,14 +102,8 @@ function phx {
                 [System.NotImplementedException]::new($message), 'PhxNotBuiltYet', 'NotImplemented', $Command))
         return
     }
-    $handler = switch ($Command) {
-        'roots' { { Invoke-PhxRootsCommand -Action $Arg -Path $Arg2 -Depth $Depth } }
-        'scan' { { Invoke-PhxScan } }
-        'init' { { Invoke-PhxInit } }
-        'providers' { { Show-PhxProviders } }
-        'version' { { Write-Host "PSPhoenix $(Get-PhxVersion)" } }
-    }
-    if (-not $handler) {
+    # Unknown before the try: its error must not be caught and wrapped a second time.
+    if ($script:PhxCommands -notcontains $Command) {
         $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
                 [System.ArgumentException]::new("unknown command '$Command' - see: phx help"), 'PhxUnknownCommand', 'InvalidArgument', $Command))
         return
@@ -114,8 +111,16 @@ function phx {
     # A command that fails throws; that becomes an error of phx itself - "phx: <message>", $? false,
     # exit code 1 - rather than an exception pointing into a helper. A fresh exception (the
     # original as its inner one): reusing a thrown one carries the throw site along.
-    try { & $handler }
-    catch [System.Management.Automation.PipelineStoppedException] { throw }   # Ctrl+C just stops
+    # Ctrl+C is no failure: PowerShell never hands a PipelineStoppedException to a catch block.
+    try {
+        switch ($Command) {
+            'roots' { Invoke-PhxRootsCommand -Action $Arg -Path $Arg2 -Depth $Depth }
+            'scan' { Invoke-PhxScan }
+            'init' { Invoke-PhxInit }
+            'providers' { Show-PhxProviders }
+            'version' { Write-Host "PSPhoenix $(Get-PhxVersion)" }
+        }
+    }
     catch {
         $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
                 [System.InvalidOperationException]::new($_.Exception.Message, $_.Exception), 'PhxCommandFailed', 'InvalidOperation', $Command))
