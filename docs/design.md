@@ -47,8 +47,12 @@ machine from it with `phx restore`.
   `local/<path relative to its root>` and a full bundle, since there is nothing to clone it from.
   The same remote cloned twice keeps one identity in two places; `phx scan` points it out.
 - **Discovery cache**: `phx scan` writes what it found (root, relative path, remotes, identity,
-  linked worktrees) to `repos.json` in the state folder. Links and junctions are not followed, and
-  build-output folders (`node_modules`, `bin`, `obj`, ...) are not entered.
+  linked worktrees with their branch) to `repos.json` in the state folder. Links and junctions are
+  not followed - a cloud-sync placeholder (OneDrive, Dropbox) is not a link and is searched - and
+  build-output folders (`node_modules`, `bin`, `obj`, ...) are not entered. Nothing a scan cannot
+  see is dropped: a root whose folder is gone keeps the last scan's repositories, marked offline;
+  a repository git cannot read keeps its last record, with a warning. Remote URLs are recorded
+  without credentials (`user:password@`, or a token as user name).
 - **Worktree**: a linked worktree (including Claude Code's `.claude/worktrees/*`) belongs to its
   main repository and is recorded there, never as a repository of its own.
 - **Provider**: one unit of backup and restore (`repos`, `claude`, `winget`, ...). See
@@ -146,7 +150,8 @@ repository, or commits authored with the wrong identity.
 
 - every remote URL and push URL (the owner is visible in it);
 - the repo-local identity, in order and with repeated keys: `user.name`, `user.email`,
-  `user.signingkey`, `include.path`, `credential.*` (a reset `helper =` followed by the real one),
+  `user.signingkey`, `include.path`, `credential.*` (a reset `helper =` followed by the real one;
+  a helper that carries a password or token is not recorded, with a warning),
   `core.sshCommand` (a per-repository SSH key), and the signing settings (`commit.gpgsign`,
   `tag.gpgsign`, `gpg.format`, `gpg.ssh.allowedSignersFile`). Values from a file the local config
   includes (a `.gitconfig` tracked in the repository) are not copied - the clone brings that file
@@ -160,7 +165,8 @@ repository, or commits authored with the wrong identity.
 1. **Preflight**: `gh auth status` must list every account the selected repositories need. A
    missing account stops the restore with the exact `gh auth login` to run.
 2. **Clone with that account's token** for the clone process only:
-   `GH_TOKEN = gh auth token --user <account>`. Never `gh auth switch`, never a token on disk.
+   `GH_TOKEN = gh auth token --user <account>` (`GH_ENTERPRISE_TOKEN` for a GitHub Enterprise host
+   `gh` is logged in to). Never `gh auth switch`, never a token on disk.
 3. **Re-apply the repo-local config** (`include.path`, `user.*`, credential helper) right after the
    clone, before any fetch or push; then check out the recorded branch when the remote has it.
    A repository already in place gets the same re-apply and nothing else. Linked worktrees are

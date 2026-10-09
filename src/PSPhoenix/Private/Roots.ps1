@@ -40,15 +40,23 @@ function Add-PhxRoot {
         [int]$Depth
     )
     if (-not $Path) { throw 'usage: phx roots add <path> [-Depth <n>]' }
-    if (-not $Depth) { $Depth = $script:PhxDefaultRootDepth }
     $full = ConvertTo-PhxFullPath $Path
     if (-not [IO.Directory]::Exists($full)) { throw "no such folder: $full" }
 
     $config = Read-PhxConfig
+    # An existing root with an explicit -Depth: change its depth.
+    $existing = @($config.roots | Where-Object { $_ -and [string]::Equals($_.path, $full, (Get-PhxPathComparison)) })[0]
+    if ($existing) {
+        if (-not $Depth) { throw "$full is a root already (depth $($existing.depth)) - add -Depth <n> to change its depth" }
+        $existing.depth = $Depth
+        Save-PhxConfig $config
+        Write-Host "root $($existing.path) now has depth $Depth - phx scan picks it up" -ForegroundColor Green
+        return
+    }
+    if (-not $Depth) { $Depth = $script:PhxDefaultRootDepth }
     foreach ($root in @($config.roots | Where-Object { $_ })) {
         # Overlapping roots would make discovery see the same repositories twice.
-        if ([string]::Equals($root.path, $full, (Get-PhxPathComparison))) { throw "$full is a root already" }
-        if (Test-PhxPathWithin $full $root.path) { throw "$full lies inside the root $($root.path) - raise that root's depth instead (phx roots rm, then add with -Depth)" }
+        if (Test-PhxPathWithin $full $root.path) { throw "$full lies inside the root $($root.path) - raise that root's depth instead (phx roots add $($root.path) -Depth <n>)" }
         if (Test-PhxPathWithin $root.path $full) { throw "$full contains the root $($root.path) - remove that one first (phx roots rm $($root.path))" }
     }
     $config.roots = @($config.roots | Where-Object { $_ }) + @([ordered]@{ path = $full; depth = $Depth })
@@ -89,11 +97,8 @@ function Show-PhxRoots {
     }
     $cache = Read-PhxRepoCache
     foreach ($root in $roots) {
-        $found = if (-not $cache) { 'not scanned yet' }
-        else {
-            $count = @(@($cache.repositories) | Where-Object { [string]::Equals($_.root, $root.path, (Get-PhxPathComparison)) }).Count
-            "$count repositories"
-        }
+        $count = Get-PhxRootRepoCount -Cache $cache -Root $root.path
+        $found = if ($null -eq $count) { 'not scanned yet' } else { "$count repositories" }
         $missing = if ([IO.Directory]::Exists($root.path)) { '' } else { '   (folder not found)' }
         Write-Host ('  {0}   depth {1}   {2}{3}' -f $root.path, $root.depth, $found, $missing)
     }
