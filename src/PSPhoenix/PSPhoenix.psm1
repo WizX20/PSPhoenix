@@ -10,8 +10,9 @@
 # the JSON handling lean on PowerShell 7.
 
 $script:OnWindows = [System.Environment]::OSVersion.Platform -eq 'Win32NT'
-# Native tools write progress to stderr; a caller with 'Stop' must not turn that into a throw.
-$ErrorActionPreference = 'Continue'
+# No module-wide $ErrorActionPreference: a caller's 'Stop' must reach phx's errors. (From
+# PowerShell 7.2 on, a native tool's stderr is no error record unless redirected, so 'Stop' does
+# not turn git's progress output into a throw.)
 
 # A foreach statement, not ForEach-Object: dot-sourcing must land in the module scope.
 foreach ($folder in 'Private', 'Providers') {
@@ -25,13 +26,12 @@ $script:PhxPlanned = [ordered]@{
     init     = 'M1'
     status   = 'M1'
     scan     = 'M1'
-    roots    = 'M1'
     run      = 'M2'
     schedule = 'M2'
     review   = 'M3'
     restore  = 'M6'
 }
-$script:PhxCommands = @($script:PhxPlanned.Keys) + @('providers', 'version', 'help')
+$script:PhxCommands = @($script:PhxPlanned.Keys) + @('roots', 'providers', 'version', 'help')
 
 function Get-PhxVersion { (Get-Module PSPhoenix).Version }
 
@@ -48,7 +48,7 @@ USAGE:
   phx init                        set up: roots, target, interval, secrets, schedule   (M1)
   phx status                      last run, pending review items, local-only work      (M1)
   phx scan                        re-discover repositories under the roots             (M1)
-  phx roots add|rm|list [<path>]  the folders that hold your repositories              (M1)
+  phx roots add|rm|list [<path>]  the folders that hold your repositories; add: -Depth <n>
   phx run [-Provider <name>]      one backup run now (the scheduled task calls this)   (M2)
   phx schedule on|off|status      the background task; -Every <n>h sets the interval   (M2)
   phx review                      decide on new gitignored files                       (M3)
@@ -83,8 +83,6 @@ function phx {
     # -ProgressAction, -ErrorAction, ...). It declares the flags of milestones that are not built
     # yet, so the help and the command line agree from the start. One suppression per flag, so
     # the rule stays live for every other parameter; each goes once its milestone uses the flag.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Arg', Justification = 'Used by commands from later milestones.')]
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Arg2', Justification = 'Used by commands from later milestones.')]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Provider', Justification = 'phx run -Provider arrives with M2.')]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Every', Justification = 'phx schedule -Every arrives with M2.')]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'From', Justification = 'phx restore -From arrives with M6.')]
@@ -93,6 +91,7 @@ function phx {
         [Parameter(Position = 0)][string]$Command,
         [Parameter(Position = 1)][string]$Arg,
         [Parameter(Position = 2)][string]$Arg2,
+        [ValidateRange(1, 10)][int]$Depth,
         [Alias('P')][string]$Provider,
         [Alias('E')][string]$Every,
         [string]$From,
@@ -105,13 +104,25 @@ function phx {
                 [System.NotImplementedException]::new($message), 'PhxNotBuiltYet', 'NotImplemented', $Command))
         return
     }
-    switch ($Command) {
-        'providers' { Show-PhxProviders }
-        'version' { Write-Host "PSPhoenix $(Get-PhxVersion)" }
-        default {
-            $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
-                    [System.ArgumentException]::new("unknown command '$Command' - see: phx help"), 'PhxUnknownCommand', 'InvalidArgument', $Command))
+    # Unknown before the try: its error must not be caught and wrapped a second time.
+    if ($script:PhxCommands -notcontains $Command) {
+        $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
+                [System.ArgumentException]::new("unknown command '$Command' - see: phx help"), 'PhxUnknownCommand', 'InvalidArgument', $Command))
+        return
+    }
+    # A command that fails throws; that becomes an error of phx itself - "phx: <message>", $? false,
+    # exit code 1 - rather than an exception pointing into a helper. A fresh exception (the
+    # original as its inner one): reusing a thrown one carries the throw site along.
+    try {
+        switch ($Command) {
+            'roots' { Invoke-PhxRootsCommand -Action $Arg -Path $Arg2 -Depth $Depth }
+            'providers' { Show-PhxProviders }
+            'version' { Write-Host "PSPhoenix $(Get-PhxVersion)" }
         }
+    }
+    catch {
+        $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
+                [System.InvalidOperationException]::new($_.Exception.Message, $_.Exception), 'PhxCommandFailed', 'InvalidOperation', $Command))
     }
 }
 
