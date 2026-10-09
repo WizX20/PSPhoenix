@@ -1,8 +1,8 @@
 # PSPhoenix design
 
-Status: **draft**, nothing below is implemented yet beyond the module skeleton. This document is the
-contract the milestones in [Roadmap](#roadmap) build towards; change it in the same PR as the code
-that deviates from it.
+Status: **draft**. M1 is built - `phx init`, `phx roots`, `phx scan`, `phx status` and the `repos`
+provider; the rest is not yet (see [Roadmap](#roadmap)). This document is the contract the milestones
+build towards; change it in the same PR as the code that deviates from it.
 
 ## Problem
 
@@ -162,11 +162,15 @@ repository, or commits authored with the wrong identity.
 
 **Restore**:
 
-1. **Preflight**: `gh auth status` must list every account the selected repositories need. A
-   missing account stops the restore with the exact `gh auth login` to run.
+1. **Preflight** (`phx restore`, M6): `gh auth status` must list every account the selected
+   repositories need. A missing account stops the restore before anything is cloned, with the exact
+   `gh auth login` to run. The `repos` provider has no preflight of its own; `phx status` warns
+   about a missing account ahead of time.
 2. **Clone with that account's token** for the clone process only:
    `GH_TOKEN = gh auth token --user <account>` (`GH_ENTERPRISE_TOKEN` for a GitHub Enterprise host
-   `gh` is logged in to). Never `gh auth switch`, never a token on disk.
+   `gh` is logged in to). Never `gh auth switch`, never a token on disk. Clones that run side by
+   side, each with its own account, need the token in each child process's environment, not in
+   the shared process environment.
 3. **Re-apply the repo-local config** (`include.path`, `user.*`, credential helper) right after the
    clone, before any fetch or push; then check out the recorded branch when the remote has it.
    A repository already in place gets the same re-apply and nothing else. Linked worktrees are

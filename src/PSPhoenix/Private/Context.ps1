@@ -16,7 +16,8 @@ function New-PhxContext {
     param(
         [Parameter(Mandatory)][string]$Provider,
         # Backup writes here; restore reads from here - the provider's folder in a snapshot.
-        [Parameter(Mandatory)][string]$Staging,
+        # Status has none.
+        [string]$Staging = '',
         [System.Collections.IDictionary]$Config,
         [switch]$DryRun,
         # Restore: old root -> new root (absent = unchanged).

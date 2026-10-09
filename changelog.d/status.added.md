@@ -1,0 +1,1 @@
+- feat: `phx status` - config, target (found and writable), interval, roots with their repository counts (or "not scanned" for a root added since), the age of the last scan, each provider's status, and every GitHub account the repositories need checked against `gh auth status`; a problem is a warning line and counted; only an unreadable config is an error

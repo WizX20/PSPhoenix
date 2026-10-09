@@ -23,13 +23,12 @@ foreach ($folder in 'Private', 'Providers') {
 
 # Commands that exist in the help but arrive with a later milestone (docs/design.md -> Roadmap).
 $script:PhxPlanned = [ordered]@{
-    status   = 'M1'
     run      = 'M2'
     schedule = 'M2'
     review   = 'M3'
     restore  = 'M6'
 }
-$script:PhxCommands = @($script:PhxPlanned.Keys) + @('init', 'roots', 'scan', 'providers', 'version', 'help')
+$script:PhxCommands = @($script:PhxPlanned.Keys) + @('init', 'status', 'roots', 'scan', 'providers', 'version', 'help')
 
 function Get-PhxVersion { (Get-Module PSPhoenix).Version }
 
@@ -44,7 +43,7 @@ environment variables.
 
 USAGE:
   phx init                        set up or change: roots, accounts, target, interval
-  phx status                      last run, pending review items, local-only work      (M1)
+  phx status                      what is set up, and what needs attention
   phx scan                        re-discover repositories under the roots
   phx roots add|rm|list [<path>]  the folders that hold your repositories; add: -Depth <n>
   phx run [-Provider <name>]      one backup run now (the scheduled task calls this)   (M2)
@@ -117,6 +116,7 @@ function phx {
             'roots' { Invoke-PhxRootsCommand -Action $Arg -Path $Arg2 -Depth $Depth }
             'scan' { Invoke-PhxScan }
             'init' { Invoke-PhxInit }
+            'status' { Show-PhxStatus }
             'providers' { Show-PhxProviders }
             'version' { Write-Host "PSPhoenix $(Get-PhxVersion)" }
         }

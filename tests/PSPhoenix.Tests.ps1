@@ -1289,6 +1289,147 @@ Describe 'init' {
     }
 }
 
+Describe 'status' {
+    BeforeEach {
+        $testHome = Use-TestHome
+        $repos = Join-Path $testHome 'Repos'
+        New-TestRepository (Join-Path $repos 'Mine') -Remote 'origin=https://github.com/WizX20/mine.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'Work') -Remote 'origin=https://github.com/summitnl/work.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'Scratch') | Out-Null
+        $target = Join-Path $testHome 'Target'
+        New-Item -ItemType Directory -Path $target | Out-Null
+        Mock Get-PhxGhAccount -ModuleName PSPhoenix {
+            [pscustomobject]@{ Host = 'github.com'; Login = 'wpaap'; Active = $true }
+            [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $false }
+        }
+
+        function Set-TestConfig {
+            param([string]$WorkAccount = 'wpaap', [string]$TargetPath = $target)
+            InModuleScope PSPhoenix -Parameters @{ Root = $repos; Target = $TargetPath; Work = $WorkAccount } {
+                param($Root, $Target, $Work)
+                $c = Read-PhxConfig
+                $c.roots = @([ordered]@{ path = $Root; depth = 3 })
+                $c.target = [ordered]@{ type = 'folder'; path = $Target }
+                $c.accounts['github.com/WizX20'] = 'WizX20'
+                $c.accounts['github.com/summitnl'] = $Work
+                Save-PhxConfig $c
+            }
+        }
+    }
+
+    It 'says when nothing is set up yet' {
+        Get-PhxOutput { phx status } | Should -Match 'not set up yet - run: phx init'
+    }
+
+    It 'shows the set-up, and finds nothing that needs attention' {
+        Set-TestConfig
+        phx scan 6>$null
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match ('target\s+' + [regex]::Escape($target))
+        $output | Should -Match ('root\s+' + [regex]::Escape($repos) + '\s+depth 3\s+3 repositories')
+        $output | Should -Match 'scan\s+just now'
+        $output | Should -Match 'repos\s+3 repositories, 1 without a remote'
+        $output | Should -Match 'WizX20: 1'
+        $output | Should -Match 'account\s+wpaap on github.com \(1 repositories\) - logged in to gh'
+        $output | Should -Match 'last run\s+arrives with M2'
+        $output | Should -Match 'nothing needs attention'
+    }
+
+    It 'warns about an account gh is not logged in with' {
+        Set-TestConfig -WorkAccount 'Ghost'
+        phx scan 6>$null
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match 'Ghost on github.com \(1 repositories\) - not logged in to gh: gh auth login --hostname github.com'
+        $output | Should -Match '1 thing\(s\) need attention'
+    }
+
+    It 'warns about a missing target, a missing root folder and a missing scan' {
+        Set-TestConfig -TargetPath (Join-Path $testHome 'Unplugged')
+        Remove-Item -LiteralPath $repos -Recurse -Force
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match 'Unplugged - folder not found'
+        $output | Should -Match 'depth 3\s+folder not found'
+        $output | Should -Match 'not scanned yet - phx scan'
+        $output | Should -Match '3 thing\(s\) need attention'
+    }
+
+    It "keeps going when a provider's status fails" {
+        Set-TestConfig
+        InModuleScope PSPhoenix {
+            $script:SavedProviders = [ordered]@{}
+            foreach ($key in $script:PhxProviders.Keys) { $script:SavedProviders[$key] = $script:PhxProviders[$key] }
+            Register-PhxProvider @{ Name = 'broken'; Description = 'b'; Backup = {}; Restore = {}; Status = { throw 'boom' } }
+        }
+        try { Get-PhxOutput { phx status } | Should -Match 'broken\s+status failed: boom' }
+        finally { InModuleScope PSPhoenix { $script:PhxProviders = $script:SavedProviders } }
+    }
+
+    It 'says how long ago, in words' {
+        InModuleScope PSPhoenix {
+            Format-PhxAge ([DateTime]::UtcNow) | Should -Be 'just now'
+            Format-PhxAge ([DateTime]::UtcNow.AddSeconds(-90)) | Should -Be '1 minute ago'
+            Format-PhxAge ([DateTime]::UtcNow.AddMinutes(-30)) | Should -Be '30 minutes ago'
+            Format-PhxAge ([DateTime]::UtcNow.AddMinutes(-61)) | Should -Be '1 hour ago'
+            Format-PhxAge ([DateTime]::UtcNow.AddHours(-5)) | Should -Be '5 hours ago'
+            Format-PhxAge ([DateTime]::UtcNow.AddDays(-3)) | Should -Be '3 days ago'
+        }
+    }
+
+    It 'warns about a target it cannot write to' {
+        Set-TestConfig
+        phx scan 6>$null
+        Mock Test-PhxWritableFolder -ModuleName PSPhoenix { $false }
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match 'cannot write there'
+        $output | Should -Match '1 thing\(s\) need attention'
+    }
+
+    It 'probes a folder for writing without leaving anything behind' {
+        $folder = Join-Path $testHome 'Probe'
+        New-Item -ItemType Directory -Path $folder | Out-Null
+        InModuleScope PSPhoenix -Parameters @{ Folder = $folder } {
+            param($Folder)
+            Test-PhxWritableFolder $Folder | Should -BeTrue
+            Test-PhxWritableFolder (Join-Path $Folder 'Missing') | Should -BeFalse
+        }
+        @(Get-ChildItem -LiteralPath $folder -Force).Count | Should -Be 0
+    }
+
+    It 'counts only the configured roots, and says which one the last scan did not cover' {
+        # Scanned: Repos and Extra. Then Extra is removed and New added - neither scanned that way.
+        $extra = Join-Path $testHome 'Extra'
+        New-TestRepository (Join-Path $extra 'Gone') -Remote 'origin=https://github.com/summitnl/gone.git' | Out-Null
+        $new = Join-Path $testHome 'New'
+        New-Item -ItemType Directory -Path $new | Out-Null
+        Set-TestConfig
+        phx roots add $extra 6>$null
+        phx scan 6>$null
+        phx roots rm $extra 6>$null
+        phx roots add $new 6>$null
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match ([regex]::Escape($new) + '\s+depth 3\s+not scanned')
+        $output | Should -Match '1 root\(s\) not scanned yet - phx scan'
+        $output | Should -Match 'repos\s+3 repositories, 1 without a remote'
+        $output | Should -Match 'account\s+wpaap on github.com \(1 repositories\)'
+        $output | Should -Not -Match ([regex]::Escape($extra))
+    }
+
+    It 'warns about a scan time it cannot read, and says once that it ignores a broken cache' {
+        Set-TestConfig
+        phx scan 6>$null
+        $cachePath = InModuleScope PSPhoenix { Get-PhxRepoCachePath }
+        $cache = Get-Content -LiteralPath $cachePath -Raw | ConvertFrom-Json -AsHashtable
+        $cache.scannedAt = 'some day'
+        Set-Content -LiteralPath $cachePath -Value ($cache | ConvertTo-Json -Depth 10)
+        Get-PhxOutput { phx status } | Should -Match 'scan\s+time unknown - phx scan refreshes it'
+
+        Set-Content -LiteralPath $cachePath -Value 'not json'
+        $output = Get-PhxOutput { phx status }
+        [regex]::Matches($output, 'ignoring ').Count | Should -Be 1
+        $output | Should -Match 'not scanned yet - phx scan'
+    }
+}
+
 Describe 'init without a console' {
     BeforeEach {
         Use-TestHome | Out-Null
