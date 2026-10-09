@@ -95,8 +95,11 @@ function Show-PhxRoots {
         Write-Host 'no roots yet - add the folders that hold your repositories: phx roots add <path>' -ForegroundColor Yellow
         return
     }
+    $cache = Read-PhxRepoCache
     foreach ($root in $roots) {
+        $count = Get-PhxRootRepoCount -Cache $cache -Root $root.path
+        $found = if ($null -eq $count) { 'not scanned yet' } else { "$count repositories" }
         $missing = if ([IO.Directory]::Exists($root.path)) { '' } else { '   (folder not found)' }
-        Write-Host ('  {0}   depth {1}{2}' -f $root.path, $root.depth, $missing)
+        Write-Host ('  {0}   depth {1}   {2}{3}' -f $root.path, $root.depth, $found, $missing)
     }
 }

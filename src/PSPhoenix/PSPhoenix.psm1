@@ -25,13 +25,12 @@ foreach ($folder in 'Private', 'Providers') {
 $script:PhxPlanned = [ordered]@{
     init     = 'M1'
     status   = 'M1'
-    scan     = 'M1'
     run      = 'M2'
     schedule = 'M2'
     review   = 'M3'
     restore  = 'M6'
 }
-$script:PhxCommands = @($script:PhxPlanned.Keys) + @('roots', 'providers', 'version', 'help')
+$script:PhxCommands = @($script:PhxPlanned.Keys) + @('roots', 'scan', 'providers', 'version', 'help')
 
 function Get-PhxVersion { (Get-Module PSPhoenix).Version }
 
@@ -47,7 +46,7 @@ environment variables.
 USAGE:
   phx init                        set up: roots, target, interval, secrets, schedule   (M1)
   phx status                      last run, pending review items, local-only work      (M1)
-  phx scan                        re-discover repositories under the roots             (M1)
+  phx scan                        re-discover repositories under the roots
   phx roots add|rm|list [<path>]  the folders that hold your repositories; add: -Depth <n>
   phx run [-Provider <name>]      one backup run now (the scheduled task calls this)   (M2)
   phx schedule on|off|status      the background task; -Every <n>h sets the interval   (M2)
@@ -116,6 +115,7 @@ function phx {
     try {
         switch ($Command) {
             'roots' { Invoke-PhxRootsCommand -Action $Arg -Path $Arg2 -Depth $Depth }
+            'scan' { Invoke-PhxScan }
             'providers' { Show-PhxProviders }
             'version' { Write-Host "PSPhoenix $(Get-PhxVersion)" }
         }
