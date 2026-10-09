@@ -199,14 +199,6 @@ function Select-PhxInitMachine {
     }
 }
 
-function Test-PhxInterval {
-    # 15m to 31d: more often makes a run overlap the next; Task Scheduler repeats at most every 31 days.
-    param([string]$Interval)
-    if ($Interval -notmatch '^(?<n>[1-9][0-9]{0,5})(?<unit>[mhd])$') { return $false }
-    $minutes = [long]$Matches.n * @{ m = 1; h = 60; d = 1440 }[$Matches.unit]
-    $minutes -ge 15 -and $minutes -le 31 * 1440
-}
-
 function Select-PhxInitInterval {
     # Step 6: how often the background run goes (phx schedule, M2, turns it on).
     param([string]$Current)

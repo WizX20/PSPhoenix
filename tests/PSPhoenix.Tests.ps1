@@ -315,6 +315,23 @@ Describe 'config' {
         @($config.Keys) | Should -Be @('version', 'roots', 'target', 'machine', 'interval', 'providers', 'accounts', 'secrets', 'files')
     }
 
+    It 'refuses a config whose <Case>' -ForEach @(
+        @{ Case = 'interval is no duration'; Json = '{ "version": 1, "interval": "hourly" }'; Message = "*interval 'hourly' must be 15m to 31d*" }
+        @{ Case = 'interval is too short'; Json = '{ "version": 1, "interval": "5m" }'; Message = "*interval '5m' must be 15m to 31d*" }
+        @{ Case = 'provider settings are no object'; Json = '{ "version": 1, "providers": { "winget": true } }'; Message = '*providers.winget must be an object*' }
+        @{ Case = 'provider enabled is no boolean'; Json = '{ "version": 1, "providers": { "winget": { "enabled": "no" } } }'; Message = '*providers.winget.enabled must be true or false*' }
+        @{ Case = 'provider cadence is no duration'; Json = '{ "version": 1, "providers": { "winget": { "cadence": "daily" } } }'; Message = "*providers.winget.cadence 'daily' must look like 30m, 1h or 1d*" }
+    ) {
+        Use-TestHome | Out-Null
+        InModuleScope PSPhoenix -Parameters @{ Json = $Json } {
+            param($Json)
+            $path = Get-PhxConfigPath
+            [IO.Directory]::CreateDirectory((Split-Path $path)) | Out-Null
+            [IO.File]::WriteAllText($path, $Json)
+        }
+        { InModuleScope PSPhoenix { Read-PhxConfig } } | Should -Throw $Message
+    }
+
     It 'gives a hand-written root without a depth the default, and drops an empty entry' {
         Use-TestHome | Out-Null
         $root = (Join-Path $TestDrive 'hand-written') -replace '\\', '/'
@@ -1844,6 +1861,24 @@ Describe 'snapshot' {
         $info.providers.repos.files | Should -Be 1
     }
 
+    It 'does not read the target back when the state knows what it published' {
+        Set-TestMachine 'Box' 'id-1'
+        Set-TestStaged repos @{ 'repos.json' = 'one'; 'gone.txt' = 'soon gone' }
+        $state = InModuleScope PSPhoenix { New-PhxState }
+        InModuleScope PSPhoenix -Parameters @{ State = $state } { param($State) Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider repos -State $State } | Out-Null
+        @($state.published['repos'].Keys | Sort-Object) | Should -Be @('gone.txt', 'repos.json')
+        Set-TestStaged repos @{ 'gone.txt' = '' }
+        $result = InModuleScope PSPhoenix -Parameters @{ State = $state } {
+            param($State)
+            # Reading a published file back would download it from OneDrive: not needed now.
+            Mock Test-PhxSameFile { throw 'the target was read' }
+            (Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider repos -State $State)['repos']
+        }
+        $result.Unchanged | Should -Be 1
+        $result.Removed | Should -Be 1
+        @($state.published['repos'].Keys) | Should -Be @('repos.json')
+    }
+
     It 'keeps two machines side by side in one target' {
         Set-TestMachine 'Desk' 'id-desk'
         Set-TestStaged repos @{ 'repos.json' = 'desk' }
@@ -1882,6 +1917,127 @@ Describe 'snapshot' {
         InModuleScope PSPhoenix {
             foreach ($good in 'Box', 'WOUTER-LT', 'box.home', 'a_b') { Test-PhxMachineName $good | Should -BeTrue -Because $good }
             foreach ($bad in '', 'my laptop', '../x', 'a/b', 'trailing.', '-x', ('x' * 64)) { Test-PhxMachineName $bad | Should -BeFalse -Because $bad }
+        }
+    }
+}
+
+Describe 'state and change detection' {
+    BeforeEach { $script:StateHome = Use-TestHome }
+
+    It 'reads a duration as a TimeSpan, and nothing else' {
+        InModuleScope PSPhoenix {
+            (ConvertTo-PhxTimeSpan '30m').TotalMinutes | Should -Be 30
+            (ConvertTo-PhxTimeSpan '2h').TotalHours | Should -Be 2
+            (ConvertTo-PhxTimeSpan '1d').TotalDays | Should -Be 1
+            foreach ($bad in '', '0h', '1w', '1.5h', '1H', ' 1h', '9999999m') { ConvertTo-PhxTimeSpan $bad | Should -BeNullOrEmpty -Because $bad }
+        }
+    }
+
+    It 'starts from a fresh state when there is none, it is broken, or a newer PSPhoenix wrote it' {
+        InModuleScope PSPhoenix {
+            (Read-PhxState).version | Should -Be 1
+            New-Item -ItemType Directory -Force -Path (Get-PhxStateDir) | Out-Null
+            Set-Content -LiteralPath (Get-PhxStatePath) -Value '{ broken'
+            (Read-PhxState -Quiet).files.Count | Should -Be 0
+            Set-Content -LiteralPath (Get-PhxStatePath) -Value '{ "version": 99, "files": { "x": {} } }'
+            (Read-PhxState -Quiet).files.Count | Should -Be 0
+        }
+    }
+
+    It 'saves and reads back providers, files, published hashes and refs' {
+        InModuleScope PSPhoenix -Parameters @{ File = (Join-Path $script:StateHome 'a.txt') } {
+            param($File)
+            $state = New-PhxState
+            $state.providers['repos'] = [ordered]@{ lastRun = '2026-10-09T10:00:00.0000000Z' }
+            $state.files[$File] = [ordered]@{ size = 3; mtime = 42; sha256 = 'AB' }
+            $state.published['repos'] = New-PhxPathDictionary
+            $state.published['repos']['repos.json'] = 'CD'
+            $state.refs['C:/r'] = 'EF'
+            Save-PhxState $state
+            $read = Read-PhxState
+            ConvertTo-PhxDateTime $read.providers['repos'].lastRun | Should -Be ([datetime]::Parse('2026-10-09T10:00:00Z').ToUniversalTime())
+            $read.files[$File].sha256 | Should -Be 'AB'
+            $read.files[$File].mtime | Should -Be 42
+            $read.published['repos']['repos.json'] | Should -Be 'CD'
+            $read.refs['C:/r'] | Should -Be 'EF'
+        }
+    }
+
+    It 'does not hash a file whose size and mtime are as recorded' {
+        $file = Join-Path $script:StateHome 'tracked.txt'
+        Set-Content -LiteralPath $file -Value 'one'
+        InModuleScope PSPhoenix -Parameters @{ File = $file } {
+            param($File)
+            $state = New-PhxState
+            Test-PhxFileChanged -State $state -Path $File | Should -BeTrue           # new
+            Mock Get-PhxFileHash { throw 'hashed' }
+            Test-PhxFileChanged -State $state -Path $File | Should -BeFalse          # a stat, no hash
+        }
+    }
+
+    It 'tells a changed file from a touched one, and forgets one that is gone' {
+        $file = Join-Path $script:StateHome 'tracked.txt'
+        Set-Content -LiteralPath $file -Value 'one'
+        InModuleScope PSPhoenix -Parameters @{ File = $file } {
+            param($File)
+            $state = New-PhxState
+            Test-PhxFileChanged -State $state -Path $File | Out-Null
+            (Get-Item -LiteralPath $File).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(10)
+            Test-PhxFileChanged -State $state -Path $File | Should -BeFalse          # touched, same bytes
+            Set-Content -LiteralPath $File -Value 'two'
+            Test-PhxFileChanged -State $state -Path $File | Should -BeTrue           # changed
+            Remove-Item -LiteralPath $File
+            Test-PhxFileChanged -State $state -Path $File | Should -BeTrue           # gone
+            $state.files.ContainsKey($File) | Should -BeFalse
+        }
+    }
+
+    It 'runs a provider when its cadence has passed, a little early included' {
+        InModuleScope PSPhoenix {
+            $now = [datetime]::Parse('2026-10-09T12:00:00Z').ToUniversalTime()
+            $provider = @{ Name = 'slow'; Cadence = '1h' }
+            $state = New-PhxState
+            Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeTrue            # never ran
+            $state.providers['slow'] = [ordered]@{ lastRun = $now.AddMinutes(-30).ToString('o') }
+            Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeFalse
+            $state.providers['slow'].lastRun = $now.AddMinutes(-58).ToString('o')
+            Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeTrue             # the hourly run, a bit early
+            # The config overrides the provider's cadence; no cadence at all is every run.
+            $config = @{ providers = @{ slow = @{ cadence = '1d' } } }
+            Test-PhxProviderDue -Provider $provider -State $state -Config $config -Now $now | Should -BeFalse
+            Test-PhxProviderDue -Provider @{ Name = 'every'; Cadence = $null } -State $state -Now $now | Should -BeTrue
+        }
+    }
+
+    It 'scans when there is no scan, a root is missing from it, or it is a day old' {
+        $repos = Join-Path $script:StateHome 'Repos'
+        New-TestRepository (Join-Path $repos 'One') -Remote 'origin=https://github.com/o/one.git' | Out-Null
+        phx roots add $repos 6>$null
+        InModuleScope PSPhoenix { Test-PhxScanDue -Cache (Read-PhxRepoCache) -Config (Read-PhxConfig) } | Should -BeTrue
+        phx scan 6>$null
+        InModuleScope PSPhoenix { Test-PhxScanDue -Cache (Read-PhxRepoCache) -Config (Read-PhxConfig) } | Should -BeFalse
+        InModuleScope PSPhoenix { Test-PhxScanDue -Cache (Read-PhxRepoCache) -Config (Read-PhxConfig) -Now ([DateTime]::UtcNow.AddDays(2)) } | Should -BeTrue
+        $other = Join-Path $script:StateHome 'Other'
+        New-Item -ItemType Directory -Path $other | Out-Null
+        phx roots add $other 6>$null
+        InModuleScope PSPhoenix { Test-PhxScanDue -Cache (Read-PhxRepoCache) -Config (Read-PhxConfig) } | Should -BeTrue
+    }
+
+    It 'hashes the refs of a repository: the same until a ref moves' {
+        $repo = New-TestRepository (Join-Path $script:StateHome 'Refs')
+        $first = InModuleScope PSPhoenix -Parameters @{ Path = $repo } { param($Path) Get-PhxRefsHash $Path }
+        InModuleScope PSPhoenix -Parameters @{ Path = $repo } { param($Path) Get-PhxRefsHash $Path } | Should -Be $first
+        git -C $repo -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m second
+        InModuleScope PSPhoenix -Parameters @{ Path = $repo } { param($Path) Get-PhxRefsHash $Path } | Should -Not -Be $first
+        git -C $repo switch -q -c side
+        InModuleScope PSPhoenix -Parameters @{ Path = $repo } { param($Path) Get-PhxRefsHash $Path } | Should -Not -Be $first
+    }
+
+    It 'gives a provider the state store' {
+        InModuleScope PSPhoenix {
+            (New-PhxContext -Provider repos).State.version | Should -Be 1
+            $state = New-PhxState
+            [object]::ReferenceEquals((New-PhxContext -Provider repos -State $state).State, $state) | Should -BeTrue
         }
     }
 }

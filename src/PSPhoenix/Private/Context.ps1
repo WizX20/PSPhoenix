@@ -1,6 +1,6 @@
-# What a provider gets to work with (docs/design.md -> Provider contract). M1 brings the config,
-# the staging folder, DryRun, a logger and - for restore - the root mapping and the selection; the
-# state store (M2) and the secret writer (M3) join later.
+# What a provider gets to work with (docs/design.md -> Provider contract): the config, the staging
+# folder, the state store, DryRun, a logger and - for restore - the root mapping and the selection;
+# the secret writer (M3) joins later.
 
 function Write-PhxLog {
     # One line of provider output. Warn is yellow, Action (what a restore does or would do) cyan.
@@ -19,6 +19,8 @@ function New-PhxContext {
         # Status has none.
         [string]$Staging = '',
         [System.Collections.IDictionary]$Config,
+        # The state store (State.ps1): Test-PhxFileChanged, refs hashes. A fresh one when not given.
+        [System.Collections.IDictionary]$State,
         [switch]$DryRun,
         # Restore: old root -> new root (absent = unchanged).
         [System.Collections.IDictionary]$RootMap = @{},
@@ -26,10 +28,12 @@ function New-PhxContext {
         [string[]]$Select = @()
     )
     if (-not $Config) { $Config = Read-PhxConfig }
+    if (-not $State) { $State = New-PhxState }
     [pscustomobject]@{
         Provider = $Provider
         Config   = $Config
         Staging  = $Staging
+        State    = $State
         DryRun   = [bool]$DryRun
         RootMap  = $RootMap
         Select   = @($Select)
