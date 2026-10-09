@@ -251,7 +251,8 @@ function Restore-PhxRepos {
         }
         $counts[$result]++
         foreach ($worktree in @($repo.worktrees)) {
-            & $Context.Log "$($repo.identity): worktree $($worktree.path) ($($worktree.branch)) is not recreated - worktrees are transient"
+            $branch = if ($worktree.branch) { $worktree.branch } else { 'detached' }
+            & $Context.Log "$($repo.identity): worktree $($worktree.path) ($branch) is not recreated - worktrees are transient"
         }
     }
     $verb = if ($Context.DryRun) { 'would be ' } else { '' }

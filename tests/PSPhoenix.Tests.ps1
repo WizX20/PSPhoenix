@@ -53,6 +53,15 @@ BeforeAll {
     New-Item -ItemType File -Path $script:EmptyGitConfig -Force | Out-Null
     $env:GIT_CONFIG_GLOBAL = $script:EmptyGitConfig
     $env:GIT_CONFIG_NOSYSTEM = '1'
+    # No developer token in the tests, and no test reaches the real gh - Invoke-PhxGh is the one way
+    # to it. Get-PhxGhAccount swallows errors, so a leak is also recorded: the last test of this
+    # file fails on it.
+    $env:GH_TOKEN = $env:GH_ENTERPRISE_TOKEN = $null
+    $script:GhLeaks = [Collections.Generic.List[string]]::new()
+    Mock Invoke-PhxGh -ModuleName PSPhoenix {
+        $script:GhLeaks.Add("gh $($Arguments -join ' ')")
+        throw 'a test reached gh - mock Get-PhxGhAccount or Get-PhxGhToken'
+    }
     # From here on no test derives anything from the real home - not even a path printed in the
     # help. A test that needs a folder of its own calls Use-TestHome again for its path. (Pester
     # has no root-level BeforeEach.)
@@ -791,6 +800,8 @@ Describe 'repos provider' {
         New-Item -ItemType Directory -Force -Path $snapshot | Out-Null
         # A local remote never needs a token; a call would mean a token went somewhere it should not.
         Mock Get-PhxGhToken { throw 'no token expected' } -ModuleName PSPhoenix
+        # Restore asks gh which hosts it is logged in to: nowhere, unless a test says otherwise.
+        Mock Get-PhxGhAccount -ModuleName PSPhoenix { }
     }
 
     It 'records remotes, branches, identity settings and the account' {
@@ -830,6 +841,52 @@ Describe 'repos provider' {
         Should -Invoke Get-PhxGhToken -ModuleName PSPhoenix -Times 0
     }
 
+    It 'restores every recorded setting as it was' {
+        git -C $one config user.signingkey 'ssh-ed25519 AAAAtest signing@example.invalid'
+        git -C $one config gpg.format ssh
+        git -C $one config tag.gpgsign true
+        git -C $one config includeIf.gitdir:~/work/.path '~/work.gitconfig'
+        Invoke-ReposBackup $snapshot | Out-Null
+        $reposB = Join-Path (Use-TestHome) 'Repos'
+        Invoke-ReposRestore $snapshot -RootMap @{ $reposA = $reposB } | Out-Null
+        # Everything PSPhoenix records - identity settings, every URL - per key, in order.
+        $pattern = InModuleScope PSPhoenix { $script:PhxRepoSettingPattern }
+        $recorded = {
+            param($Path)
+            @(git -C $Path config --local --list) | Where-Object {
+                $key = ($_ -split '=', 2)[0]
+                $key -match $pattern -or $key -match '^remote\.[^.]+\.(url|pushurl)$'
+            } | Sort-Object -Stable { ($_ -split '=', 2)[0] }
+        }
+        $expected = @(& $recorded $one)
+        $expected.Count | Should -BeGreaterThan 10
+        @(& $recorded (Join-Path $reposB 'One')) | Should -Be $expected
+    }
+
+    It 'leaves the checked-out branch of a repository in place alone' {
+        Invoke-ReposBackup $snapshot | Out-Null
+        git -C $one switch -q main
+        Invoke-ReposRestore $snapshot | Should -Match '0 cloned, 2 already in place'
+        git -C $one branch --show-current | Should -Be 'main'
+    }
+
+    It 'records linked worktrees inside and outside the root, detached ones too, and only lists them on restore' {
+        git -C $one worktree add -q -b wt-branch (Join-Path $reposA 'One-wt') 2>$null
+        $outside = Join-Path $machineA 'elsewhere/wt'
+        git -C $one worktree add -q --detach $outside 2>$null
+        phx scan 6>$null
+        Invoke-ReposBackup $snapshot | Should -Match '2 repositories recorded'
+        $worktrees = @((Read-TestInventory $snapshot | Where-Object path -EQ 'One').worktrees)
+        $worktrees | Should -HaveCount 2
+        ($worktrees | Where-Object path -EQ 'One-wt').branch | Should -Be 'wt-branch'
+        $detached = $worktrees | Where-Object path -NE 'One-wt'
+        $detached.path | Should -Be ([IO.Path]::GetFullPath($outside))
+        $detached.branch | Should -BeNullOrEmpty
+        $output = Invoke-ReposRestore $snapshot -RootMap @{ $reposA = (Join-Path (Use-TestHome) 'Repos') }
+        $output | Should -Match 'worktree One-wt \(wt-branch\) is not recreated'
+        $output | Should -Match ('worktree ' + [regex]::Escape([IO.Path]::GetFullPath($outside)) + ' \(detached\) is not recreated')
+    }
+
     It 'changes nothing on a second restore' {
         Invoke-ReposBackup $snapshot | Out-Null
         $reposB = Join-Path (Use-TestHome) 'Repos'
@@ -852,6 +909,8 @@ Describe 'repos provider' {
         @{ Account = 'WorkAccount'; HostName = 'github.com'; Variable = 'GH_TOKEN'; Other = 'GH_ENTERPRISE_TOKEN' }
         @{ Account = 'EnterpriseUser'; HostName = 'ghe.example.com'; Variable = 'GH_ENTERPRISE_TOKEN'; Other = 'GH_TOKEN' }
     ) {
+        # Both variables set here: what the case before this one left must not decide the outcome.
+        [Environment]::SetEnvironmentVariable($Other, $null)
         [Environment]::SetEnvironmentVariable($Variable, 'was-set-before')
         try {
             $seen = InModuleScope PSPhoenix -Parameters @{ Account = $Account; HostName = $HostName; Variable = $Variable; Other = $Other; Target = (Join-Path $TestDrive "clone-$Variable/tok") } {
@@ -1208,10 +1267,20 @@ Describe 'init' {
         Read-TestConfig | Should -Be $before
     }
 
-    It 'stops without saving on q, at any question' {
-        Set-TestAnswer '' 'q'
+    It 'stops without saving on q at the <Question> question' -ForEach @(
+        @{ Question = 'roots'; At = 0 }
+        @{ Question = 'first account'; At = 1 }
+        @{ Question = 'second account'; At = 2 }
+        @{ Question = 'target'; At = 3 }
+        @{ Question = 'create-the-target'; At = 4 }
+        @{ Question = 'interval'; At = 5 }
+        @{ Question = 'save'; At = 6 }
+    ) {
+        $answers = @(@('') * $At) + 'q'
+        Set-TestAnswer @answers
         Get-PhxOutput { phx init } | Should -Match 'stopped - nothing saved'
         $? | Should -BeTrue
+        $script:Prompts | Should -HaveCount ($At + 1)
         Test-Path -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) | Should -BeFalse
         Test-Path -LiteralPath (InModuleScope PSPhoenix { Get-PhxRepoCachePath }) | Should -BeFalse
     }
@@ -1319,6 +1388,16 @@ Describe 'status' {
 
     It 'says when nothing is set up yet' {
         Get-PhxOutput { phx status } | Should -Match 'not set up yet - run: phx init'
+    }
+
+    It 'stops with an error of phx on a config it cannot read' {
+        $configPath = InModuleScope PSPhoenix { Get-PhxConfigPath }
+        New-Item -ItemType Directory -Force -Path (Split-Path $configPath -Parent) | Out-Null
+        Set-Content -LiteralPath $configPath -Value '{ not json'
+        phx status -ErrorAction SilentlyContinue -ErrorVariable failure 6>$null
+        $? | Should -BeFalse
+        $record = $failure | Where-Object FullyQualifiedErrorId -Like 'PhxCommandFailed*' | Select-Object -First 1
+        $record.Exception.Message | Should -BeLike '*not valid JSON*'
     }
 
     It 'shows the set-up, and finds nothing that needs attention' {
@@ -1613,5 +1692,12 @@ Describe 'provider registry' {
 
     It 'phx providers says so when nothing is registered' {
         Get-PhxOutput { phx providers } | Should -Match 'no providers registered yet'
+    }
+}
+
+Describe 'test hygiene' {
+    # Last in the file on purpose: it reads what every test before it left behind.
+    It 'never reached the real gh' {
+        $script:GhLeaks.Count | Should -Be 0 -Because "these calls went to gh: $($script:GhLeaks -join '; ')"
     }
 }
