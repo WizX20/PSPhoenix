@@ -4,15 +4,6 @@
 
 $script:PhxReposFormat = 1
 
-function Read-PhxGitFileRef {
-    # The branch a symbolic ref under .git points at (HEAD, refs/remotes/origin/HEAD), read from the
-    # file - nothing for a detached HEAD or a missing ref. Saves a git call per repository.
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Prefix)
-    if (-not [IO.File]::Exists($Path)) { return }
-    $line = [IO.File]::ReadAllText($Path).Trim()
-    if ($line.StartsWith("ref: $Prefix", [StringComparison]::Ordinal)) { $line.Substring(5 + $Prefix.Length) }
-}
-
 function Resolve-PhxRepoAccount {
     # The account a repository needs, and where that comes from: its own credential helper (in its
     # local config or a file it includes), else the accounts map for its host/owner, else none -
@@ -27,91 +18,70 @@ function Resolve-PhxRepoAccount {
 function Get-PhxRepoAccount {
     # The account a scanned repository needs (see Resolve-PhxRepoAccount).
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Record, [System.Collections.IDictionary]$Accounts)
-    (Resolve-PhxRepoAccount -Identity $Record.identity -HelperAccount $Record.account -Accounts $Accounts).Account
+    (Resolve-PhxRepoAccount -Identity $Record.identity -HelperAccount $Record.helperAccount -Accounts $Accounts).Account
 }
 
-function Get-PhxRepoInventory {
-    # One repository as the snapshot records it: one git call, the rest read from .git.
-    param(
-        [Parameter(Mandatory)][System.Collections.IDictionary]$Record,
-        [System.Collections.IDictionary]$Accounts
-    )
-    $path = Get-PhxRepoPath -Root $Record.root -RelativePath $Record.path
-    $gitDir = Join-Path $path '.git'
-    $local = Read-PhxRepoConfig -Path $path
-    $primary = Get-PhxPrimaryRemote $local.Remotes
-    $resolved = Resolve-PhxRepoAccount -Identity $Record.identity -HelperAccount (Get-PhxCredentialAccount (@($local.Settings) + @($local.Included))) -Accounts $Accounts
-    $attributes = Join-Path $path '.gitattributes'
-    [ordered]@{
+function ConvertTo-PhxRepoInventory {
+    # A repository record as the snapshot holds it, its account resolved against the accounts map.
+    # -FromScan marks a record this run could not read again (offline, unreadable): recorded in
+    # full as the last scan saw it, rather than left out of the backup.
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Record, [System.Collections.IDictionary]$Accounts, [string]$FromScan)
+    $resolved = Resolve-PhxRepoAccount -Identity $Record.identity -HelperAccount $Record.helperAccount -Accounts $Accounts
+    $inventory = [ordered]@{
         identity      = $Record.identity
         root          = $Record.root
         path          = $Record.path
-        remotes       = $local.Remotes
-        primaryRemote = $primary
-        defaultBranch = if ($primary) { Read-PhxGitFileRef (Join-Path $gitDir "refs/remotes/$primary/HEAD") "refs/remotes/$primary/" }
-        branch        = Read-PhxGitFileRef (Join-Path $gitDir 'HEAD') 'refs/heads/'
-        settings      = @($local.Settings)
+        remotes       = $Record.remotes
+        primaryRemote = $Record.primaryRemote
+        defaultBranch = $Record.defaultBranch
+        branch        = $Record.branch
+        settings      = @($Record.settings)
         worktrees     = @($Record.worktrees)
-        lfs           = [IO.Directory]::Exists((Join-Path $gitDir 'lfs')) -or ([IO.File]::Exists($attributes) -and [IO.File]::ReadAllText($attributes) -match 'filter=lfs')
-        submodules    = [IO.File]::Exists((Join-Path $path '.gitmodules'))
+        lfs           = [bool]$Record.lfs
+        submodules    = [bool]$Record.submodules
         account       = $resolved.Account
         accountSource = $resolved.Source
     }
-}
-
-function ConvertTo-PhxScannedInventory {
-    # What the last scan knew about a repository this run cannot read - its root is offline, or git
-    # refuses it: enough to clone it back, marked as such. Better than leaving it out of the backup.
-    param([Parameter(Mandatory)][System.Collections.IDictionary]$Record, [System.Collections.IDictionary]$Accounts, [Parameter(Mandatory)][string]$Reason)
-    $remotes = [ordered]@{}
-    foreach ($name in @($Record.remotes.Keys)) { $remotes[$name] = [ordered]@{ urls = @($Record.remotes[$name]); pushUrls = @() } }
-    $resolved = Resolve-PhxRepoAccount -Identity $Record.identity -HelperAccount $Record.account -Accounts $Accounts
-    [ordered]@{
-        identity      = $Record.identity
-        root          = $Record.root
-        path          = $Record.path
-        remotes       = $remotes
-        primaryRemote = Get-PhxPrimaryRemote $remotes
-        defaultBranch = $null
-        branch        = $null
-        settings      = @()
-        worktrees     = @($Record.worktrees)
-        lfs           = $false
-        submodules    = $false
-        account       = $resolved.Account
-        accountSource = $resolved.Source
-        fromScan      = $Reason
-    }
+    if ($FromScan) { $inventory.fromScan = $FromScan }
+    $inventory
 }
 
 function Backup-PhxRepos {
     # repos.json in the staging folder: every repository the last scan found under the configured
-    # roots. One the run cannot read (an offline root, a repository git refuses) is recorded from the
-    # scan; one deleted since the scan is not.
+    # roots, read again now. One the run cannot read (an offline root, a repository git refuses) is
+    # recorded as the scan saw it; one deleted since the scan is not. With no scan, or a configured
+    # root the last scan did not cover, it scans first - only in memory on a -DryRun.
     param([Parameter(Mandatory)]$Context)
     $cache = Read-PhxRepoCache
-    if (-not $cache) {
-        & $Context.Log 'no scan yet - scanning the roots first'
-        Invoke-PhxScan
-        $cache = Read-PhxRepoCache
+    $uncovered = @(@($Context.Config.roots | Where-Object { $_ }) | Where-Object { $null -eq (Get-PhxRootRepoCount -Cache $cache -Root $_.path) })
+    $records = if (-not $cache -or $uncovered) {
+        $why = if (-not $cache) { 'no scan yet' } else { "not scanned yet: $(($uncovered | ForEach-Object path) -join ', ')" }
+        & $Context.Log "$why - scanning the roots first"
+        @(Invoke-PhxScan -NoSave:$Context.DryRun -PassThru)
     }
+    else { @(Get-PhxScannedRecord -Cache $cache -Config $Context.Config) }
     $accounts = $Context.Config.accounts
-    $inventory = foreach ($record in @(Get-PhxScannedRecord -Cache $cache -Config $Context.Config)) {
-        $path = Get-PhxRepoPath -Root $record.root -RelativePath $record.path
+    $inventory = foreach ($record in $records) {
+        $path = Get-PhxRepoKey $record
         if ($record.offline) {
             & $Context.Log "offline - recorded from the last scan: $path" 'Warn'
-            ConvertTo-PhxScannedInventory -Record $record -Accounts $accounts -Reason 'offline'
+            ConvertTo-PhxRepoInventory -Record $record -Accounts $accounts -FromScan 'offline'
             continue
         }
         if (-not [IO.Directory]::Exists((Join-Path $path '.git'))) {
             & $Context.Log "gone since the last scan, not recorded: $path" 'Warn'
             continue
         }
-        try { Get-PhxRepoInventory -Record $record -Accounts $accounts }
+        try { $now = Get-PhxRepoRecord -Root $record.root -Path $path }
         catch {
             & $Context.Log "could not read ${path}: $(Hide-PhxSecret $_.Exception.Message) - recorded from the last scan" 'Warn'
-            ConvertTo-PhxScannedInventory -Record $record -Accounts $accounts -Reason 'unreadable'
+            ConvertTo-PhxRepoInventory -Record $record -Accounts $accounts -FromScan 'unreadable'
+            continue
         }
+        foreach ($file in @($now.externalIncludes)) {
+            & $Context.Log "${path}: includes $file from outside the repository - a clone does not bring it back, and this snapshot does not hold it (the git provider, M5, will)" 'Warn'
+        }
+        ConvertTo-PhxRepoInventory -Record $now -Accounts $accounts
     }
     $document = [ordered]@{ format = $script:PhxReposFormat; repositories = @($inventory) }
     if ($Context.DryRun) { & $Context.Log "would record $(@($inventory).Count) repositories" 'Action'; return }
@@ -150,10 +120,13 @@ function Invoke-PhxClone {
 
 function Set-PhxRepoValues {
     # Makes a multi-valued config key hold exactly these values, in order; untouched when it does.
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Key, [AllowEmptyString()][string[]]$Values = @())
+    # -Url compares the values as PSPhoenix records URLs - without credentials - so a remote in
+    # place that carries a working token keeps it.
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Key, [AllowEmptyString()][string[]]$Values = @(), [switch]$Url)
     # -z: values end in NUL, so a value with a newline reads back as one value, not two.
     $raw = @(Invoke-PhxGit -Repository $Path -Arguments 'config', '-z', '--local', '--get-all', $Key -AllowExitCode 1) -join "`n"
     $existing = if ($raw) { @($raw.Split([char]0) | Select-Object -SkipLast 1) } else { @() }
+    if ($Url) { $existing = @($existing | ForEach-Object { Remove-PhxUrlSecret $_ }) }
     # Count and text: "absent" and "one empty value" both join to ''.
     if ($existing.Count -eq $Values.Count -and ($existing -join "`n") -ceq ($Values -join "`n")) { return }
     Invoke-PhxGit -Repository $Path -Arguments 'config', '--local', '--unset-all', $Key -AllowExitCode 5 | Out-Null
@@ -171,8 +144,8 @@ function Set-PhxRepoSetup {
         $pushUrls = @($Repo.remotes[$name].pushUrls)
         if (@($urls + $pushUrls | Where-Object { "$_" -like '-*' }).Count) { throw "remote $name has a URL starting with '-' - refused" }
         if (-not $current.Contains($name)) { Invoke-PhxGit -Repository $Path -Arguments 'remote', 'add', '--', $name, $urls[0] | Out-Null }
-        Set-PhxRepoValues -Path $Path -Key "remote.$name.url" -Values $urls
-        Set-PhxRepoValues -Path $Path -Key "remote.$name.pushurl" -Values $pushUrls
+        Set-PhxRepoValues -Path $Path -Key "remote.$name.url" -Values $urls -Url
+        Set-PhxRepoValues -Path $Path -Key "remote.$name.pushurl" -Values $pushUrls -Url
     }
     $byKey = [ordered]@{}
     foreach ($entry in @($Repo.settings)) {

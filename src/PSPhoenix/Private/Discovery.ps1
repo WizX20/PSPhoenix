@@ -6,7 +6,8 @@
 # repository worth finding.
 $script:PhxScanSkip = @('node_modules', 'bin', 'obj', 'packages', '.vs', '.idea', '.venv', 'venv',
     '__pycache__', '.gradle', '.dart_tool', '.terraform', '.next', '$RECYCLE.BIN', 'System Volume Information')
-$script:PhxRepoCacheVersion = 1
+# 2: a record holds everything the repos provider records (it held identity and remotes only).
+$script:PhxRepoCacheVersion = 2
 
 function Test-PhxLinkFolder {
     # True for a junction or symbolic link, which discovery does not follow (a loop, or the same
@@ -140,12 +141,15 @@ function Read-PhxRepoConfig {
     # git reads as true, has the value $null). Files the local config includes (`include.path =
     # ../.gitconfig`, tracked in the repository) are read too but kept apart as Included: they come
     # back with the clone, so a restore must not copy them into the local config - yet their
-    # credential helper still tells which account the repository uses. Read with -z, as origin NUL
-    # key LF value NUL, so values keep their newlines. Throws when git cannot read the repository.
+    # credential helper still tells which account the repository uses. An included file outside the
+    # work tree (`~/.gitconfig-work`) does not come back with a clone: ExternalIncludes lists it.
+    # Read with -z, as origin NUL key LF value NUL, so values keep their newlines. Throws when git
+    # cannot read the repository.
     param([Parameter(Mandatory)][string]$Path)
     $remotes = [ordered]@{}
     $settings = [Collections.Generic.List[object]]::new()
     $included = [Collections.Generic.List[object]]::new()
+    $external = [Collections.Generic.List[string]]::new()
     $raw = @(Invoke-PhxGit -Repository $Path -Arguments 'config', '-z', '--local', '--includes', '--list', '--show-origin') -join "`n"
     $parts = $raw.Split([char]0)
     for ($i = 0; $i + 1 -lt $parts.Count; $i += 2) {
@@ -153,6 +157,11 @@ function Read-PhxRepoConfig {
         $entry = $parts[$i + 1]
         $newline = $entry.IndexOf("`n")
         $key, $value = if ($newline -ge 0) { $entry.Substring(0, $newline), $entry.Substring($newline + 1) } else { $entry, $null }
+        if ($origin -ne 'file:.git/config' -and $origin -like 'file:*') {
+            # git names an included file relative to the repository (file:.git/../.gitconfig) or in full.
+            $file = [IO.Path]::GetFullPath($origin.Substring(5), $Path)
+            if ((-not (Test-PhxPathWithin $file $Path) -or (Test-PhxPathWithin $file (Join-Path $Path '.git'))) -and $external -notcontains $file) { $external.Add($file) }
+        }
         if ($key -notmatch $script:PhxRepoSettingPattern -and $key -notmatch '^remote\..+\.(url|pushurl)$') { continue }
         if ($key -like 'credential.*' -and "$value" -match '(?i)password\s*=|\bgh[pousr]_[A-Za-z0-9]{20,}|github_pat_') {
             Write-Host "  ${Path}: $key holds a secret - not recorded" -ForegroundColor Yellow
@@ -172,7 +181,7 @@ function Read-PhxRepoConfig {
     }
     # A remote with only a push URL is nothing to clone from.
     foreach ($name in @($remotes.Keys)) { if (-not $remotes[$name].urls.Count) { $remotes.Remove($name) } }
-    [pscustomobject]@{ Remotes = $remotes; Settings = @($settings); Included = @($included) }
+    [pscustomobject]@{ Remotes = $remotes; Settings = @($settings); Included = @($included); ExternalIncludes = @($external) }
 }
 
 function Get-PhxPrimaryRemote {
@@ -209,26 +218,46 @@ function Get-PhxWorktree {
     }
 }
 
+function Read-PhxGitFileRef {
+    # The branch a symbolic ref under .git points at (HEAD, refs/remotes/origin/HEAD), read from the
+    # file - nothing for a detached HEAD or a missing ref. Saves a git call per repository.
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Prefix)
+    if (-not [IO.File]::Exists($Path)) { return }
+    $line = [IO.File]::ReadAllText($Path).Trim()
+    if ($line.StartsWith("ref: $Prefix", [StringComparison]::Ordinal)) { $line.Substring(5 + $Prefix.Length) }
+}
+
 function Get-PhxRepoRecord {
-    # What discovery knows about one repository: where it is, its remotes (credentials removed), its
-    # identity, the account its credential helper names, its linked worktrees. One git call, two
-    # with worktrees. Throws when git cannot read the repository (dubious ownership, a broken
-    # .git/config) - recording it as remote-less would quietly lose it.
+    # Everything discovery and the repos provider know about one repository: where it is, its
+    # identity, every remote URL and push URL (credentials removed), its branches, the repo-local
+    # identity settings, the account its credential helper names, linked worktrees, LFS and
+    # submodules, and the files it includes from outside its work tree. The scan cache holds these
+    # records, so a repository a later run cannot read - an offline root - is still recorded in
+    # full. One git call, two with worktrees; the rest is read from .git. Throws when git cannot
+    # read the repository (dubious ownership, a broken .git/config) - recording it as remote-less
+    # would quietly lose it.
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Path)
     $relative = [IO.Path]::GetRelativePath($Root, $Path) -replace '\\', '/'
+    $gitDir = Join-Path $Path '.git'
     $local = Read-PhxRepoConfig -Path $Path
-    $remotes = [ordered]@{}
-    foreach ($name in $local.Remotes.Keys) { $remotes[$name] = $local.Remotes[$name].urls[0] }
-    $primary = Get-PhxPrimaryRemote $remotes
-    $identity = if ($primary) { ConvertTo-PhxRepoIdentity -Url $remotes[$primary] -BasePath $Path }
+    $primary = Get-PhxPrimaryRemote $local.Remotes
+    $identity = if ($primary) { ConvertTo-PhxRepoIdentity -Url $local.Remotes[$primary].urls[0] -BasePath $Path }
     else { 'local/' + $(if ($relative -eq '.') { [IO.Path]::GetFileName($Root) } else { $relative }) }
+    $attributes = Join-Path $Path '.gitattributes'
     [ordered]@{
-        identity  = $identity
-        root      = $Root
-        path      = $relative
-        remotes   = $remotes
-        account   = Get-PhxCredentialAccount (@($local.Settings) + @($local.Included))
-        worktrees = @(Get-PhxWorktree -Root $Root -Path $Path)
+        identity         = $identity
+        root             = $Root
+        path             = $relative
+        remotes          = $local.Remotes
+        primaryRemote    = $primary
+        defaultBranch    = if ($primary) { Read-PhxGitFileRef (Join-Path $gitDir "refs/remotes/$primary/HEAD") "refs/remotes/$primary/" }
+        branch           = Read-PhxGitFileRef (Join-Path $gitDir 'HEAD') 'refs/heads/'
+        settings         = @($local.Settings)
+        helperAccount    = Get-PhxCredentialAccount (@($local.Settings) + @($local.Included))
+        externalIncludes = @($local.ExternalIncludes)
+        worktrees        = @(Get-PhxWorktree -Root $Root -Path $Path)
+        lfs              = [IO.Directory]::Exists((Join-Path $gitDir 'lfs')) -or ([IO.File]::Exists($attributes) -and [IO.File]::ReadAllText($attributes) -match 'filter=lfs')
+        submodules       = [IO.File]::Exists((Join-Path $Path '.gitmodules'))
     }
 }
 
