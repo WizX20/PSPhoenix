@@ -106,7 +106,11 @@ function Show-PhxStatus {
         }
     }
 
-    & $line 'last run' 'arrives with M2 (phx run)'
+    $last = (Read-PhxState -Quiet).lastRun
+    $at = if ($last) { ConvertTo-PhxDateTime $last.at }
+    if (-not $at) { & $line 'last run' 'none yet - phx run' }
+    elseif (@($last.failed).Count) { & $line 'last run' "$(Format-PhxAge $at) - failed: $(@($last.failed) -join ', ') - log: $($last.log)" -Warn }
+    else { & $line 'last run' "$(Format-PhxAge $at) - $(@($last.providers).Count) provider(s), all fine" }
     & $line 'review' 'gitignored files to decide on - arrives with M3 (phx review)'
     & $line 'wip' 'local-only work - arrives with M4'
     if ($warnings.Count) { Write-Host "$($warnings.Count) thing(s) need attention" -ForegroundColor Yellow }

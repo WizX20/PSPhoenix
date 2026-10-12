@@ -85,7 +85,7 @@ USAGE:
   phx status                      what is set up, and what needs attention
   phx scan                        re-discover repositories under the roots
   phx roots add|rm|list [<path>]  the folders that hold your repositories; add: -Depth <n>
-  phx run [-Provider <name>]      one backup run now (the scheduled task calls this)   (M2)
+  phx run [-Provider <name>]      one backup run now (the scheduled task calls this)
   phx schedule on|off|status      the background task; -Every <n>h sets the interval   (M2)
   phx review                      decide on new gitignored files                       (M3)
   phx restore [-From <target>]    rebuild this machine from a snapshot                 (M6)

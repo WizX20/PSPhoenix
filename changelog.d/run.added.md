@@ -1,0 +1,2 @@
+- feat: `phx run [-Provider <name>]` - one backup run: checks the target, never overlaps another run, scans when discovery is due, runs the providers that are enabled and due, and publishes the ones that succeeded into the snapshot; a failing provider keeps its last snapshot and fails the run at the end. Every run has a log in the state folder, and `phx status` shows the last run
+- feat: `phx-task.ps1` - the headless entry point the scheduled task runs, at below-normal priority, exiting 1 when the run failed

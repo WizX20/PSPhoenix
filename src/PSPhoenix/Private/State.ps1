@@ -1,6 +1,7 @@
 # The state (docs/design.md -> Change detection and resource use): machine-local, never backed up,
 # and never needed for correctness - a missing or broken state only means "everything changed",
-# never an error. It holds, per provider, when it last ran; per source file its size, mtime and
+# never an error. It holds the last run (when, which providers, which failed, its log); per
+# provider when it last ran; per source file its size, mtime and
 # SHA-256; per published snapshot file the SHA-256 it was published with, so publishing need not
 # read the target back; and per repository a hash of its refs, for the wip provider (M4).
 
@@ -16,6 +17,7 @@ function New-PhxPathDictionary {
 function New-PhxState {
     [ordered]@{
         version   = $script:PhxStateVersion
+        lastRun   = $null
         providers = [ordered]@{}
         files     = New-PhxPathDictionary
         published = [ordered]@{}
@@ -40,6 +42,7 @@ function Read-PhxState {
         $read = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop
         if ($read -is [System.Collections.IDictionary] -and $read['version'] -eq $script:PhxStateVersion) {
             $state = New-PhxState
+            if ($read['lastRun'] -is [System.Collections.IDictionary]) { $state.lastRun = $read['lastRun'] }
             if ($read['providers'] -is [System.Collections.IDictionary]) { foreach ($name in $read['providers'].Keys) { $state.providers[$name] = $read['providers'][$name] } }
             $state.files = ConvertTo-PhxPathDictionary $read['files']
             $state.refs = ConvertTo-PhxPathDictionary $read['refs']
