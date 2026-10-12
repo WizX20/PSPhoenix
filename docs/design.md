@@ -358,16 +358,23 @@ name, not a folder another installation wrote); takes an interval from 15 minute
 Scheduler's longest repetition). Each later milestone adds its step.
 
 `phx run` is one backup run, and what the scheduled task calls (through `phx-task.ps1` next to the
-module, headless and at below-normal priority, exiting 1 when the run failed). It needs the set-up
-from `phx init` and the target folder - a missing or read-only target fails the run rather than
-creating a folder in its place - and holds a lock for its whole length, so two runs never overlap:
-a second one says so and stops. It scans first when discovery is due, then runs every provider that
-applies to this platform, is not disabled in the config and is due (`-Provider` runs the one named,
-whatever its cadence), each into a fresh staging folder, and publishes the ones that succeeded. A
-provider that fails keeps its last snapshot and runs again next time; the run goes on with the
-others and fails at the end, naming them. Everything a run prints also goes to its log in the
-state folder (`logs/run-<time>.log`, the newest 30 kept); `phx status` shows when the last run
-was, whether it failed, and where its log is.
+module, headless and at below-normal priority). It needs the set-up from `phx init` and the target
+folder - a missing target fails the run rather than creating a folder in its place; whether the
+target can be written shows when publishing does (a probe file every run would be an upload every
+run). It takes a lock before it writes anything, so two runs never overlap: a second one says so and
+stops. It scans first when discovery is due (a failed scan leaves the last one in place), then runs
+every provider that applies to this platform, is not disabled in the config and is due
+(`-Provider` runs the one named, whatever its cadence), each into a fresh staging folder, and
+publishes the ones that succeeded - each on its own, so one that cannot be published (a file held
+open in the target) does not hold up the others. A provider fails when it throws, writes an error,
+or cannot be published; it keeps its last snapshot and its file state, and runs again next time.
+The run goes on with the others and fails at the end, naming them. A provider's last run is the
+start of the run, so a long run does not push its next turn past the cadence's slack. Everything a
+run prints, warnings and errors included, also goes to its log in the state folder
+(`logs/run-<time>.log`, the newest 30 kept), with any token masked; the state records the run
+even when it fails half-way, and `phx status` shows when it was, whether it failed, and where its
+log is. `phx-task.ps1` exits 1 when the run failed, but under `conhost --headless` the Task
+Scheduler only sees conhost's own result - the state is where the outcome is read.
 
 ## Restore sequence
 
