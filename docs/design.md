@@ -280,13 +280,16 @@ One target can hold several machines side by side; restore picks one.
 
 - Local state (`%LOCALAPPDATA%\PSPhoenix\state.json`, `$XDG_STATE_HOME/psphoenix` elsewhere), never
   backed up and never needed for correctness - a missing, broken or newer state means "everything
-  changed", not an error: per provider when it last ran; per source file its size, mtime and
-  SHA-256; per published snapshot file the SHA-256 it was published with; per repository a hash of
-  its refs.
+  changed", not an error: per provider when it last ran; per provider and source file its size,
+  mtime and SHA-256 - kept only when the provider's run succeeded, so a run that failed half-way
+  cannot make a change look handled; per published snapshot file the SHA-256 it was published with,
+  and into which snapshot folder; per repository a hash of its refs.
 - A run compares size and mtime first, hashes only on a difference, copies only on a changed hash.
   A file touched but not changed is hashed once and does not count as changed.
 - Publishing compares a staged file's hash with the one the state recorded at the last publish,
-  so the target is not read back - in a OneDrive folder, reading can mean downloading.
+  so the target is not read back - in a OneDrive folder, reading can mean downloading. Those
+  hashes count only for the snapshot folder they were published into: after a new target or a
+  renamed machine, the first publish compares with what is there.
 - Repository discovery is cached and refreshed daily, when a configured root is missing from the
   scan, or by `phx scan`.
 - Git-heavy work (`wip` bundles) runs only for repositories whose refs changed: one
@@ -295,7 +298,8 @@ One target can hold several machines side by side; restore picks one.
   (default daily) instead of running every hour; `providers.<name>.cadence` in the config overrides
   it. A provider is due when its cadence has passed since it last ran, a tenth of the cadence (at
   most five minutes) early included - a scheduled run never starts on the second, and an hourly
-  provider must not slip to every other hour.
+  provider must not slip to every other hour. A last run in the future (a clock put right) counts
+  as due.
 - The process runs at below-normal priority.
 
 ## Scheduling

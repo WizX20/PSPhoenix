@@ -53,7 +53,9 @@ function Test-PhxDue {
     param($Last, $Every, [datetime]$Now = [DateTime]::UtcNow)
     if ($Every -isnot [TimeSpan] -or $Every -le [TimeSpan]::Zero) { return $true }
     $when = ConvertTo-PhxDateTime $Last
-    if (-not $when) { return $true }
+    # A time in the future - written before a wrong clock was put right - would keep the provider
+    # waiting until then: it counts as due.
+    if (-not $when -or $when -gt $Now.ToUniversalTime()) { return $true }
     $slack = [TimeSpan]::FromTicks([Math]::Min($Every.Ticks / 10, [TimeSpan]::FromMinutes(5).Ticks))
     ($Now.ToUniversalTime() - $when) -ge ($Every - $slack)
 }

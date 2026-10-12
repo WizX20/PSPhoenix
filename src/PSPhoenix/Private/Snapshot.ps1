@@ -177,6 +177,12 @@ function Publish-PhxSnapshot {
             $providers[$name] = [ordered]@{ changedAt = ConvertTo-PhxTimestamp $info.providers[$name].changedAt; files = $info.providers[$name].files }
         }
     }
+    # The published hashes belong to one snapshot folder: after a move to another target, or a
+    # renamed machine, an older copy there must not pass for what was published.
+    if ($State -and -not [string]::Equals("$($State.publishedTo)", $snapshot, (Get-PhxPathComparison))) {
+        $State.published = [ordered]@{}
+        $State.publishedTo = $snapshot
+    }
     $changed = $false
     $results = [ordered]@{}
     foreach ($name in $Provider) {

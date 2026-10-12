@@ -1,7 +1,8 @@
 # The state (docs/design.md -> Change detection and resource use): machine-local, never backed up,
 # and never needed for correctness - a missing or broken state only means "everything changed",
 # never an error. It holds, per provider, when it last ran; per source file its size, mtime and
-# SHA-256; per published snapshot file the SHA-256 it was published with, so publishing need not
+# SHA-256 (per provider: two providers reading one file each keep their own view); per published
+# snapshot file the SHA-256 it was published with, and into which snapshot, so publishing need not
 # read the target back; and per repository a hash of its refs, for the wip provider (M4).
 
 $script:PhxStateVersion = 1
@@ -17,8 +18,11 @@ function New-PhxState {
     [ordered]@{
         version   = $script:PhxStateVersion
         providers = [ordered]@{}
-        files     = New-PhxPathDictionary
+        files     = [ordered]@{}
         published = [ordered]@{}
+        # The snapshot folder the published hashes are of: another one (a new target, a renamed
+        # machine) starts without any.
+        publishedTo = $null
         refs      = New-PhxPathDictionary
     }
 }
@@ -41,7 +45,10 @@ function Read-PhxState {
         if ($read -is [System.Collections.IDictionary] -and $read['version'] -eq $script:PhxStateVersion) {
             $state = New-PhxState
             if ($read['providers'] -is [System.Collections.IDictionary]) { foreach ($name in $read['providers'].Keys) { $state.providers[$name] = $read['providers'][$name] } }
-            $state.files = ConvertTo-PhxPathDictionary $read['files']
+            if ($read['files'] -is [System.Collections.IDictionary]) {
+                foreach ($name in $read['files'].Keys) { $state.files[$name] = ConvertTo-PhxPathDictionary $read['files'][$name] }
+            }
+            if ($read['publishedTo'] -is [string]) { $state.publishedTo = $read['publishedTo'] }
             $state.refs = ConvertTo-PhxPathDictionary $read['refs']
             if ($read['published'] -is [System.Collections.IDictionary]) {
                 foreach ($name in $read['published'].Keys) { $state.published[$name] = ConvertTo-PhxPathDictionary $read['published'][$name] }
@@ -68,20 +75,30 @@ function ConvertTo-PhxDateTime {
     if ([datetime]::TryParse("$Value", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) { $parsed.ToUniversalTime() }
 }
 
+function New-PhxFileTracker {
+    # What one provider's Test-PhxFileChanged works on: the files as its last successful run saw
+    # them (Known), and what this run sees (Seen). The run keeps Seen only when the provider
+    # succeeds - a run that failed half-way must not make a change look handled the next time - and
+    # a file the provider no longer looks at drops out by itself.
+    param([System.Collections.IDictionary]$Known)
+    [pscustomobject]@{ Known = $(if ($Known) { $Known } else { New-PhxPathDictionary }); Seen = New-PhxPathDictionary }
+}
+
 function Test-PhxFileChanged {
-    # True when $Path is new, or its content differs from what the state last recorded for it. Size
+    # True when $Path is new, or its content differs from what the provider's last run saw. Size
     # and mtime first - a stat, the cheap part - and the SHA-256 only when either differs, so a file
     # touched but not changed (a tool rewriting the same bytes) is hashed once but does not count as
-    # changed. Records what it finds; a file that is gone is forgotten and counts as changed.
-    param([Parameter(Mandatory)][System.Collections.IDictionary]$State, [Parameter(Mandatory)][string]$Path)
+    # changed. A file that is gone counts as changed. $Files is the provider's tracker
+    # ($Context.Files).
+    param([Parameter(Mandatory)]$Files, [Parameter(Mandatory)][string]$Path)
     $info = [IO.FileInfo]::new($Path)
-    if (-not $info.Exists) { [void]$State.files.Remove($Path); return $true }
+    if (-not $info.Exists) { return $true }
     $size = $info.Length
     $mtime = $info.LastWriteTimeUtc.Ticks
-    $known = if ($State.files.ContainsKey($Path)) { $State.files[$Path] }
-    if ($known -and $known.size -eq $size -and $known.mtime -eq $mtime) { return $false }
+    $known = if ($Files.Known.ContainsKey($Path)) { $Files.Known[$Path] }
+    if ($known -and $known.size -eq $size -and $known.mtime -eq $mtime) { $Files.Seen[$Path] = $known; return $false }
     $hash = Get-PhxFileHash $Path
-    $State.files[$Path] = [ordered]@{ size = $size; mtime = $mtime; sha256 = $hash }
+    $Files.Seen[$Path] = [ordered]@{ size = $size; mtime = $mtime; sha256 = $hash }
     -not $known -or $known.sha256 -ne $hash
 }
 

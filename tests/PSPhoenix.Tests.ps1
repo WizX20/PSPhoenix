@@ -1911,6 +1911,22 @@ Describe 'snapshot' {
         @($state.published['repos'].Keys) | Should -Be @('repos.json')
     }
 
+    It 'does not take hashes published into another snapshot folder for this one' {
+        Set-TestMachine 'Box' 'id-1'
+        Set-TestStaged repos @{ 'repos.json' = 'new!' }
+        $state = InModuleScope PSPhoenix { New-PhxState }
+        InModuleScope PSPhoenix -Parameters @{ State = $state } { param($State) Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider repos -State $State } | Out-Null
+        # Renamed machine: the new folder holds an older copy of the same length.
+        $old = Join-Path $script:Target 'Desk/repos'
+        New-Item -ItemType Directory -Force -Path $old | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:Target 'Desk/phoenix.json') -Value '{ "format": 1, "machine": { "id": "id-1" } }'
+        Set-Content -LiteralPath (Join-Path $old 'repos.json') -Value 'old!' -NoNewline
+        Set-TestMachine 'Desk' 'id-1'
+        $result = InModuleScope PSPhoenix -Parameters @{ State = $state } { param($State) (Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider repos -State $State)['repos'] }
+        $result.Written | Should -Be 1
+        Get-Content -LiteralPath (Join-Path $old 'repos.json') -Raw | Should -Match 'new!'
+    }
+
     It 'keeps two machines side by side in one target' {
         Set-TestMachine 'Desk' 'id-desk'
         Set-TestStaged repos @{ 'repos.json' = 'desk' }
@@ -2029,16 +2045,19 @@ Describe 'state and change detection' {
             param($File)
             $state = New-PhxState
             $state.providers['repos'] = [ordered]@{ lastRun = '2026-10-09T10:00:00.0000000Z' }
-            $state.files[$File] = [ordered]@{ size = 3; mtime = 42; sha256 = 'AB' }
+            $state.files['claude'] = New-PhxPathDictionary
+            $state.files['claude'][$File] = [ordered]@{ size = 3; mtime = 42; sha256 = 'AB' }
             $state.published['repos'] = New-PhxPathDictionary
             $state.published['repos']['repos.json'] = 'CD'
+            $state.publishedTo = 'D:\Target\Box'
             $state.refs['C:/r'] = 'EF'
             Save-PhxState $state
             $read = Read-PhxState
             ConvertTo-PhxDateTime $read.providers['repos'].lastRun | Should -Be ([datetime]::Parse('2026-10-09T10:00:00Z').ToUniversalTime())
-            $read.files[$File].sha256 | Should -Be 'AB'
-            $read.files[$File].mtime | Should -Be 42
+            $read.files['claude'][$File].sha256 | Should -Be 'AB'
+            $read.files['claude'][$File].mtime | Should -Be 42
             $read.published['repos']['repos.json'] | Should -Be 'CD'
+            $read.publishedTo | Should -Be 'D:\Target\Box'
             $read.refs['C:/r'] | Should -Be 'EF'
         }
     }
@@ -2048,10 +2067,11 @@ Describe 'state and change detection' {
         Set-Content -LiteralPath $file -Value 'one'
         InModuleScope PSPhoenix -Parameters @{ File = $file } {
             param($File)
-            $state = New-PhxState
-            Test-PhxFileChanged -State $state -Path $File | Should -BeTrue           # new
+            $first = New-PhxFileTracker
+            Test-PhxFileChanged -Files $first -Path $File | Should -BeTrue                       # new
             Mock Get-PhxFileHash { throw 'hashed' }
-            Test-PhxFileChanged -State $state -Path $File | Should -BeFalse          # a stat, no hash
+            $next = New-PhxFileTracker -Known $first.Seen
+            Test-PhxFileChanged -Files $next -Path $File | Should -BeFalse                       # a stat, no hash
         }
     }
 
@@ -2060,15 +2080,45 @@ Describe 'state and change detection' {
         Set-Content -LiteralPath $file -Value 'one'
         InModuleScope PSPhoenix -Parameters @{ File = $file } {
             param($File)
-            $state = New-PhxState
-            Test-PhxFileChanged -State $state -Path $File | Out-Null
+            # Each "run" starts from what the last one saw.
+            $run = New-PhxFileTracker
+            Test-PhxFileChanged -Files $run -Path $File | Out-Null
             (Get-Item -LiteralPath $File).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(10)
-            Test-PhxFileChanged -State $state -Path $File | Should -BeFalse          # touched, same bytes
+            $run = New-PhxFileTracker -Known $run.Seen
+            Test-PhxFileChanged -Files $run -Path $File | Should -BeFalse          # touched, same bytes
             Set-Content -LiteralPath $File -Value 'two'
-            Test-PhxFileChanged -State $state -Path $File | Should -BeTrue           # changed
+            $run = New-PhxFileTracker -Known $run.Seen
+            Test-PhxFileChanged -Files $run -Path $File | Should -BeTrue           # changed
             Remove-Item -LiteralPath $File
-            Test-PhxFileChanged -State $state -Path $File | Should -BeTrue           # gone
-            $state.files.ContainsKey($File) | Should -BeFalse
+            $run = New-PhxFileTracker -Known $run.Seen
+            Test-PhxFileChanged -Files $run -Path $File | Should -BeTrue           # gone
+            $run.Seen.ContainsKey($File) | Should -BeFalse
+        }
+    }
+
+    It 'keeps a file a run no longer looks at out of what it saw, and leaves what the last run saw alone' {
+        $kept = Join-Path $script:StateHome 'kept.txt'
+        $dropped = Join-Path $script:StateHome 'dropped.txt'
+        Set-Content -LiteralPath $kept, $dropped -Value 'x'
+        InModuleScope PSPhoenix -Parameters @{ Kept = $kept; Dropped = $dropped } {
+            param($Kept, $Dropped)
+            $run = New-PhxFileTracker
+            Test-PhxFileChanged -Files $run -Path $Kept | Out-Null
+            Test-PhxFileChanged -Files $run -Path $Dropped | Out-Null
+            $next = New-PhxFileTracker -Known $run.Seen
+            Test-PhxFileChanged -Files $next -Path $Kept | Out-Null
+            @($next.Seen.Keys) | Should -Be @($Kept)
+            $next.Known.Count | Should -Be 2
+        }
+    }
+
+    It 'gives each provider the files its own last run saw' {
+        InModuleScope PSPhoenix {
+            $state = New-PhxState
+            $state.files['claude'] = New-PhxPathDictionary
+            $state.files['claude']['C:/a'] = [ordered]@{ size = 1; mtime = 1; sha256 = 'A' }
+            (New-PhxContext -Provider claude -State $state).Files.Known.Count | Should -Be 1
+            (New-PhxContext -Provider repos -State $state).Files.Known.Count | Should -Be 0
         }
     }
 
@@ -2086,6 +2136,15 @@ Describe 'state and change detection' {
             $config = @{ providers = @{ slow = @{ cadence = '1d' } } }
             Test-PhxProviderDue -Provider $provider -State $state -Config $config -Now $now | Should -BeFalse
             Test-PhxProviderDue -Provider @{ Name = 'every'; Cadence = $null } -State $state -Now $now | Should -BeTrue
+            # Written before a wrong clock was put right: due, not "in 200 days".
+            $state.providers['slow'].lastRun = $now.AddDays(200).ToString('o')
+            Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeTrue
+            # The slack is a tenth of the cadence, at most five minutes: a day is not due 10 minutes early.
+            $daily = @{ Name = 'daily'; Cadence = '1d' }
+            $state.providers['daily'] = [ordered]@{ lastRun = $now.AddMinutes(-(24 * 60 - 10)).ToString('o') }
+            Test-PhxProviderDue -Provider $daily -State $state -Now $now | Should -BeFalse
+            $state.providers['daily'].lastRun = $now.AddMinutes(-(24 * 60 - 4)).ToString('o')
+            Test-PhxProviderDue -Provider $daily -State $state -Now $now | Should -BeTrue
         }
     }
 
