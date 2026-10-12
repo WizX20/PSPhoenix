@@ -69,8 +69,8 @@ function Show-PhxStatus {
     else { & $line 'target' $config.target.path }
     if ($config.target -and $config.target.path) {
         $snapshot = Get-PhxSnapshotPath $config
-        $mine = try { Assert-PhxSnapshotWritable -Path $snapshot -Config $config; $null } catch { $_.Exception.Message }
-        if ($mine) { & $line 'machine' $mine -Warn }
+        $problem = Get-PhxSnapshotProblem -Path $snapshot -Id $config.machine.id
+        if ($problem) { & $line 'machine' $problem -Warn }
         else { & $line 'machine' "$(Get-PhxMachineName $config)   snapshot in $snapshot" }
     }
     & $line 'interval' "$($config.interval) - the background run arrives with M2 (phx schedule)"

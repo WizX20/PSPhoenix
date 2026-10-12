@@ -41,6 +41,9 @@ function Read-PhxConfig {
     if ($version -lt 1) { throw "config $path has version $version, which no PSPhoenix writes" }
     $merged = Merge-PhxConfig -Default (New-PhxDefaultConfig) -Config $config
     $merged.roots = @(ConvertTo-PhxConfigRoot -Roots $merged.roots -ConfigPath $path)
+    # The machine name becomes a folder in the target: ..\x must not lead out of it.
+    if ($merged.machine -isnot [System.Collections.IDictionary]) { throw "config ${path}: machine must be an object" }
+    if ($merged.machine.name -and -not (Test-PhxMachineName "$($merged.machine.name)")) { throw "config ${path}: machine name '$($merged.machine.name)' is not a folder name - letters, digits, dot, dash, underscore" }
     $merged
 }
 

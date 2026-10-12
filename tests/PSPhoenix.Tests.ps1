@@ -329,6 +329,16 @@ Describe 'config' {
         $roots[0].depth | Should -Be 3
     }
 
+    It 'refuses a machine name that is no folder name' {
+        Use-TestHome | Out-Null
+        InModuleScope PSPhoenix {
+            $path = Get-PhxConfigPath
+            [IO.Directory]::CreateDirectory((Split-Path $path)) | Out-Null
+            [IO.File]::WriteAllText($path, '{ "version": 1, "machine": { "name": "..\\elsewhere" } }')
+        }
+        { InModuleScope PSPhoenix { Read-PhxConfig } } | Should -Throw "*machine name '..\elsewhere' is not a folder name*"
+    }
+
     It 'refuses a hand-written root <Case>' -ForEach @(
         @{ Case = 'with depth 0'; Root = @{ path = 'FULL'; depth = 0 }; Message = '*has depth 0 - a whole number from 1 to 10*' }
         @{ Case = 'with a relative path'; Root = @{ path = 'Repos'; depth = 3 }; Message = '*root Repos is not a full path*' }
@@ -1538,6 +1548,16 @@ Describe 'init' {
         (InModuleScope PSPhoenix { Read-PhxConfig }).machine.name | Should -Be 'Laptop-2026'
     }
 
+    It 'does not take a folder that holds files but is no snapshot' {
+        $other = Join-Path (Join-Path $script:InitOneDrive 'PSPhoenix') 'Box'
+        New-Item -ItemType Directory -Force -Path $other | Out-Null
+        Set-Content -LiteralPath (Join-Path $other 'notes.txt') -Value 'mine'
+        # roots, two accounts, target, machine (taken, then the suggested free one), interval, save?
+        Set-TestAnswer '' '' '' '' 'Box' '' '' ''
+        Get-PhxOutput { phx init } | Should -Match 'holds files but no phoenix.json'
+        (InModuleScope PSPhoenix { Read-PhxConfig }).machine.name | Should -Be 'Box-2'
+    }
+
     It 'does not take the folder of another installation of this machine' {
         # A reinstalled machine with the same name: its old snapshot is what a restore needs.
         $other = Join-Path (Join-Path $script:InitOneDrive 'PSPhoenix') 'Box'
@@ -1675,6 +1695,18 @@ Describe 'status' {
             Format-PhxAge ([DateTime]::UtcNow.AddHours(-5)) | Should -Be '5 hours ago'
             Format-PhxAge ([DateTime]::UtcNow.AddDays(-3)) | Should -Be '3 days ago'
         }
+    }
+
+    It 'shows its own snapshot folder as fine once something was published' {
+        Set-TestConfig
+        phx scan 6>$null
+        InModuleScope PSPhoenix {
+            $c = Read-PhxConfig; $c.machine = [ordered]@{ name = 'Box'; id = 'mine' }; Save-PhxConfig $c
+            Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider @() | Out-Null
+        }
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match 'machine\s+Box\s+snapshot in'
+        $output | Should -Match 'nothing needs attention'
     }
 
     It 'names the snapshot folder, and warns when another installation wrote it' {
@@ -1871,6 +1903,54 @@ Describe 'snapshot' {
         New-Item -ItemType Directory -Path (Join-Path $script:Target 'Next') | Out-Null
         Set-Content -LiteralPath (Join-Path $script:Target 'Next/phoenix.json') -Value '{ "format": 99 }'
         { Invoke-TestPublish repos } | Should -Throw '*written by a newer PSPhoenix*'
+    }
+
+    It 'refuses a folder with files but no phoenix.json, which publishing would empty' {
+        Set-TestMachine 'Box' 'id-1'
+        $folder = Join-Path $script:Target 'Box/repos'
+        New-Item -ItemType Directory -Force -Path $folder | Out-Null
+        Set-Content -LiteralPath (Join-Path $folder 'precious-notes.txt') -Value 'mine'
+        Set-TestStaged repos @{ 'repos.json' = 'x' }
+        { Invoke-TestPublish repos } | Should -Throw '*holds files but no phoenix.json - it is not a PSPhoenix snapshot*'
+        Get-Content -LiteralPath (Join-Path $folder 'precious-notes.txt') | Should -Be 'mine'
+    }
+
+    It 'swaps a file for a folder of the same name, and back' {
+        Set-TestMachine 'Box' 'id-1'
+        Set-TestStaged repos @{ 'foo' = 'a file' }
+        Invoke-TestPublish repos | Out-Null
+        Set-TestStaged repos @{ 'foo' = '' }
+        Set-TestStaged repos @{ 'foo/bar.txt' = 'in a folder' }
+        Invoke-TestPublish repos | Out-Null
+        Get-Content -LiteralPath (Join-Path $script:Target 'Box/repos/foo/bar.txt') | Should -Be 'in a folder'
+        Set-TestStaged repos @{ 'foo/bar.txt' = '' }
+        Remove-Item -LiteralPath (Join-Path (InModuleScope PSPhoenix { Get-PhxStagingPath repos }) 'foo')
+        Set-TestStaged repos @{ 'foo' = 'a file again' }
+        Invoke-TestPublish repos | Out-Null
+        Get-Content -LiteralPath (Join-Path $script:Target 'Box/repos/foo') | Should -Be 'a file again'
+    }
+
+    It 'publishes a rename that only changes case' {
+        Set-TestMachine 'Box' 'id-1'
+        Set-TestStaged repos @{ 'Memory.md' = 'same' }
+        Invoke-TestPublish repos | Out-Null
+        Set-TestStaged repos @{ 'Memory.md' = '' }
+        Set-TestStaged repos @{ 'memory.md' = 'same' }
+        Invoke-TestPublish repos | Out-Null
+        @(Get-ChildItem -LiteralPath (Join-Path $script:Target 'Box/repos')).Name | Should -BeExactly @('memory.md')
+    }
+
+    It 'claims a new folder first, and clears temporary files a dead write left at its top' {
+        Set-TestMachine 'Box' 'id-1'
+        Invoke-TestPublish @() | Out-Null
+        (Get-Content -LiteralPath (Join-Path $script:Target 'Box/phoenix.json') -Raw | ConvertFrom-Json).machine.id | Should -Be 'id-1'
+        $stale = Join-Path $script:Target 'Box/.phoenix.json.0123abcd.tmp'
+        Set-Content -LiteralPath $stale -Value 'half'
+        $mine = Join-Path $script:Target 'Box/.mine.tmp'
+        Set-Content -LiteralPath $mine -Value 'not ours'
+        Invoke-TestPublish @() | Out-Null
+        Test-Path -LiteralPath $stale | Should -BeFalse
+        Test-Path -LiteralPath $mine | Should -BeTrue
     }
 
     It 'needs a machine id' {

@@ -48,17 +48,33 @@ function Read-PhxSnapshotInfo {
     ConvertTo-PhxCaseInsensitive $info
 }
 
+function Get-PhxSnapshotProblem {
+    # Why the installation with id $Id may not write the snapshot folder $Path - nothing when it
+    # may: a phoenix.json that cannot be read, one of a newer PSPhoenix or of another installation,
+    # or no phoenix.json in a folder that holds files - somebody's folder, which publishing would
+    # empty. phx init, phx run and phx status all ask here.
+    param([Parameter(Mandatory)][string]$Path, [string]$Id)
+    try { $info = Read-PhxSnapshotInfo $Path }
+    catch { return $_.Exception.Message }
+    if (-not $info) {
+        if ([IO.Directory]::Exists($Path) -and @([IO.Directory]::EnumerateFileSystemEntries($Path)).Count) {
+            return "$Path holds files but no phoenix.json - it is not a PSPhoenix snapshot; give this machine another name (phx init) or empty the folder"
+        }
+        return
+    }
+    if ($info.format -gt $script:PhxSnapshotFormat) { return "$Path was written by a newer PSPhoenix (format $($info.format)) - update PSPhoenix first" }
+    if ($info.machine.id -and $info.machine.id -ne $Id) {
+        return "$Path holds the snapshot of another installation (last written $(ConvertTo-PhxTimestamp $info.updatedAt)) - restore from it first, or give this machine another name: phx init"
+    }
+}
+
 function Assert-PhxSnapshotWritable {
     # Returns the folder's phoenix.json (nothing for a new folder) when this installation may write
-    # it; throws for a snapshot of a newer PSPhoenix or of another installation.
+    # it; throws why when it may not (Get-PhxSnapshotProblem).
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][System.Collections.IDictionary]$Config)
-    $info = Read-PhxSnapshotInfo $Path
-    if (-not $info) { return }
-    if ($info.format -gt $script:PhxSnapshotFormat) { throw "$Path was written by a newer PSPhoenix (format $($info.format)) - update PSPhoenix first" }
-    if ($info.machine.id -and $info.machine.id -ne $Config.machine.id) {
-        throw "$Path holds the snapshot of another installation (last written $($info.updatedAt)) - restore from it first, or give this machine another name: phx init"
-    }
-    $info
+    $problem = Get-PhxSnapshotProblem -Path $Path -Id $Config.machine.id
+    if ($problem) { throw $problem }
+    Read-PhxSnapshotInfo $Path
 }
 
 function ConvertTo-PhxTimestamp {
@@ -79,33 +95,42 @@ function Test-PhxSameFile {
 
 function Publish-PhxFolder {
     # Makes $Destination hold exactly the files of $Source: a new or changed file copied in, an
-    # identical one left alone, any other file removed - a stale temporary one included - and then
-    # the folders left empty. Paths compare as the platform does (case-insensitively on Windows), so
-    # a file is never removed as "another" file it is the same file as. Returns the counts.
+    # identical one left alone, any other file removed - a stale temporary one included - and the
+    # folders left empty. Returns the counts.
+    #
+    # The removal comes first, so a file that became a folder (or the other way round) is out of
+    # the way before the copy needs its place. Which files to keep is decided ignoring case, on
+    # every platform: a target on a case-insensitive drive (Windows, a NAS, a USB disk) holds one
+    # file under either spelling, and removing "the other one" would remove the file just kept. A
+    # file staged under another spelling than the published one is removed and copied again, so a
+    # rename that only changes case reaches the snapshot too.
     param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Destination)
-    $wanted = [Collections.Generic.HashSet[string]]::new([StringComparer]::FromComparison((Get-PhxPathComparison)))
+    $staged = @(if ([IO.Directory]::Exists($Source)) {
+            [IO.Directory]::EnumerateFiles($Source, '*', [IO.SearchOption]::AllDirectories) | ForEach-Object { [IO.Path]::GetRelativePath($Source, $_) }
+        })
+    $wanted = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $exact = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($relative in $staged) { [void]$wanted.Add($relative); [void]$exact.Add($relative) }
     $written = 0; $unchanged = 0; $removed = 0
-    if ([IO.Directory]::Exists($Source)) {
-        foreach ($file in [IO.Directory]::EnumerateFiles($Source, '*', [IO.SearchOption]::AllDirectories)) {
-            $relative = [IO.Path]::GetRelativePath($Source, $file)
-            [void]$wanted.Add($relative)
-            $target = Join-Path $Destination $relative
-            if (Test-PhxSameFile -Source $file -Path $target) { $unchanged++; continue }
-            Copy-PhxFile -Source $file -Path $target
-            $written++
-        }
-    }
     if ([IO.Directory]::Exists($Destination)) {
         foreach ($file in @([IO.Directory]::EnumerateFiles($Destination, '*', [IO.SearchOption]::AllDirectories))) {
-            if ($wanted.Contains([IO.Path]::GetRelativePath($Destination, $file))) { continue }
+            $relative = [IO.Path]::GetRelativePath($Destination, $file)
+            if ($exact.Contains($relative)) { continue }
             [IO.File]::Delete($file)
-            $removed++
+            if (-not $wanted.Contains($relative)) { $removed++ }
         }
         foreach ($dir in @([IO.Directory]::EnumerateDirectories($Destination, '*', [IO.SearchOption]::AllDirectories) | Sort-Object Length -Descending)) {
             if (-not @([IO.Directory]::EnumerateFileSystemEntries($dir)).Count) { [IO.Directory]::Delete($dir) }
         }
     }
-    [pscustomobject]@{ Written = $written; Unchanged = $unchanged; Removed = $removed; Files = $wanted.Count }
+    foreach ($relative in $staged) {
+        $file = Join-Path $Source $relative
+        $target = Join-Path $Destination $relative
+        if (Test-PhxSameFile -Source $file -Path $target) { $unchanged++; continue }
+        Copy-PhxFile -Source $file -Path $target
+        $written++
+    }
+    [pscustomobject]@{ Written = $written; Unchanged = $unchanged; Removed = $removed; Files = $staged.Count }
 }
 
 function Publish-PhxSnapshot {
@@ -117,8 +142,20 @@ function Publish-PhxSnapshot {
     $snapshot = Get-PhxSnapshotPath $Config
     $info = Assert-PhxSnapshotWritable -Path $snapshot -Config $Config
     $now = [DateTime]::UtcNow.ToString('o')
+    if (-not $info) {
+        # A new folder is claimed before anything else goes in: a run that dies half-way must not
+        # leave files without the phoenix.json that says whose they are.
+        Write-PhxTextFile -Path (Join-Path $snapshot 'phoenix.json') -Value ([ordered]@{
+                format = $script:PhxSnapshotFormat; machine = [ordered]@{ name = Get-PhxMachineName $Config; id = $Config.machine.id }; createdAt = $now
+            } | ConvertTo-Json -Depth 5)
+        $info = Read-PhxSnapshotInfo $snapshot
+    }
+    # Temporary files of a write to phoenix.json or config.json that died half-way.
+    foreach ($stale in @([IO.Directory]::EnumerateFiles($snapshot, '.*.tmp') | Where-Object { [IO.Path]::GetFileName($_) -match '^\.(phoenix|config)\.json\.[0-9a-f]{8}\.tmp$' })) {
+        [IO.File]::Delete($stale)
+    }
     $providers = [ordered]@{}
-    if ($info -and $info.providers -is [System.Collections.IDictionary]) {
+    if ($info.providers -is [System.Collections.IDictionary]) {
         foreach ($name in $info.providers.Keys) {
             $providers[$name] = [ordered]@{ changedAt = ConvertTo-PhxTimestamp $info.providers[$name].changedAt; files = $info.providers[$name].files }
         }
@@ -147,7 +184,7 @@ function Publish-PhxSnapshot {
             user      = [Environment]::UserName
             platform  = Get-PhxCurrentPlatform
             psphoenix = "$(Get-PhxVersion)"
-            createdAt = if ($info -and $info.createdAt) { ConvertTo-PhxTimestamp $info.createdAt } else { $now }
+            createdAt = if ($info.createdAt) { ConvertTo-PhxTimestamp $info.createdAt } else { $now }
             updatedAt = $now
             providers = $providers
         }

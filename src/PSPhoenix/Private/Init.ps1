@@ -186,11 +186,9 @@ function Select-PhxInitMachine {
     while ($true) {
         $name = Read-PhxInitAnswer -Prompt '  Machine' -Default $default
         if (-not (Test-PhxMachineName $name)) { Write-Host '  letters, digits, dot, dash and underscore, please' -ForegroundColor Yellow; continue }
-        $folder = Join-Path $TargetPath $name
-        try { $info = Read-PhxSnapshotInfo $folder }
-        catch { Write-Host "  $($_.Exception.Message) - pick another name" -ForegroundColor Yellow; continue }
-        if ($info -and $info.machine.id -and $info.machine.id -ne $id) {
-            Write-Host "  $folder holds the snapshot of another installation (last written $(ConvertTo-PhxTimestamp $info.updatedAt)) - restore from it first (phx restore, M6), or pick another name" -ForegroundColor Yellow
+        $problem = Get-PhxSnapshotProblem -Path (Join-Path $TargetPath $name) -Id $id
+        if ($problem) {
+            Write-Host "  $problem" -ForegroundColor Yellow
             for ($n = 2; [IO.Directory]::Exists((Join-Path $TargetPath "$name-$n")); $n++) { }
             $default = "$name-$n"
             continue
