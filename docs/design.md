@@ -253,13 +253,20 @@ changed file is copied in under a temporary name and renamed into place, an iden
 alone, a file the provider no longer produced is removed (a stale temporary one too), and so are the
 folders left empty. A sync client never sees half a file, and a run with nothing changed writes
 nothing - not even `phoenix.json`, which is rewritten only when something changed. Owning one folder
-each is what makes the removal safe: no provider can remove another's files.
+each is what makes the removal safe: no provider can remove another's files. The removal comes
+before the copy, so a file that became a folder (or the reverse) is out of the way first; which
+files to keep is decided ignoring case on every platform - a NAS or USB disk may be case-insensitive
+under Linux too - and a file staged under another spelling is removed and copied again, so a rename
+that only changes case arrives as well.
 
 **Machine id.** `phx init` names the machine (the computer name by default) and makes an id for this
 installation; `phoenix.json` carries both. A run refuses to write into a folder whose `phoenix.json`
 names another id - a machine reinstalled under the same name must not overwrite the snapshot it is
-about to be restored from - and into one of a newer format. `phx init` does not offer such a folder,
-and `phx status` warns about it. A restore (M6) takes over the old id.
+about to be restored from - into one of a newer format, and into a folder that holds files but no
+`phoenix.json` (somebody's folder, which publishing would empty). A new folder is claimed - its
+`phoenix.json` written - before anything else goes in. `phx init` does not offer a folder it may
+not write, and `phx status` warns about one. A restore (M6) takes over the old id. The machine name
+is a folder name: letters, digits, dot, dash, underscore.
 
 Claude Code names a project's folder after its path (`C:\Repos\Org\App` becomes
 `C--Repos-Org-App`), and that encoding loses information (a `-` in a name is indistinguishable from
