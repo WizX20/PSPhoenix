@@ -19,7 +19,8 @@ function New-PhxContext {
         # Status has none.
         [string]$Staging = '',
         [System.Collections.IDictionary]$Config,
-        # The state store (State.ps1): Test-PhxFileChanged, refs hashes. A fresh one when not given.
+        # The state store (State.ps1), and from it the provider's file tracker for
+        # Test-PhxFileChanged ($Context.Files). A fresh one when not given.
         [System.Collections.IDictionary]$State,
         [switch]$DryRun,
         # Restore: old root -> new root (absent = unchanged).
@@ -34,6 +35,7 @@ function New-PhxContext {
         Config   = $Config
         Staging  = $Staging
         State    = $State
+        Files    = New-PhxFileTracker -Known $State.files[$Provider]
         DryRun   = [bool]$DryRun
         RootMap  = $RootMap
         Select   = @($Select)

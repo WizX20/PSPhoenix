@@ -12,24 +12,47 @@ function Write-PhxRunLog {
     # One line into this run's log file, if one is open: UTC time, the source in brackets, the text.
     param([AllowEmptyString()][string]$Message, [string]$Source = 'run')
     if (-not $script:PhxRunLog) { return }
-    # The indentation that groups lines on screen means nothing next to a [source] tag.
-    [IO.File]::AppendAllText($script:PhxRunLog, ('{0} [{1}] {2}{3}' -f [DateTime]::UtcNow.ToString('o'), $Source, $Message.Trim(), [Environment]::NewLine))
+    # The indentation that groups lines on screen means nothing next to a [source] tag. Whatever a
+    # provider prints, a token never reaches the log.
+    [IO.File]::AppendAllText($script:PhxRunLog, ('{0} [{1}] {2}{3}' -f [DateTime]::UtcNow.ToString('o'), $Source, (Hide-PhxSecret $Message.Trim()), [Environment]::NewLine))
 }
 
 function Invoke-PhxLogged {
     # Runs $Action and shows what it writes to the host as usual - in its own colours - while
     # copying every line into the run's log, so a run nobody watches still says what happened.
+    # Warnings go to the log too. An error the action writes without stopping counts as its
+    # failure: a headless run would otherwise lose it, and call the provider fine.
     param([Parameter(Mandatory)][scriptblock]$Action, [string]$Source = 'run')
-    & $Action 6>&1 | ForEach-Object {
-        if ($_ -is [System.Management.Automation.InformationRecord]) {
+    # Whatever the caller passed as -ErrorAction or -WarningAction: here a written error is caught
+    # and counted, and a warning logged - the same for phx run by hand and for the scheduled run.
+    $ErrorActionPreference = 'Continue'
+    $WarningPreference = 'Continue'
+    $errors = [Collections.Generic.List[string]]::new()
+    & $Action *>&1 | ForEach-Object {
+        if ($_ -is [System.Management.Automation.WarningRecord]) {
+            Write-PhxRunLog -Message "warning: $($_.Message)" -Source $Source
+            Write-Host "  warning: $($_.Message)" -ForegroundColor Yellow
+        }
+        elseif ($_ -is [System.Management.Automation.ErrorRecord]) {
+            $text = Hide-PhxSecret "$($_.Exception.Message)"
+            Write-PhxRunLog -Message "error: $text" -Source $Source
+            Write-Host "  error: $text" -ForegroundColor Red
+            $errors.Add($text)
+        }
+        elseif ($_ -is [System.Management.Automation.VerboseRecord] -or $_ -is [System.Management.Automation.DebugRecord]) { }
+        elseif ($_ -is [System.Management.Automation.InformationRecord]) {
             $data = $_.MessageData
             $text = if ($data -is [System.Management.Automation.HostInformationMessage]) { $data.Message } else { "$data" }
             Write-PhxRunLog -Message $text -Source $Source
-            if ($data -is [System.Management.Automation.HostInformationMessage] -and $null -ne $data.ForegroundColor) { Write-Host $text -ForegroundColor $data.ForegroundColor }
+            # A line without a colour of its own carries the host's, which is -1 - no colour - on a
+            # host without a console (a CI runner, a redirected run): not one Write-Host takes.
+            $color = if ($data -is [System.Management.Automation.HostInformationMessage]) { $data.ForegroundColor }
+            if ($null -ne $color -and [Enum]::IsDefined([ConsoleColor], $color)) { Write-Host $text -ForegroundColor $color }
             else { Write-Host $text }
         }
         else { $_ }
     }
+    if ($errors.Count) { throw "$($errors.Count) error(s): $($errors[0])" }
 }
 
 function Write-PhxRunLine {
@@ -82,39 +105,48 @@ function Invoke-PhxRun {
     if (-not [IO.File]::Exists((Get-PhxConfigPath))) { throw 'not set up yet - run: phx init' }
     $config = Read-PhxConfig
     if (-not $config.target -or -not $config.target.path) { throw 'no target yet - run: phx init' }
+    # A missing target fails the run; it is never created in its place (an unplugged USB disk must
+    # not get a fresh folder on C:). Whether it can be written shows when publishing does - a probe
+    # file every run would make OneDrive upload something even when nothing changed.
     if (-not [IO.Directory]::Exists($config.target.path)) { throw "target $($config.target.path) not found - a disconnected drive? (phx status)" }
-    if (-not (Test-PhxWritableFolder $config.target.path)) { throw "cannot write to the target $($config.target.path) - read-only, full, or no permission" }
-    if (-not $config.machine.id) {
-        # A config from before machine ids (M1): this installation gets one now.
-        $config.machine = [ordered]@{ name = Get-PhxMachineName $config; id = [guid]::NewGuid().ToString() }
-        Save-PhxConfig $config
-    }
-    $snapshot = Get-PhxSnapshotPath $config
-    Assert-PhxSnapshotWritable -Path $snapshot -Config $config | Out-Null
 
+    # The lock first: nothing is written - not even a machine id - by a run that does not run.
     $lock = Open-PhxRunLock
     $script:PhxRunLog = New-PhxRunLog
+    $state = $null
     try {
         $started = [DateTime]::UtcNow
+        if (-not $config.machine.id) {
+            # A config from before machine ids (M1): this installation gets one now.
+            $config.machine = [ordered]@{ name = Get-PhxMachineName $config; id = [guid]::NewGuid().ToString() }
+            Save-PhxConfig $config
+        }
+        $snapshot = Get-PhxSnapshotPath $config
+        Assert-PhxSnapshotWritable -Path $snapshot -Config $config | Out-Null
         Write-PhxRunLine "phx run $(Get-PhxVersion) -> $snapshot" Green
         $state = Read-PhxState
         if (@($config.roots).Count -and (Test-PhxScanDue -Cache (Read-PhxRepoCache -Quiet) -Config $config)) {
             Write-PhxRunLine 'scan: discovery is due'
-            Invoke-PhxLogged -Source 'scan' -Action { Invoke-PhxScan } | Out-Null
+            # A scan that fails leaves the last one in place: the providers can still run from it.
+            try { Invoke-PhxLogged -Source 'scan' -Action { Invoke-PhxScan } | Out-Null }
+            catch { Write-PhxRunLine "  scan failed: $(Hide-PhxSecret $_.Exception.Message) - going on with the last scan" Yellow }
         }
         $providers = @(Get-PhxRunProvider -Config $config -State $state -Name $Provider)
         $succeeded = [Collections.Generic.List[string]]::new()
         $failed = [Collections.Generic.List[string]]::new()
+        $trackers = @{}
         foreach ($entry in $providers) {
             $name = $entry.Name
-            $staging = Get-PhxStagingPath $name
-            # A fresh staging folder: what is in it afterwards is exactly what this run produced.
-            if ([IO.Directory]::Exists($staging)) { Remove-Item -LiteralPath $staging -Recurse -Force }
-            [IO.Directory]::CreateDirectory($staging) | Out-Null
             Write-PhxRunLine "${name}:" Cyan
-            $context = New-PhxContext -Provider $name -Staging $staging -Config $config -State $state
             try {
+                # A fresh staging folder: what is in it afterwards is exactly what this run produced.
+                # One that cannot be emptied fails the provider: a stale file would be published.
+                $staging = Get-PhxStagingPath $name
+                if ([IO.Directory]::Exists($staging)) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction Stop }
+                [IO.Directory]::CreateDirectory($staging) | Out-Null
+                $context = New-PhxContext -Provider $name -Staging $staging -Config $config -State $state
                 Invoke-PhxLogged -Source $name -Action { & $entry.Backup $context } | Out-Null
+                $trackers[$name] = $context.Files
                 $succeeded.Add($name)
             }
             catch {
@@ -125,14 +157,22 @@ function Invoke-PhxRun {
             }
         }
         $results = if ($succeeded.Count) { Publish-PhxSnapshot -Config $config -Provider @($succeeded) -State $state } else { @{} }
-        $now = [DateTime]::UtcNow.ToString('o')
-        foreach ($name in $succeeded) {
+        foreach ($name in @($succeeded)) {
             $result = $results[$name]
-            $state.providers[$name] = [ordered]@{ lastRun = $now; lastResult = 'ok' }
+            if ($result.Error) {
+                # Its last snapshot stays as it was; the next run tries again.
+                Write-PhxRunLine "  $name failed to publish: $($result.Error)" Red
+                $failed.Add($name)
+                $state.providers[$name] = [ordered]@{ lastRun = $state.providers[$name].lastRun; lastResult = "failed: $($result.Error)" }
+                continue
+            }
+            # The start of the run, not its end: a long run must not push the provider's next turn
+            # past the slack of its cadence.
+            $state.providers[$name] = [ordered]@{ lastRun = $started.ToString('o'); lastResult = 'ok' }
+            $state.files[$name] = $trackers[$name].Seen
             Write-PhxRunLine ('  {0}: {1} written, {2} unchanged, {3} removed' -f $name, $result.Written, $result.Unchanged, $result.Removed)
         }
-        $state.lastRun = [ordered]@{ at = $now; providers = @($providers.Name); failed = @($failed); log = $script:PhxRunLog }
-        Save-PhxState $state
+        $state.lastRun = [ordered]@{ at = $started.ToString('o'); providers = @($providers.Name); failed = @($failed); log = $script:PhxRunLog }
         $seconds = [Math]::Round(([DateTime]::UtcNow - $started).TotalSeconds, 1)
         if ($failed.Count) { throw "$($failed.Count) provider(s) failed: $($failed -join ', ') - log: $script:PhxRunLog" }
         Write-PhxRunLine "done in ${seconds}s: $($succeeded.Count) provider(s) - log: $script:PhxRunLog" Green
@@ -142,6 +182,14 @@ function Invoke-PhxRun {
         throw
     }
     finally {
+        # What the run learnt is kept, also when it failed half-way: phx status must not go on
+        # showing the run before as the last one.
+        if ($state) {
+            if (-not $state.lastRun -or (ConvertTo-PhxDateTime $state.lastRun.at) -lt $started) {
+                $state.lastRun = [ordered]@{ at = $started.ToString('o'); providers = @(); failed = @('run'); log = $script:PhxRunLog }
+            }
+            Save-PhxState $state
+        }
         $script:PhxRunLog = $null
         $lock.Dispose()
     }

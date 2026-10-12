@@ -350,6 +350,16 @@ Describe 'config' {
         $roots[0].depth | Should -Be 3
     }
 
+    It 'refuses a machine name that is no folder name' {
+        Use-TestHome | Out-Null
+        InModuleScope PSPhoenix {
+            $path = Get-PhxConfigPath
+            [IO.Directory]::CreateDirectory((Split-Path $path)) | Out-Null
+            [IO.File]::WriteAllText($path, '{ "version": 1, "machine": { "name": "..\\elsewhere" } }')
+        }
+        { InModuleScope PSPhoenix { Read-PhxConfig } } | Should -Throw "*machine name '..\elsewhere' is not a folder name*"
+    }
+
     It 'refuses a hand-written root <Case>' -ForEach @(
         @{ Case = 'with depth 0'; Root = @{ path = 'FULL'; depth = 0 }; Message = '*has depth 0 - a whole number from 1 to 10*' }
         @{ Case = 'with a relative path'; Root = @{ path = 'Repos'; depth = 3 }; Message = '*root Repos is not a full path*' }
@@ -1568,6 +1578,16 @@ Describe 'init' {
         (InModuleScope PSPhoenix { Read-PhxConfig }).machine.name | Should -Be 'Laptop-2026'
     }
 
+    It 'does not take a folder that holds files but is no snapshot' {
+        $other = Join-Path (Join-Path $script:InitOneDrive 'PSPhoenix') 'Box'
+        New-Item -ItemType Directory -Force -Path $other | Out-Null
+        Set-Content -LiteralPath (Join-Path $other 'notes.txt') -Value 'mine'
+        # roots, two accounts, target, machine (taken, then the suggested free one), interval, save?
+        Set-TestAnswer '' '' '' '' 'Box' '' '' ''
+        Get-PhxOutput { phx init } | Should -Match 'holds files but no phoenix.json'
+        (InModuleScope PSPhoenix { Read-PhxConfig }).machine.name | Should -Be 'Box-2'
+    }
+
     It 'does not take the folder of another installation of this machine' {
         # A reinstalled machine with the same name: its old snapshot is what a restore needs.
         $other = Join-Path (Join-Path $script:InitOneDrive 'PSPhoenix') 'Box'
@@ -1722,6 +1742,18 @@ Describe 'status' {
             Format-PhxAge ([DateTime]::UtcNow.AddHours(-5)) | Should -Be '5 hours ago'
             Format-PhxAge ([DateTime]::UtcNow.AddDays(-3)) | Should -Be '3 days ago'
         }
+    }
+
+    It 'shows its own snapshot folder as fine once something was published' {
+        Set-TestConfig
+        phx scan 6>$null
+        InModuleScope PSPhoenix {
+            $c = Read-PhxConfig; $c.machine = [ordered]@{ name = 'Box'; id = 'mine' }; Save-PhxConfig $c
+            Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider @() | Out-Null
+        }
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match 'machine\s+Box\s+snapshot in'
+        $output | Should -Match 'nothing needs attention'
     }
 
     It 'names the snapshot folder, and warns when another installation wrote it' {
@@ -1922,6 +1954,22 @@ Describe 'snapshot' {
         @($state.published['repos'].Keys) | Should -Be @('repos.json')
     }
 
+    It 'does not take hashes published into another snapshot folder for this one' {
+        Set-TestMachine 'Box' 'id-1'
+        Set-TestStaged repos @{ 'repos.json' = 'new!' }
+        $state = InModuleScope PSPhoenix { New-PhxState }
+        InModuleScope PSPhoenix -Parameters @{ State = $state } { param($State) Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider repos -State $State } | Out-Null
+        # Renamed machine: the new folder holds an older copy of the same length.
+        $old = Join-Path $script:Target 'Desk/repos'
+        New-Item -ItemType Directory -Force -Path $old | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:Target 'Desk/phoenix.json') -Value '{ "format": 1, "machine": { "id": "id-1" } }'
+        Set-Content -LiteralPath (Join-Path $old 'repos.json') -Value 'old!' -NoNewline
+        Set-TestMachine 'Desk' 'id-1'
+        $result = InModuleScope PSPhoenix -Parameters @{ State = $state } { param($State) (Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider repos -State $State)['repos'] }
+        $result.Written | Should -Be 1
+        Get-Content -LiteralPath (Join-Path $old 'repos.json') -Raw | Should -Match 'new!'
+    }
+
     It 'keeps two machines side by side in one target' {
         Set-TestMachine 'Desk' 'id-desk'
         Set-TestStaged repos @{ 'repos.json' = 'desk' }
@@ -1949,6 +1997,54 @@ Describe 'snapshot' {
         New-Item -ItemType Directory -Path (Join-Path $script:Target 'Next') | Out-Null
         Set-Content -LiteralPath (Join-Path $script:Target 'Next/phoenix.json') -Value '{ "format": 99 }'
         { Invoke-TestPublish repos } | Should -Throw '*written by a newer PSPhoenix*'
+    }
+
+    It 'refuses a folder with files but no phoenix.json, which publishing would empty' {
+        Set-TestMachine 'Box' 'id-1'
+        $folder = Join-Path $script:Target 'Box/repos'
+        New-Item -ItemType Directory -Force -Path $folder | Out-Null
+        Set-Content -LiteralPath (Join-Path $folder 'precious-notes.txt') -Value 'mine'
+        Set-TestStaged repos @{ 'repos.json' = 'x' }
+        { Invoke-TestPublish repos } | Should -Throw '*holds files but no phoenix.json - it is not a PSPhoenix snapshot*'
+        Get-Content -LiteralPath (Join-Path $folder 'precious-notes.txt') | Should -Be 'mine'
+    }
+
+    It 'swaps a file for a folder of the same name, and back' {
+        Set-TestMachine 'Box' 'id-1'
+        Set-TestStaged repos @{ 'foo' = 'a file' }
+        Invoke-TestPublish repos | Out-Null
+        Set-TestStaged repos @{ 'foo' = '' }
+        Set-TestStaged repos @{ 'foo/bar.txt' = 'in a folder' }
+        Invoke-TestPublish repos | Out-Null
+        Get-Content -LiteralPath (Join-Path $script:Target 'Box/repos/foo/bar.txt') | Should -Be 'in a folder'
+        Set-TestStaged repos @{ 'foo/bar.txt' = '' }
+        Remove-Item -LiteralPath (Join-Path (InModuleScope PSPhoenix { Get-PhxStagingPath repos }) 'foo')
+        Set-TestStaged repos @{ 'foo' = 'a file again' }
+        Invoke-TestPublish repos | Out-Null
+        Get-Content -LiteralPath (Join-Path $script:Target 'Box/repos/foo') | Should -Be 'a file again'
+    }
+
+    It 'publishes a rename that only changes case' {
+        Set-TestMachine 'Box' 'id-1'
+        Set-TestStaged repos @{ 'Memory.md' = 'same' }
+        Invoke-TestPublish repos | Out-Null
+        Set-TestStaged repos @{ 'Memory.md' = '' }
+        Set-TestStaged repos @{ 'memory.md' = 'same' }
+        Invoke-TestPublish repos | Out-Null
+        @(Get-ChildItem -LiteralPath (Join-Path $script:Target 'Box/repos')).Name | Should -BeExactly @('memory.md')
+    }
+
+    It 'claims a new folder first, and clears temporary files a dead write left at its top' {
+        Set-TestMachine 'Box' 'id-1'
+        Invoke-TestPublish @() | Out-Null
+        (Get-Content -LiteralPath (Join-Path $script:Target 'Box/phoenix.json') -Raw | ConvertFrom-Json).machine.id | Should -Be 'id-1'
+        $stale = Join-Path $script:Target 'Box/.phoenix.json.0123abcd.tmp'
+        Set-Content -LiteralPath $stale -Value 'half'
+        $mine = Join-Path $script:Target 'Box/.mine.tmp'
+        Set-Content -LiteralPath $mine -Value 'not ours'
+        Invoke-TestPublish @() | Out-Null
+        Test-Path -LiteralPath $stale | Should -BeFalse
+        Test-Path -LiteralPath $mine | Should -BeTrue
     }
 
     It 'needs a machine id' {
@@ -1992,16 +2088,19 @@ Describe 'state and change detection' {
             param($File)
             $state = New-PhxState
             $state.providers['repos'] = [ordered]@{ lastRun = '2026-10-09T10:00:00.0000000Z' }
-            $state.files[$File] = [ordered]@{ size = 3; mtime = 42; sha256 = 'AB' }
+            $state.files['claude'] = New-PhxPathDictionary
+            $state.files['claude'][$File] = [ordered]@{ size = 3; mtime = 42; sha256 = 'AB' }
             $state.published['repos'] = New-PhxPathDictionary
             $state.published['repos']['repos.json'] = 'CD'
+            $state.publishedTo = 'D:\Target\Box'
             $state.refs['C:/r'] = 'EF'
             Save-PhxState $state
             $read = Read-PhxState
             ConvertTo-PhxDateTime $read.providers['repos'].lastRun | Should -Be ([datetime]::Parse('2026-10-09T10:00:00Z').ToUniversalTime())
-            $read.files[$File].sha256 | Should -Be 'AB'
-            $read.files[$File].mtime | Should -Be 42
+            $read.files['claude'][$File].sha256 | Should -Be 'AB'
+            $read.files['claude'][$File].mtime | Should -Be 42
             $read.published['repos']['repos.json'] | Should -Be 'CD'
+            $read.publishedTo | Should -Be 'D:\Target\Box'
             $read.refs['C:/r'] | Should -Be 'EF'
         }
     }
@@ -2011,10 +2110,11 @@ Describe 'state and change detection' {
         Set-Content -LiteralPath $file -Value 'one'
         InModuleScope PSPhoenix -Parameters @{ File = $file } {
             param($File)
-            $state = New-PhxState
-            Test-PhxFileChanged -State $state -Path $File | Should -BeTrue           # new
+            $first = New-PhxFileTracker
+            Test-PhxFileChanged -Files $first -Path $File | Should -BeTrue                       # new
             Mock Get-PhxFileHash { throw 'hashed' }
-            Test-PhxFileChanged -State $state -Path $File | Should -BeFalse          # a stat, no hash
+            $next = New-PhxFileTracker -Known $first.Seen
+            Test-PhxFileChanged -Files $next -Path $File | Should -BeFalse                       # a stat, no hash
         }
     }
 
@@ -2023,15 +2123,45 @@ Describe 'state and change detection' {
         Set-Content -LiteralPath $file -Value 'one'
         InModuleScope PSPhoenix -Parameters @{ File = $file } {
             param($File)
-            $state = New-PhxState
-            Test-PhxFileChanged -State $state -Path $File | Out-Null
+            # Each "run" starts from what the last one saw.
+            $run = New-PhxFileTracker
+            Test-PhxFileChanged -Files $run -Path $File | Out-Null
             (Get-Item -LiteralPath $File).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(10)
-            Test-PhxFileChanged -State $state -Path $File | Should -BeFalse          # touched, same bytes
+            $run = New-PhxFileTracker -Known $run.Seen
+            Test-PhxFileChanged -Files $run -Path $File | Should -BeFalse          # touched, same bytes
             Set-Content -LiteralPath $File -Value 'two'
-            Test-PhxFileChanged -State $state -Path $File | Should -BeTrue           # changed
+            $run = New-PhxFileTracker -Known $run.Seen
+            Test-PhxFileChanged -Files $run -Path $File | Should -BeTrue           # changed
             Remove-Item -LiteralPath $File
-            Test-PhxFileChanged -State $state -Path $File | Should -BeTrue           # gone
-            $state.files.ContainsKey($File) | Should -BeFalse
+            $run = New-PhxFileTracker -Known $run.Seen
+            Test-PhxFileChanged -Files $run -Path $File | Should -BeTrue           # gone
+            $run.Seen.ContainsKey($File) | Should -BeFalse
+        }
+    }
+
+    It 'keeps a file a run no longer looks at out of what it saw, and leaves what the last run saw alone' {
+        $kept = Join-Path $script:StateHome 'kept.txt'
+        $dropped = Join-Path $script:StateHome 'dropped.txt'
+        Set-Content -LiteralPath $kept, $dropped -Value 'x'
+        InModuleScope PSPhoenix -Parameters @{ Kept = $kept; Dropped = $dropped } {
+            param($Kept, $Dropped)
+            $run = New-PhxFileTracker
+            Test-PhxFileChanged -Files $run -Path $Kept | Out-Null
+            Test-PhxFileChanged -Files $run -Path $Dropped | Out-Null
+            $next = New-PhxFileTracker -Known $run.Seen
+            Test-PhxFileChanged -Files $next -Path $Kept | Out-Null
+            @($next.Seen.Keys) | Should -Be @($Kept)
+            $next.Known.Count | Should -Be 2
+        }
+    }
+
+    It 'gives each provider the files its own last run saw' {
+        InModuleScope PSPhoenix {
+            $state = New-PhxState
+            $state.files['claude'] = New-PhxPathDictionary
+            $state.files['claude']['C:/a'] = [ordered]@{ size = 1; mtime = 1; sha256 = 'A' }
+            (New-PhxContext -Provider claude -State $state).Files.Known.Count | Should -Be 1
+            (New-PhxContext -Provider repos -State $state).Files.Known.Count | Should -Be 0
         }
     }
 
@@ -2049,6 +2179,15 @@ Describe 'state and change detection' {
             $config = @{ providers = @{ slow = @{ cadence = '1d' } } }
             Test-PhxProviderDue -Provider $provider -State $state -Config $config -Now $now | Should -BeFalse
             Test-PhxProviderDue -Provider @{ Name = 'every'; Cadence = $null } -State $state -Now $now | Should -BeTrue
+            # Written before a wrong clock was put right: due, not "in 200 days".
+            $state.providers['slow'].lastRun = $now.AddDays(200).ToString('o')
+            Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeTrue
+            # The slack is a tenth of the cadence, at most five minutes: a day is not due 10 minutes early.
+            $daily = @{ Name = 'daily'; Cadence = '1d' }
+            $state.providers['daily'] = [ordered]@{ lastRun = $now.AddMinutes(-(24 * 60 - 10)).ToString('o') }
+            Test-PhxProviderDue -Provider $daily -State $state -Now $now | Should -BeFalse
+            $state.providers['daily'].lastRun = $now.AddMinutes(-(24 * 60 - 4)).ToString('o')
+            Test-PhxProviderDue -Provider $daily -State $state -Now $now | Should -BeTrue
         }
     }
 
@@ -2289,13 +2428,17 @@ Describe 'run' {
         $script:RunError.Exception.Message | Should -BeLike "*no provider 'nope'*"
     }
 
-    It 'refuses to run while another run holds the lock' {
+    It 'refuses to run while another run holds the lock, and writes nothing then' {
+        # A config from before machine ids: a run that does not run must not give it one.
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.machine = [ordered]@{ name = 'Box'; id = $null }; Save-PhxConfig $c }
+        $before = Get-Content -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) -Raw
         $lockPath = Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'run.lock'
         New-Item -ItemType Directory -Force -Path (Split-Path $lockPath) | Out-Null
         $held = [IO.FileStream]::new($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         try {
             Invoke-TestRun | Out-Null
             $script:RunError.Exception.Message | Should -BeLike '*another phx run is in progress*'
+            Get-Content -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) -Raw | Should -Be $before
         }
         finally { $held.Dispose() }
         Invoke-TestRun | Out-Null
@@ -2320,6 +2463,109 @@ Describe 'run' {
         Invoke-TestRun | Should -Not -Match 'scan: discovery is due'
     }
 
+    It 'publishes nothing of a provider that failed half-way, and keeps no file state of it' {
+        $tracked = Join-Path $script:RunHome 'tracked.txt'
+        Set-Content -LiteralPath $tracked -Value 'v1'
+        InModuleScope PSPhoenix -Parameters @{ Tracked = $tracked } {
+            param($Tracked)
+            $script:TrackedFile = $Tracked
+            $script:HalfFails = $false
+            $script:SawChange = $null
+            Register-PhxProvider @{ Name = 'half'; Description = 'stages, then fails'; Restore = {}; Status = {}
+                Backup = {
+                    param($Context)
+                    $script:SawChange = Test-PhxFileChanged -Files $Context.Files -Path $script:TrackedFile
+                    Set-Content -LiteralPath (Join-Path $Context.Staging 'half.txt') -Value 'half'
+                    if ($script:HalfFails) { throw 'died half-way' }
+                }
+            }
+        }
+        Invoke-TestRun | Out-Null
+        Set-Content -LiteralPath $tracked -Value 'v2'
+        Remove-Item -LiteralPath (Join-Path $script:RunSnapshot 'half/half.txt')
+        InModuleScope PSPhoenix { $script:HalfFails = $true }
+        Invoke-TestRun | Out-Null
+        InModuleScope PSPhoenix { $script:SawChange } | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:RunSnapshot 'half/half.txt') | Should -BeFalse
+        # The failed run did not record v2 as seen: the next run still sees the change.
+        InModuleScope PSPhoenix { $script:HalfFails = $false }
+        Invoke-TestRun | Out-Null
+        InModuleScope PSPhoenix { $script:SawChange } | Should -BeTrue
+    }
+
+    It 'keeps tokens out of the log, logs warnings, and counts a written error as a failure' {
+        InModuleScope PSPhoenix {
+            $script:FakeToken = 'ghp_' + ('a' * 36)
+            Register-PhxProvider @{ Name = 'noisy'; Description = 'prints'; Restore = {}; Status = {}
+                Backup = {
+                    param($Context)
+                    & $Context.Log "the token is $script:FakeToken"
+                    Write-Warning 'something odd'
+                    Write-Error 'something broke'
+                }
+            }
+        }
+        $output = Invoke-TestRun
+        $output | Should -Match 'noisy failed: 1 error\(s\): something broke'
+        $log = Get-Content -LiteralPath (InModuleScope PSPhoenix { Read-PhxState }).lastRun.log -Raw
+        $log | Should -Not -Match 'ghp_a'
+        $log | Should -Match '\[noisy\] the token is \*\*\*'
+        $log | Should -Match '\[noisy\] warning: something odd'
+        $log | Should -Match '\[noisy\] error: something broke'
+    }
+
+    It 'records the start of the run as the providers'' last run' {
+        InModuleScope PSPhoenix {
+            Register-PhxProvider @{ Name = 'clock'; Description = 'notes the time'; Restore = {}; Status = {}
+                Backup = { $script:ClockRan = [DateTime]::UtcNow }
+            }
+        }
+        Invoke-TestRun | Out-Null
+        $lastRun = InModuleScope PSPhoenix { ConvertTo-PhxDateTime (Read-PhxState).providers['clock'].lastRun }
+        $lastRun | Should -BeLessOrEqual (InModuleScope PSPhoenix { $script:ClockRan })
+    }
+
+    It 'does not probe the target with a file of its own' {
+        # Creating and deleting a probe file in OneDrive every hour is an upload every hour.
+        Mock Test-PhxWritableFolder -ModuleName PSPhoenix { throw 'probed' }
+        Invoke-TestRun | Out-Null
+        $script:RunError | Should -BeNullOrEmpty
+    }
+
+    It 'publishes the other providers when one cannot be, and records the run' -Skip:(-not $IsWindows) {
+        # Windows holds a file open without sharing; Linux lets a rename replace it anyway.
+        Invoke-TestRun | Out-Null
+        InModuleScope PSPhoenix { $script:AlphaText = 'alpha 2' }
+        $held = [IO.File]::Open((Join-Path $script:RunSnapshot 'alpha/alpha.txt'), 'Open', 'Read', 'None')
+        try {
+            InModuleScope PSPhoenix { $script:SlowNow = $true }
+            $output = Invoke-TestRun -Provider alpha
+            $output | Should -Match 'alpha failed to publish: alpha.txt:'
+            $script:RunError.Exception.Message | Should -BeLike '*1 provider(s) failed: alpha*'
+        }
+        finally { $held.Dispose() }
+        $state = InModuleScope PSPhoenix { Read-PhxState }
+        @($state.lastRun.failed) | Should -Be @('alpha')
+        $state.providers['alpha'].lastResult | Should -BeLike 'failed: alpha.txt:*'
+    }
+
+    It 'goes on with the last scan when the scan fails' {
+        $repos = Join-Path $script:RunHome 'Repos'
+        New-Item -ItemType Directory -Path $repos | Out-Null
+        phx roots add $repos 6>$null
+        Mock Invoke-PhxScan -ModuleName PSPhoenix { throw 'the disk went away' }
+        Invoke-TestRun | Should -Match 'scan failed: the disk went away - going on with the last scan'
+        $script:RunError | Should -BeNullOrEmpty
+    }
+
+    It 'copes with a line without a colour, as a host without a console writes it' {
+        # On a CI runner a plain Write-Host line carries colour -1, which Write-Host itself refuses.
+        InModuleScope PSPhoenix {
+            $message = [System.Management.Automation.HostInformationMessage]@{ Message = 'plain'; ForegroundColor = [Enum]::ToObject([ConsoleColor], -1) }
+            { Invoke-PhxLogged -Action { Write-Information -MessageData $message -InformationAction Continue } 6>$null } | Should -Not -Throw
+        }
+    }
+
     It 'keeps only the newest logs' {
         InModuleScope PSPhoenix { $script:SavedKeep = $script:PhxRunLogKeep; $script:PhxRunLogKeep = 2 }
         try { 1..3 | ForEach-Object { Invoke-TestRun | Out-Null } }
@@ -2336,8 +2582,9 @@ Describe 'the scheduled entry point' {
         $testHome = Use-TestHome
         $task = Join-Path (Split-Path $PSScriptRoot -Parent) 'src/PSPhoenix/phx-task.ps1'
         $pwsh = (Get-Process -Id $PID).Path
-        & $pwsh -NoProfile -NonInteractive -File $task *> $null
-        $LASTEXITCODE | Should -Be 1                                       # not set up yet
+        $output = & $pwsh -NoProfile -NonInteractive -File $task 2>&1 | Out-String
+        $LASTEXITCODE | Should -Be 1
+        $output | Should -Match 'not set up yet'
 
         $repos = Join-Path $testHome 'Repos'
         New-TestRepository (Join-Path $repos 'One') -Remote 'origin=https://github.com/o/one.git' | Out-Null
@@ -2346,7 +2593,11 @@ Describe 'the scheduled entry point' {
         phx roots add $repos 6>$null
         InModuleScope PSPhoenix -Parameters @{ Target = $target } {
             param($Target)
-            $c = Read-PhxConfig; $c.target = [ordered]@{ type = 'folder'; path = $Target }; $c.machine = [ordered]@{ name = 'Box'; id = 'id-box' }; Save-PhxConfig $c
+            $c = Read-PhxConfig; $c.target = [ordered]@{ type = 'folder'; path = $Target }; $c.machine = [ordered]@{ name = 'Box'; id = 'id-box' }
+            # The child runs real providers: every one but repos stays off, so none of them ever
+            # reaches this machine's real home (~/.claude, the PowerShell profile, winget, ...).
+            foreach ($name in @($script:PhxProviders.Keys | Where-Object { $_ -ne 'repos' })) { $c.providers[$name] = [ordered]@{ enabled = $false } }
+            Save-PhxConfig $c
         }
         & $pwsh -NoProfile -NonInteractive -File $task *> $null
         $LASTEXITCODE | Should -Be 0
