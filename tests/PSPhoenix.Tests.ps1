@@ -2177,6 +2177,23 @@ Describe 'run' {
         Invoke-TestRun | Should -Not -Match 'scan: discovery is due'
     }
 
+    It 'goes on with the last scan when the scan fails' {
+        $repos = Join-Path $script:RunHome 'Repos'
+        New-Item -ItemType Directory -Path $repos | Out-Null
+        phx roots add $repos 6>$null
+        Mock Invoke-PhxScan -ModuleName PSPhoenix { throw 'the disk went away' }
+        Invoke-TestRun | Should -Match 'scan failed: the disk went away - going on with the last scan'
+        $script:RunError | Should -BeNullOrEmpty
+    }
+
+    It 'copes with a line without a colour, as a host without a console writes it' {
+        # On a CI runner a plain Write-Host line carries colour -1, which Write-Host itself refuses.
+        InModuleScope PSPhoenix {
+            $message = [System.Management.Automation.HostInformationMessage]@{ Message = 'plain'; ForegroundColor = [Enum]::ToObject([ConsoleColor], -1) }
+            { Invoke-PhxLogged -Action { Write-Information -MessageData $message -InformationAction Continue } 6>$null } | Should -Not -Throw
+        }
+    }
+
     It 'keeps only the newest logs' {
         InModuleScope PSPhoenix { $script:SavedKeep = $script:PhxRunLogKeep; $script:PhxRunLogKeep = 2 }
         try { 1..3 | ForEach-Object { Invoke-TestRun | Out-Null } }

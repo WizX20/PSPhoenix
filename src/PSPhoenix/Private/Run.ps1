@@ -25,7 +25,10 @@ function Invoke-PhxLogged {
             $data = $_.MessageData
             $text = if ($data -is [System.Management.Automation.HostInformationMessage]) { $data.Message } else { "$data" }
             Write-PhxRunLog -Message $text -Source $Source
-            if ($data -is [System.Management.Automation.HostInformationMessage] -and $null -ne $data.ForegroundColor) { Write-Host $text -ForegroundColor $data.ForegroundColor }
+            # A line without a colour of its own carries the host's, which is -1 - no colour - on a
+            # host without a console (a CI runner, a redirected run): not one Write-Host takes.
+            $color = if ($data -is [System.Management.Automation.HostInformationMessage]) { $data.ForegroundColor }
+            if ($null -ne $color -and [Enum]::IsDefined([ConsoleColor], $color)) { Write-Host $text -ForegroundColor $color }
             else { Write-Host $text }
         }
         else { $_ }
@@ -100,7 +103,9 @@ function Invoke-PhxRun {
         $state = Read-PhxState
         if (@($config.roots).Count -and (Test-PhxScanDue -Cache (Read-PhxRepoCache -Quiet) -Config $config)) {
             Write-PhxRunLine 'scan: discovery is due'
-            Invoke-PhxLogged -Source 'scan' -Action { Invoke-PhxScan } | Out-Null
+            # A scan that fails leaves the last one in place: the providers can still run from it.
+            try { Invoke-PhxLogged -Source 'scan' -Action { Invoke-PhxScan } | Out-Null }
+            catch { Write-PhxRunLine "  scan failed: $(Hide-PhxSecret $_.Exception.Message) - going on with the last scan" Yellow }
         }
         $providers = @(Get-PhxRunProvider -Config $config -State $state -Name $Provider)
         $succeeded = [Collections.Generic.List[string]]::new()
