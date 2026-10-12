@@ -62,6 +62,11 @@ BeforeAll {
         $script:GhLeaks.Add("gh $($Arguments -join ' ')")
         throw 'a test reached gh - mock Get-PhxGhAccount or Get-PhxGhToken'
     }
+    # Nor the Task Scheduler: no task is registered, and registering or removing one is a leak.
+    $script:SchedulerLeaks = [Collections.Generic.List[string]]::new()
+    Mock Get-PhxScheduledTask -ModuleName PSPhoenix { }
+    Mock Register-PhxScheduledTask -ModuleName PSPhoenix { $script:SchedulerLeaks.Add('register'); throw 'a test reached the Task Scheduler' }
+    Mock Unregister-PhxScheduledTask -ModuleName PSPhoenix { $script:SchedulerLeaks.Add('unregister'); throw 'a test reached the Task Scheduler' }
     # From here on no test derives anything from the real home - not even a path printed in the
     # help. A test that needs a folder of its own calls Use-TestHome again for its path. (Pester
     # has no root-level BeforeEach.)
@@ -133,7 +138,6 @@ Describe 'module surface' {
     }
 
     It 'fails a command that is not built yet, naming its milestone' {
-        { phx schedule -ErrorAction Stop } | Should -Throw '*not built yet*M2*'
         { phx restore -ErrorAction Stop } | Should -Throw '*not built yet*M6*'
         phx review -ErrorAction SilentlyContinue
         $? | Should -BeFalse
@@ -1408,11 +1412,15 @@ Describe 'init' {
             [pscustomobject]@{ Host = 'github.com'; Login = 'wpaap'; Active = $true }
             [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $false }
         }
+        # The schedule question as on Windows, on every platform; registering is recorded, not done.
+        Mock Test-PhxCanSchedule -ModuleName PSPhoenix { $true }
+        $script:Registered = [Collections.Generic.List[object]]::new()
+        Mock Register-PhxScheduledTask -ModuleName PSPhoenix { $script:Registered.Add($Definition) }
     }
 
     It 'sets up roots, accounts, target, machine and interval from the defaults and a few answers' {
-        # roots, WizX20 account, summitnl account, target, create it?, machine, interval (bad, good), save?
-        Set-TestAnswer '' '' '' '' '' '' 'soon' '2h' ''
+        # roots, WizX20 account, summitnl account, target, create it?, machine, interval (bad, good), schedule?, save?
+        Set-TestAnswer '' '' '' '' '' '' 'soon' '2h' '' ''
         $output = Get-PhxOutput { phx init }
         $script:Answers.Count | Should -Be 0
         $config = InModuleScope PSPhoenix { Read-PhxConfig }
@@ -1432,7 +1440,10 @@ Describe 'init' {
         $output | Should -Not -Match 'NoRepos'
         $output | Should -Match 'like 30m, 1h or 1d'
         $output | Should -Not -Match 'company storage'
-        $output | Should -Match 'saved .*next: phx status'
+        $output | Should -Match 'saved .*config.json'
+        $output | Should -Match 'scheduled: every 2h'
+        $script:Registered | Should -HaveCount 1
+        $script:Registered[0].Interval | Should -Be ([TimeSpan]::FromHours(2))
         $script:Prompts[-1] | Should -BeExactly "Save to $(InModuleScope PSPhoenix { Get-PhxConfigPath })? (Y/n)"
         # The scan of the chosen roots is saved with the config.
         $cache = InModuleScope PSPhoenix { Read-PhxRepoCache }
@@ -1441,11 +1452,11 @@ Describe 'init' {
     }
 
     It 'changes nothing when run again with Enter all the way' {
-        Set-TestAnswer '' '' '' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' '' '' '' ''
         phx init 6>$null
         $before = Read-TestConfig
-        # roots, two accounts, target (exists now), machine, interval, save?
-        Set-TestAnswer '' '' '' '' '' '' ''
+        # roots, two accounts, target (exists now), machine, interval, schedule?, save?
+        Set-TestAnswer '' '' '' '' '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match '\(current\)'
         $script:Answers.Count | Should -Be 0
         Read-TestConfig | Should -Be $before
@@ -1459,19 +1470,21 @@ Describe 'init' {
         @{ Question = 'create-the-target'; At = 4 }
         @{ Question = 'machine'; At = 5 }
         @{ Question = 'interval'; At = 6 }
-        @{ Question = 'save'; At = 7 }
+        @{ Question = 'schedule'; At = 7 }
+        @{ Question = 'save'; At = 8 }
     ) {
         $answers = @(@('') * $At) + 'q'
         Set-TestAnswer @answers
         Get-PhxOutput { phx init } | Should -Match 'stopped - nothing saved'
         $? | Should -BeTrue
         $script:Prompts | Should -HaveCount ($At + 1)
+        $script:Registered | Should -HaveCount 0
         Test-Path -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) | Should -BeFalse
         Test-Path -LiteralPath (InModuleScope PSPhoenix { Get-PhxRepoCachePath }) | Should -BeFalse
     }
 
     It 'leaves the last scan alone when stopped after scanning other roots' {
-        Set-TestAnswer '' '' '' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' '' '' '' ''
         phx init 6>$null
         $cachePath = InModuleScope PSPhoenix { Get-PhxRepoCachePath }
         $before = Get-Content -LiteralPath $cachePath -Raw
@@ -1482,14 +1495,14 @@ Describe 'init' {
     }
 
     It 'saves nothing when the last answer is no' {
-        Set-TestAnswer '' '' '' '' '' '' '' 'n'
+        Set-TestAnswer '' '' '' '' '' '' '' '' 'n'
         Get-PhxOutput { phx init } | Should -Match 'not confirmed - nothing saved'
         Test-Path -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) | Should -BeFalse
     }
 
     It 'asks again for roots it cannot use, and takes a typed path' {
         $nope = Join-Path $testHome 'nope'
-        Set-TestAnswer '7' $nope '1,1' $script:InitOther '' '' '' '' ''
+        Set-TestAnswer '7' $nope '1,1' $script:InitOther '' '' '' '' '' ''
         $output = Get-PhxOutput { phx init }
         $output | Should -Match 'there is no number 7 in the list'
         $output | Should -Match ([regex]::Escape("no such folder: $nope"))
@@ -1499,20 +1512,20 @@ Describe 'init' {
 
     It 'asks again for an account gh does not have, and stores its exact spelling' {
         # WizX20's owner first (two repositories): a login gh lacks, then Enter; summitnl: typed in lower case.
-        Set-TestAnswer '1' 'nobody' '' 'wizx20' '' '' '' '' ''
+        Set-TestAnswer '1' 'nobody' '' 'wizx20' '' '' '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'one of: wpaap, WizX20'
         $script:Answers.Count | Should -Be 0
         (InModuleScope PSPhoenix { Read-PhxConfig }).accounts['github.com/summitnl'] | Should -BeExactly 'WizX20'
     }
 
     It 'keeps an account that is set when gh is not logged in with it' {
-        Set-TestAnswer '' '' '' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' '' '' '' ''
         phx init 6>$null
         $before = Read-TestConfig
         # gh now knows only WizX20: summitnl's wpaap stays the default, and Enter keeps it.
         Mock Get-PhxGhAccount -ModuleName PSPhoenix { [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $true } }
-        # roots, summitnl account (asked: its account is not logged in), target, machine, interval, save?
-        Set-TestAnswer '' '' '' '' '' ''
+        # roots, summitnl account (asked: its account is not logged in), target, machine, interval, schedule?, save?
+        Set-TestAnswer '' '' '' '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'github.com/summitnl uses wpaap, but gh is not logged in as wpaap'
         $script:Answers.Count | Should -Be 0
         Read-TestConfig | Should -Be $before
@@ -1520,14 +1533,14 @@ Describe 'init' {
 
     It 'skips the accounts when gh is not logged in' {
         Mock Get-PhxGhAccount -ModuleName PSPhoenix { }
-        Set-TestAnswer '' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'gh is not logged in'
         (InModuleScope PSPhoenix { Read-PhxConfig }).accounts.Count | Should -Be 0
     }
 
     It 'asks again for a target number that is not in the list' {
         # roots, two accounts, target (5, a number too big for an int, Enter), create it?, machine, interval, save?
-        Set-TestAnswer '' '' '' '5' '99999999999' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '5' '99999999999' '' '' '' '' '' ''
         $output = Get-PhxOutput { phx init }
         $output | Should -Match 'there is no number 5 in the list'
         $output | Should -Match 'there is no number 99999999999 in the list'
@@ -1537,7 +1550,7 @@ Describe 'init' {
 
     It 'takes an interval from 15m to 31d' {
         # roots, two accounts, target, create it?, machine, interval (three refused), save?
-        Set-TestAnswer '' '' '' '' '' '' '14m' '99999999999m' '32d' '31d' ''
+        Set-TestAnswer '' '' '' '' '' '' '14m' '99999999999m' '32d' '31d' '' ''
         $output = Get-PhxOutput { phx init }
         [regex]::Matches($output, 'from 15m to 31d').Count | Should -Be 3
         (InModuleScope PSPhoenix { Read-PhxConfig }).interval | Should -Be '31d'
@@ -1549,7 +1562,7 @@ Describe 'init' {
 
     It 'asks again for a machine name that is no folder name, and stores the typed one' {
         # roots, two accounts, target, create it?, machine (bad, good), interval, save?
-        Set-TestAnswer '' '' '' '' '' 'my laptop' 'Laptop-2026' '' ''
+        Set-TestAnswer '' '' '' '' '' 'my laptop' 'Laptop-2026' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'letters, digits, dot, dash and underscore, please'
         $script:Answers.Count | Should -Be 0
         (InModuleScope PSPhoenix { Read-PhxConfig }).machine.name | Should -Be 'Laptop-2026'
@@ -1561,17 +1574,25 @@ Describe 'init' {
         New-Item -ItemType Directory -Force -Path $other | Out-Null
         Set-Content -LiteralPath (Join-Path $other 'phoenix.json') -Value '{ "format": 1, "machine": { "name": "Box", "id": "11111111-1111-1111-1111-111111111111" }, "updatedAt": "2026-10-01T08:00:00Z" }'
         # roots, two accounts, target, machine (taken, then the suggested free one), interval, save?
-        Set-TestAnswer '' '' '' '' 'Box' '' '' ''
+        Set-TestAnswer '' '' '' '' 'Box' '' '' '' ''
         $output = Get-PhxOutput { phx init }
         $output | Should -Match 'Box holds the snapshot of another installation'
         $script:Answers.Count | Should -Be 0
         (InModuleScope PSPhoenix { Read-PhxConfig }).machine.name | Should -Be 'Box-2'
     }
 
+    It 'leaves the schedule off when told so' {
+        # roots, two accounts, target, create it?, machine, interval, schedule? no, save?
+        Set-TestAnswer '' '' '' '' '' '' '' 'n' ''
+        $output = Get-PhxOutput { phx init }
+        $output | Should -Match 'schedule\s+off - phx schedule on later'
+        $script:Registered | Should -HaveCount 0
+    }
+
     It 'takes a typed target folder, and says where company data belongs' {
         $usb = Join-Path $testHome 'USB'
         New-Item -ItemType Directory -Path $usb | Out-Null
-        Set-TestAnswer '' '' '' $usb '' '' ''
+        Set-TestAnswer '' '' '' $usb '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'company storage'
         (InModuleScope PSPhoenix { Read-PhxConfig }).target.path | Should -Be $usb
     }
@@ -1590,6 +1611,14 @@ Describe 'status' {
             [pscustomobject]@{ Host = 'github.com'; Login = 'wpaap'; Active = $true }
             [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $false }
         }
+        # A scheduled task as phx schedule on registers it, every hour.
+        Mock Test-PhxCanSchedule -ModuleName PSPhoenix { $true }
+        # Built here: a mock's body does not run inside the module, so it cannot call its helpers.
+        $script:ScheduledTask = InModuleScope PSPhoenix {
+            $definition = New-PhxTaskDefinition -Interval ([TimeSpan]::FromHours(1))
+            [pscustomobject]@{ Arguments = $definition.Arguments; Interval = $definition.Interval; LastRunTime = [datetime]'2026-10-12 08:00'; LastResult = 0; NextRunTime = [datetime]'2026-10-12 10:00' }
+        }
+        Mock Get-PhxScheduledTask -ModuleName PSPhoenix { $script:ScheduledTask }
 
         function Set-TestConfig {
             param([string]$WorkAccount = 'wpaap', [string]$TargetPath = $target)
@@ -1630,6 +1659,7 @@ Describe 'status' {
         $output | Should -Match 'WizX20: 1'
         $output | Should -Match 'account\s+wpaap on github.com \(1 repositories\) - logged in to gh'
         $output | Should -Match 'last run\s+none yet - phx run'
+        $output | Should -Match 'schedule\s+on, every 1h and at logon - next 2026-10-12 10:00'
         $output | Should -Match 'nothing needs attention'
     }
 
@@ -1703,6 +1733,19 @@ Describe 'status' {
         Set-Content -LiteralPath (Join-Path $target 'Box/phoenix.json') -Value '{ "format": 1, "machine": { "id": "theirs" } }'
         $output = Get-PhxOutput { phx status }
         $output | Should -Match 'holds the snapshot of another installation'
+        $output | Should -Match '1 thing\(s\) need attention'
+    }
+
+    It 'warns when nothing backs up in the background, or the task runs a module that is gone' {
+        Set-TestConfig
+        phx scan 6>$null
+        Mock Get-PhxScheduledTask -ModuleName PSPhoenix { }
+        Get-PhxOutput { phx status } | Should -Match 'schedule\s+off - nothing backs up in the background: phx schedule on'
+        Mock Get-PhxScheduledTask -ModuleName PSPhoenix {
+            [pscustomobject]@{ Arguments = "--headless `"$((Get-Process -Id $PID).Path)`" -NoProfile -NonInteractive -File `"C:\gone\0.0.1\phx-task.ps1`""; Interval = [TimeSpan]::FromHours(1) }
+        }
+        $output = Get-PhxOutput { phx status }
+        $output | Should -Match 'schedule\s+on, but it runs C:\\gone\\0.0.1\\phx-task.ps1, which is gone'
         $output | Should -Match '1 thing\(s\) need attention'
     }
 
@@ -2038,6 +2081,106 @@ Describe 'state and change detection' {
             (New-PhxContext -Provider repos).State.version | Should -Be 1
             $state = New-PhxState
             [object]::ReferenceEquals((New-PhxContext -Provider repos -State $state).State, $state) | Should -BeTrue
+        }
+    }
+}
+
+Describe 'schedule' {
+    BeforeEach {
+        Use-TestHome | Out-Null
+        Mock Test-PhxCanSchedule -ModuleName PSPhoenix { $true }
+        $script:Registered = [Collections.Generic.List[object]]::new()
+        $script:Unregistered = 0
+        Mock Register-PhxScheduledTask -ModuleName PSPhoenix { $script:Registered.Add($Definition) }
+        Mock Unregister-PhxScheduledTask -ModuleName PSPhoenix { $script:Unregistered++ }
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; Save-PhxConfig $c }
+        function Invoke-TestSchedule {
+            # phx schedule with the given words; its output, its error in $script:ScheduleError.
+            param([string]$Action, [string]$Every)
+            $script:ScheduleError = $null
+            $verb, $span = $Action, $Every
+            $output = Get-PhxOutput {
+                if ($span) { phx schedule $verb -Every $span -ErrorAction SilentlyContinue -ErrorVariable failure }
+                else { phx schedule $verb -ErrorAction SilentlyContinue -ErrorVariable failure }
+                $script:ScheduleError = @($failure | Where-Object FullyQualifiedErrorId -Like 'PhxCommandFailed*')[0]
+            }
+            $output
+        }
+    }
+
+    It 'registers the task with the interval of the config' {
+        Invoke-TestSchedule on | Should -Match 'scheduled: every 1h and 5 minutes after logon'
+        $script:Registered | Should -HaveCount 1
+        $script:Registered[0].Interval | Should -Be ([TimeSpan]::FromHours(1))
+    }
+
+    It 'sets the interval with -Every, also without on, and refuses one out of range' {
+        Invoke-TestSchedule '' '2h' | Should -Match 'scheduled: every 2h'
+        (InModuleScope PSPhoenix { Read-PhxConfig }).interval | Should -Be '2h'
+        $script:Registered[0].Interval | Should -Be ([TimeSpan]::FromHours(2))
+        Invoke-TestSchedule on '5m' | Out-Null
+        $script:ScheduleError.Exception.Message | Should -BeLike '*-Every 5m - give 15m to 31d*'
+        (InModuleScope PSPhoenix { Read-PhxConfig }).interval | Should -Be '2h'
+        $script:Registered | Should -HaveCount 1
+    }
+
+    It 'needs phx init first' {
+        Use-TestHome | Out-Null
+        Invoke-TestSchedule on | Out-Null
+        $script:ScheduleError.Exception.Message | Should -BeLike '*not set up yet*'
+        $script:Registered | Should -HaveCount 0
+    }
+
+    It 'removes the task, and says when there is none' {
+        Invoke-TestSchedule off | Should -Match 'not scheduled - nothing to turn off'
+        $script:Unregistered | Should -Be 0
+        Mock Get-PhxScheduledTask -ModuleName PSPhoenix { [pscustomobject]@{ Arguments = 'x'; Interval = [TimeSpan]::FromHours(1) } }
+        Invoke-TestSchedule off | Should -Match 'turned off'
+        $script:Unregistered | Should -Be 1
+    }
+
+    It 'shows the task, its last and next run, and what is wrong with it' {
+        Invoke-TestSchedule status | Should -Match 'not scheduled - phx schedule on'
+        Invoke-TestSchedule | Should -Match 'not scheduled'
+        $script:ScheduledTask = InModuleScope PSPhoenix {
+            $definition = New-PhxTaskDefinition -Interval ([TimeSpan]::FromHours(4))
+            [pscustomobject]@{ Arguments = $definition.Arguments; Interval = $definition.Interval; LastRunTime = [datetime]'2026-10-12 08:00'; LastResult = 1; NextRunTime = [datetime]'2026-10-12 12:00' }
+        }
+        Mock Get-PhxScheduledTask -ModuleName PSPhoenix { $script:ScheduledTask }
+        $output = Invoke-TestSchedule status
+        $output | Should -Match 'last run\s+2026-10-12 08:00, failed \(result 1\)'
+        $output | Should -Match 'next run\s+2026-10-12 12:00'
+        $output | Should -Match 'it runs every 4h, the config says 1h - phx schedule on'
+    }
+
+    It 'says where it does not work yet, and refuses an unknown action' {
+        Invoke-TestSchedule frob | Out-Null
+        $script:ScheduleError.Exception.Message | Should -BeLike "*unknown action 'frob'*"
+        Mock Test-PhxCanSchedule -ModuleName PSPhoenix { $false }
+        Invoke-TestSchedule on | Out-Null
+        $script:ScheduleError.Exception.Message | Should -BeLike '*runs on Windows for now*#5*'
+    }
+
+    It 'defines a headless task that runs phx-task.ps1 of a module folder an update keeps' {
+        InModuleScope PSPhoenix {
+            $definition = New-PhxTaskDefinition -Interval ([TimeSpan]::FromMinutes(30)) -ModulePath 'C:\Mods\PSPhoenix' -Pwsh 'C:\PS\pwsh.exe'
+            $definition.Execute | Should -Be 'conhost.exe'
+            $definition.Arguments | Should -Be ('--headless "C:\PS\pwsh.exe" -NoProfile -NonInteractive -File "' + (Join-Path 'C:\Mods\PSPhoenix' 'phx-task.ps1') + '"')
+            $definition.LogonDelay | Should -Be ([TimeSpan]::FromMinutes(5))
+            $definition.ExecutionLimit | Should -Be ([TimeSpan]::FromMinutes(15))
+            $definition.Priority | Should -Be 7
+        }
+        $apps = Join-Path $TestDrive 'scoop/apps/psphoenix'
+        New-Item -ItemType Directory -Force -Path (Join-Path $apps '0.2.0'), (Join-Path $apps 'current') | Out-Null
+        InModuleScope PSPhoenix -Parameters @{ Apps = $apps } {
+            param($Apps)
+            Get-PhxStableModulePath -ModuleBase (Join-Path $Apps '0.2.0') -Version '0.2.0' | Should -Be (Join-Path $Apps 'current')
+            Get-PhxStableModulePath -ModuleBase (Join-Path $Apps '0.2.0') -Version '0.3.0' | Should -Be (Join-Path $Apps '0.2.0')
+            Get-PhxStableModulePath -ModuleBase (Join-Path $TestDrive 'modules/PSPhoenix') -Version '0.2.0' | Should -Be (Join-Path $TestDrive 'modules/PSPhoenix')
+            Format-PhxSpan ([TimeSpan]::FromMinutes(30)) | Should -Be '30m'
+            Format-PhxSpan ([TimeSpan]::FromMinutes(90)) | Should -Be '90m'
+            Format-PhxSpan ([TimeSpan]::FromHours(2)) | Should -Be '2h'
+            Format-PhxSpan ([TimeSpan]::FromDays(1)) | Should -Be '1d'
         }
     }
 }
@@ -2393,5 +2536,9 @@ Describe 'test hygiene' {
     # Last in the file on purpose: it reads what every test before it left behind.
     It 'never reached the real gh' {
         $script:GhLeaks.Count | Should -Be 0 -Because "these calls went to gh: $($script:GhLeaks -join '; ')"
+    }
+
+    It 'never reached the real Task Scheduler' {
+        $script:SchedulerLeaks.Count | Should -Be 0 -Because "these calls went to the Task Scheduler: $($script:SchedulerLeaks -join '; ')"
     }
 }

@@ -1,7 +1,8 @@
 # PSPhoenix design
 
-Status: **draft**. M1 is built - `phx init`, `phx roots`, `phx scan`, `phx status` and the `repos`
-provider; the rest is not yet (see [Roadmap](#roadmap)). This document is the contract the milestones
+Status: **draft**. M1 and M2 are built - `phx init`, `phx roots`, `phx scan`, `phx status`, the
+`repos` provider, the snapshot, `phx run` and `phx schedule`; the rest is not yet (see
+[Roadmap](#roadmap)). This document is the contract the milestones
 build towards; change it in the same PR as the code that deviates from it.
 
 ## Problem
@@ -295,14 +296,22 @@ One target can hold several machines side by side; restore picks one.
 
 Windows: a per-user Task Scheduler task `\PSPhoenix\Backup`.
 
-- Triggers: every `interval` (default `1h`, set with `phx schedule --every 2h`), and at logon after a
-  5-minute delay.
+- Triggers: every `interval` (default `1h`, 15m to 31d, set with `phx schedule -Every 2h`), and at
+  logon after a 5-minute delay.
 - Settings: `StartWhenAvailable` (a run missed during sleep or shutdown happens right after),
   `MultipleInstances IgnoreNew` (never overlapping runs), `ExecutionTimeLimit` 15 minutes,
-  priority 7 (below normal), optionally AC power only.
-- Action: `conhost.exe --headless pwsh.exe -NoProfile -NonInteractive -File <module>\phx-task.ps1`.
-  Without `conhost --headless` a console window flashes up every run, `-WindowStyle Hidden`
-  included.
+  priority 7 (below normal); it runs on battery too. The principal is the user, logged on
+  (`Interactive`): the run needs the user's credential store and `gh` keyring.
+- Action: `conhost.exe --headless "<pwsh>" -NoProfile -NonInteractive -File "<module>\phx-task.ps1"`,
+  naming the PowerShell that ran `phx schedule on`. Without `conhost --headless` a console window
+  flashes up every run, `-WindowStyle Hidden` included.
+- The module folder it names is one an update leaves in place: imported through Scoop's modules
+  folder it already is one (a junction to `apps\psphoenix\current`); imported from a version folder
+  with a `current` next to it, `current` is named instead.
+- `phx schedule status` and `phx status` check the registered task against what `phx schedule on`
+  would register now - a PowerShell or module that is gone, another module than this one, another
+  interval than the config's - and say `phx schedule on` fixes it. `phx init` asks to turn the
+  schedule on.
 
 Rejected alternatives:
 
@@ -325,7 +334,7 @@ phx review                        decide on pending gitignored candidates
 phx scan                          re-discover repositories under the roots
 phx roots add|rm|list             manage roots; add takes -Depth <n> (1-10, default 3); roots
                                   may not overlap - discovery would see repositories twice
-phx schedule on|off|status        manage the scheduled task; -Every <n>h sets the interval
+phx schedule on|off|status        manage the scheduled task; -Every 30m|1h|1d sets the interval
 phx restore                       rebuild this machine from a snapshot (see below)
 phx providers                     the providers registered for this platform
 phx version                       module version
@@ -344,7 +353,8 @@ set before (kept, with a warning, when `gh` is not logged in with it), else what
 helpers say, else the active account; suggests the OneDrive for Business folder as target, with a
 note on where company data belongs when another folder is chosen; names the machine (the computer
 name, not a folder another installation wrote); takes an interval from 15 minutes to 31 days (Task
-Scheduler's longest repetition). Each later milestone adds its step.
+Scheduler's longest repetition); and, on Windows, asks to turn the schedule on. Each later milestone
+adds its step.
 
 `phx run` is one backup run, and what the scheduled task calls (through `phx-task.ps1` next to the
 module, headless and at below-normal priority, exiting 1 when the run failed). It needs the set-up

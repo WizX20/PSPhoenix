@@ -1,9 +1,9 @@
 # phx init (docs/design.md -> Commands): the wizard that decides what to back up and where. It asks
 # for the roots, the GitHub account per owner, the target folder, this machine's name in it and the
-# interval; secrets (M3), the review of gitignored files (M3) and the schedule (M2) join with their
-# milestones. Nothing is saved before the last question - not the config, not the scan of the chosen
-# roots; `q` at any prompt, Ctrl+C or the end of input stops without saving. A second run starts
-# from the current values, so Enter all the way changes nothing.
+# interval, and turns the background run on; secrets (M3) and the review of gitignored files (M3)
+# join with their milestone. Nothing is saved before the last question - not the config, not the
+# scan of the chosen roots; `q` at any prompt, Ctrl+C or the end of input stops without saving. A
+# second run starts from the current values, so Enter all the way changes nothing.
 
 function Get-PhxRootCandidate {
     # Folders that commonly hold repositories; the wizard offers the ones that exist and hold any.
@@ -200,9 +200,9 @@ function Select-PhxInitMachine {
 }
 
 function Select-PhxInitInterval {
-    # Step 6: how often the background run goes (phx schedule, M2, turns it on).
+    # Step 6: how often the background run goes.
     param([string]$Current)
-    Write-PhxInitStep 'Interval - how often the background run backs up' 'minutes, hours or days: 30m, 1h, 4h, 1d; phx schedule turns the run on (M2)'
+    Write-PhxInitStep 'Interval - how often the background run backs up' 'minutes, hours or days: 30m, 1h, 4h, 1d'
     $default = if ($Current) { $Current } else { '1h' }
     while ($true) {
         $answer = Read-PhxInitAnswer -Prompt '  Interval' -Default $default
@@ -224,7 +224,13 @@ function Invoke-PhxInit {
         $target = Select-PhxInitTarget -Current $config.target
         $machine = Select-PhxInitMachine -TargetPath $target.path -Current $config.machine
         $interval = Select-PhxInitInterval -Current $config.interval
-        Write-PhxInitStep 'Later milestones' 'secrets (an age key, M3), the review of gitignored files (M3) and the background schedule (M2) are asked here once they exist'
+        # Step 7: the background run. Asked only where phx schedule works (Windows, for now).
+        $schedule = $false
+        if (Test-PhxCanSchedule) {
+            Write-PhxInitStep 'Schedule - back up in the background' "a task in your Task Scheduler runs phx every $interval and after logon; phx schedule off removes it"
+            $schedule = Read-PhxInitYesNo -Prompt '  Turn it on?'
+        }
+        Write-PhxInitStep 'Later milestones' 'secrets (an age key, M3) and the review of gitignored files (M3) are asked here once they exist'
 
         Write-PhxInitStep 'Summary'
         foreach ($root in $roots) { Write-Host "  root      $($root.path)   depth $($root.depth)" }
@@ -232,6 +238,7 @@ function Invoke-PhxInit {
         Write-Host "  target    $($target.path)"
         Write-Host "  machine   $($machine.name)   snapshot in $(Join-Path $target.path $machine.name)"
         Write-Host "  interval  $interval"
+        if (Test-PhxCanSchedule) { Write-Host "  schedule  $(if ($schedule) { 'on' } else { 'off - phx schedule on later' })" }
         if (-not (Read-PhxInitYesNo -Prompt "Save to ${configPath}?")) { throw [OperationCanceledException]::new('not confirmed') }
     }
     catch [OperationCanceledException] {
@@ -246,5 +253,7 @@ function Invoke-PhxInit {
     $config.interval = $interval
     Save-PhxConfig $config
     Save-PhxRepoCache -Roots $roots -Records $records
-    Write-Host "saved $configPath - next: phx status" -ForegroundColor Green
+    Write-Host "saved $configPath" -ForegroundColor Green
+    if ($schedule) { Enable-PhxSchedule }
+    Write-Host 'next: phx run for a first backup now, then phx status' -ForegroundColor Green
 }
