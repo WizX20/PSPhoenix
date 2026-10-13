@@ -138,7 +138,9 @@ Including everything is not an option; a pure allowlist misses files nobody thou
    Gradle wrappers, ignored lock files.
 4. **Binary extensions and a size cap** (default 1 MB). A larger file needs an explicit include.
 5. **Secret classification** by name: `.env`, `.env.*`, `secrets.*`, `*.pfx`, `*.pem`, `*.key`,
-   `id_*`, plus per-repository `secret` patterns. Secret files are only ever stored as `.age`.
+   `id_*`, plus per-repository `secret` patterns - and by content: a text file the
+   [detector](#secrets) finds a secret in is secret as a whole. Secret files are only ever stored
+   as `.age`.
 6. **Review**: a candidate nobody decided on yet is `pending` and is **not** backed up. The wizard
    and `phx review` show pending files per repository; the answer (include, exclude, exclude
    pattern, secret) is stored in the config. `phx status` reports the number of pending files.
@@ -216,6 +218,45 @@ Encryption uses [age](https://age-encryption.org):
   would be unreadable - exactly the case this tool exists for.
 - `age` is an external binary (`scoop install age`, `winget install FiloSottile.age`). Without it,
   secret-classified items are skipped and `phx status` says so.
+
+**Detection.** A file is secret by its name (see [Gitignored files](#gitignored-files-filters-and-review))
+or by its content. One detector in the engine, `SecretScanner`, reads content. It finds:
+
+- **Tokens, by their published formats:**
+  - GitHub (`ghp_` and the other `gh?_` prefixes, `github_pat_`), GitLab (`glpat-`), Slack (`xox?-`);
+  - AWS access keys, npm tokens, `sk-` API keys;
+  - Azure DevOps PATs, classic and current;
+  - JSON web tokens.
+- **Private key blocks** (`-----BEGIN … PRIVATE KEY-----`).
+- **Credentials in URLs** (`user:password@`, or a token as the user name) and **authorization headers**.
+- **Values assigned to a key that names a password or a secret**, in JSON, XML, YAML, INI, `.env`,
+  connection strings and PowerShell (`$env:X = '…'`):
+  - Under a password key (`Password`, `pwd`, `ClearTextPassword`), any real value counts: a human
+    password has little entropy.
+  - Under a secret key (`token`, `apiKey`, `clientSecret`, `AccountKey`, `_authToken`), a value
+    counts when it looks random: 12 or more characters, no whitespace, at least 3 bits of entropy
+    per character.
+  - The key's last word decides. `accessToken` names a token, `tokenType` a type.
+
+These are not secrets:
+
+- references (`${TOKEN}`, `$(Token)`, `%PASSWORD%`, Key Vault references);
+- placeholders (`<your-key>`, `changeme`, `xxxx`);
+- paths and URLs;
+- GUIDs, hashes and base64 data under keys that name no secret.
+
+When in doubt the detector says "secret": the cost is a file stored encrypted, and the review
+(#27) can overrule it per file.
+
+A finding carries the kind, the line, the column and the key, never the value. A log, a warning
+or `phx status` can name it as it is: `appsettings.json line 12: a secret value (ClientSecret)`.
+
+The same detector does three more things:
+
+- it masks every log line and error message;
+- it keeps secrets out of the repository inventory: a setting that holds one is not recorded, and
+  a remote URL is recorded without it;
+- it is the check behind `Test-PhxSecretText`.
 
 ## Targets
 
@@ -451,7 +492,7 @@ with its own xUnit tests):
 - writing a file through a temporary name and one rename, copying, hashing (SHA-256);
 - publishing the staged files into the snapshot;
 - the state (`state.json`) and change detection - a provider's `$Context.Files`;
-- the content scan for secrets (M3, #45) is built there.
+- the secret scan (`SecretScanner`, #45): what is a secret, by content - see [Secrets](#secrets).
 
 It targets .NET 8, what PowerShell 7.4 runs on, and depends on nothing but .NET: PowerShell calls
 its public classes, and an exception it throws reaches the user as its own message. The module

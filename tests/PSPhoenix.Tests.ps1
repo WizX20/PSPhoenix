@@ -595,6 +595,22 @@ Describe 'repository identity' {
         InModuleScope PSPhoenix -Parameters @{ Url = $Url } { param($Url) Remove-PhxUrlSecret $Url } | Should -BeExactly $Clean
     }
 
+    It 'recognises secrets by content through one detector, the engine' {
+        InModuleScope PSPhoenix {
+            # Built at run time: nothing token-like is committed.
+            $token = 'gh' + 'p_' + ('d4' * 18)
+            Test-PhxSecretText "`$env:GH_TOKEN = '$token'" | Should -BeTrue
+            Test-PhxSecretText 'Server=db;Password=Winter2024!;' | Should -BeTrue
+            Test-PhxSecretText '"token": "${GITHUB_TOKEN}"' | Should -BeFalse
+            $finding = @(Get-PhxSecretFinding "line one`n  `"ClientSecret`": `"Zx9Qw3Er7Ty1Ui5Op2As8Df4`"")[0]
+            $finding.Line | Should -Be 2
+            $finding.Description | Should -Be 'a secret value (ClientSecret)'
+            "$finding" | Should -Not -Match 'Zx9'
+            Test-PhxTokenLike ('p' * 52) | Should -BeTrue
+            Test-PhxTokenLike 'wouter' | Should -BeFalse
+        }
+    }
+
     It 'masks credentials in text such as a git error' {
         InModuleScope PSPhoenix {
             Hide-PhxSecret 'git clone https://user:secret@github.com/o/r.git failed' | Should -Be 'git clone https://user:***@github.com/o/r.git failed'
@@ -852,6 +868,16 @@ Describe 'scan' {
         $script:ScanOutput -join "`n" | Should -Match 'carries credentials in its URL - recorded without them'
         Get-Content -LiteralPath (Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'repos.json') -Raw | Should -Not -Match $token
         ($script:ScanOutput -join "`n") | Should -Not -Match $token
+    }
+
+    It 'masks a token elsewhere in a remote URL, and keeps the rest of it' {
+        $token = 'gl' + 'pat-' + ('c3' * 10)
+        New-TestRepository (Join-Path $repos 'Query') -Remote 'origin=https://gitlab.example.invalid/o/query.git', "mirror=https://gitlab.example.invalid/o/query.git?private_token=$token" | Out-Null
+        phx roots add $repos 6>$null
+        $records = @(Get-TestScan)
+        @(($records | Where-Object path -EQ 'Query').remotes.mirror.urls) | Should -Be @('https://gitlab.example.invalid/o/query.git?private_token=***')
+        $script:ScanOutput -join "`n" | Should -Match 'remote mirror carries credentials in its URL - recorded without them'
+        Get-Content -LiteralPath (Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'repos.json') -Raw | Should -Not -Match $token
     }
 
     It 'shows a root added after the last scan as not scanned' {
@@ -1321,10 +1347,11 @@ Describe 'repos provider' {
 
     It 'does not record a credential setting that <Case>' -ForEach @(
         # Token-like values are built at run time: nothing token-like is committed.
-        @{ Case = 'writes out a password'; Key = 'credential.https://example.invalid.helper'; Value = '!f() { echo password=hunter2; }; f'; Secret = 'hunter2'; Reason = 'holds a secret' }
-        @{ Case = 'holds a GitLab token'; Key = 'credential.https://gitlab.example.invalid.helper'; Value = "!f() { echo username=x; echo secret=$('glpat-' + 'q' * 20); }; f"; Secret = 'glpat-qqqq'; Reason = 'holds a secret' }
+        @{ Case = 'writes out a password'; Key = 'credential.https://example.invalid.helper'; Value = '!f() { echo password=hunter2; }; f'; Secret = 'hunter2'; Reason = 'holds a password (password)' }
+        @{ Case = 'holds a GitLab token'; Key = 'credential.https://gitlab.example.invalid.helper'; Value = "!f() { echo username=x; echo secret=$('glpat-' + 'q' * 20); }; f"; Secret = 'glpat-qqqq'; Reason = 'holds a GitLab token' }
         @{ Case = 'has an Azure DevOps PAT as user name'; Key = 'credential.https://dev.azure.com.username'; Value = ('p' * 52); Secret = ('p' * 52); Reason = 'has a token as its user name' }
         @{ Case = 'is scoped to a URL with a token in it'; Key = "credential.https://x:$('glpat-' + 'r' * 20)@gitlab.example.invalid.helper"; Value = 'store'; Secret = 'glpat-rrrr'; Reason = 'carries credentials in its URL' }
+        @{ Case = 'is no credential setting but holds a token'; Key = 'core.sshcommand'; Value = "ssh -o SetEnv=GH_TOKEN=$('gh' + 'p_' + 'b2' * 18)"; Secret = 'b2b2b2'; Reason = 'core.sshcommand holds a GitHub token' }
     ) {
         git -C $one config --add $Key $Value
         phx scan 6>$null
