@@ -1,1 +1,0 @@
-- feat: `phx roots add|rm|list` - the folders that hold your repositories, each with a discovery depth (`-Depth`, default 3); overlapping roots are refused

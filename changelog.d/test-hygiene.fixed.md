@@ -1,1 +1,0 @@
-- fix: repos - a recorded setting that starts with `~` (such as `include.path=~/.gitconfig-work`) is restored as written; PowerShell on Windows rewrote it into the old home folder
