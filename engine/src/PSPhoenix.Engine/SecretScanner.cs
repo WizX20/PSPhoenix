@@ -210,14 +210,17 @@ public static partial class SecretScanner
     public static FileScan ScanFile(string path)
     {
         AtomicFile.RequireFullPath(path);
-        byte[] bytes;
-        using (FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-        {
-            bytes = new byte[stream.Length];
-            stream.ReadExactly(bytes);
-        }
-        string? text = Decode(bytes);
+        string? text = Decode(ReadShared(path));
         return text is null ? new FileScan(true, []) : new FileScan(false, Scan(text));
+    }
+
+    /// <summary>A file's bytes, read alongside writers and deleters - a file another program has open must not fail the read.</summary>
+    internal static byte[] ReadShared(string path)
+    {
+        using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        byte[] bytes = new byte[stream.Length];
+        stream.ReadExactly(bytes);
+        return bytes;
     }
 
     /// <summary>

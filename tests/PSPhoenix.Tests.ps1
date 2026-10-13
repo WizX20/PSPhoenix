@@ -2628,6 +2628,116 @@ Describe 'run' {
         Invoke-TestRun -Provider slow | Should -Match 'slow: 0 written, 1 unchanged'
     }
 
+    It 'holds back every staged file with a secret in it, and keeps the secret out of the snapshot, staging, log and output' {
+        # One file per kind the detector knows (#45), built at run time: nothing token-like is committed.
+        $script:Secrets = [ordered]@{
+            'github.txt'     = 'gh' + 'p_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+            'gitlab.txt'     = 'gl' + 'pat-' + ('q' * 20)
+            'slack.txt'      = 'xo' + 'xb-' + '1234567890-abcdefghijklmnopqrstuvwx'
+            'aws.txt'        = 'AK' + 'IA' + 'ABCDEFGHIJKLMNOP'
+            'npm.txt'        = 'np' + 'm_' + ('a1b2' * 9)
+            'apikey.txt'     = 's' + 'k-proj-' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6'
+            'azdo.txt'       = ('a1B2c3D4' * 9) + 'a1B2' + 'AZ' + 'DO' + 'x9Y8'
+            'jwt.txt'        = 'ey' + 'JhbGciOiJIUzI1NiJ9.ey' + 'JzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV'
+            'key.pem'        = 'MIIEowIBAAKCAQEA' + ('x7Y6' * 12)
+            'remote.txt'     = 'hunter2'
+            'header.txt'     = 'a1B2c3D4e5F6g7H8'
+            'database.txt'   = 'Winter2024!'
+            'storage.txt'    = 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8=='
+            'nuget.config'   = 'pa55word!'
+            'profile.ps1'    = 'f3a9c27d81e4b605f3a9c27d81e4b605'
+            'appsettings.json' = 'Zx9Qw3Er7Ty1Ui5Op2As8Df4'
+        }
+        $script:SecretText = @{
+            'key.pem'        = { param($v) "-----BEGIN RSA PRIVATE" + " KEY-----`n$v`n-----END RSA PRIVATE KEY-----" }
+            'remote.txt'     = { param($v) "url = https://wouter:$v@example.invalid/x.git" }
+            'header.txt'     = { param($v) "Authorization: Bearer $v" }
+            'database.txt'   = { param($v) "Server=db;User Id=sa;Password=$v;" }
+            'storage.txt'    = { param($v) "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=$v;" }
+            'nuget.config'   = { param($v) "<add key=`"ClearTextPassword`" value=`"$v`" />" }
+            'profile.ps1'    = { param($v) "Set-Location ~`n`$env:MY_API_TOKEN = '$v'" }
+            'appsettings.json' = { param($v) "{`n  `"ClientSecret`": `"$v`"`n}" }
+        }
+        $copySource = Join-Path $script:RunHome 'copied.ps1'
+        Set-Content -LiteralPath $copySource -Value "`$env:GH_TOKEN = '$($script:Secrets['github.txt'])'"
+        InModuleScope PSPhoenix -Parameters @{ Secrets = $script:Secrets; SecretText = $script:SecretText; CopySource = $copySource } {
+            param($Secrets, $SecretText, $CopySource)
+            # The provider runs in the module: what it uses goes there.
+            $script:Secrets = $Secrets
+            $script:SecretText = $SecretText
+            $script:CopySource = $CopySource
+            Register-PhxProvider @{ Name = 'leaky'; Description = 'stages secrets'; Restore = {}; Status = {}
+                Backup = {
+                    param($Context)
+                    Write-PhxStagedText -Context $Context -Path 'clean.txt' -Value 'nothing to see'
+                    foreach ($name in $script:Secrets.Keys) {
+                        $text = if ($script:SecretText.ContainsKey($name)) { & $script:SecretText[$name] $script:Secrets[$name] } else { "token $($script:Secrets[$name])" }
+                        Write-PhxStagedText -Context $Context -Path "sub/$name" -Value $text
+                    }
+                    Copy-PhxStagedFile -Context $Context -Source $script:CopySource -Path 'copied.ps1'
+                    # Around the writer: the check before publishing catches it.
+                    Set-Content -LiteralPath (Join-Path $Context.Staging 'direct.txt') -Value "token $($script:Secrets['gitlab.txt'])"
+                }
+            }
+        }
+        $output = Invoke-TestRun
+        $script:RunError | Should -BeNullOrEmpty
+        $held = $script:Secrets.Count + 2
+        $output | Should -Match "leaky: 1 written, 0 unchanged, 0 removed, $held held back \(secrets\)"
+        $output | Should -Match 'held back sub/github\.txt line 1: a GitHub token - a secret is only stored encrypted'
+        $output | Should -Match 'held back sub/appsettings\.json line 2: a secret value \(ClientSecret\)'
+        $output | Should -Match 'held back direct\.txt line 1: a GitLab token'
+        # Only the clean file anywhere: in the snapshot and in staging.
+        @(Get-ChildItem -LiteralPath (Join-Path $script:RunSnapshot 'leaky') -Recurse -File).Name | Should -Be @('clean.txt')
+        $staging = InModuleScope PSPhoenix { Get-PhxStagingPath leaky }
+        @(Get-ChildItem -LiteralPath $staging -Recurse -File).Name | Should -Be @('clean.txt')
+        $state = InModuleScope PSPhoenix { Read-PhxState }
+        @($state.Providers['leaky'].Withheld).Count | Should -Be $held
+        $everything = @(
+            $output
+            Get-Content -LiteralPath $state.lastRun.log -Raw
+            Get-Content -LiteralPath (InModuleScope PSPhoenix { Get-PhxStatePath }) -Raw
+            Get-ChildItem -LiteralPath $script:RunSnapshot, $staging -Recurse -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }
+        ) -join "`n"
+        foreach ($secret in $script:Secrets.Values) { $everything.Contains($secret) | Should -BeFalse -Because 'no secret may reach a snapshot, the staging folder, the log or the output' }
+        $status = Get-PhxOutput { phx status }
+        $status | Should -Match "secrets\s+$held file\(s\) held back, not in the snapshot"
+        $status | Should -Match 'thing\(s\) need attention'
+        foreach ($secret in $script:Secrets.Values) { $status.Contains($secret) | Should -BeFalse }
+    }
+
+    It 'stages only inside the staging folder, and fails on a secret in a file the snapshot cannot do without' {
+        InModuleScope PSPhoenix -Parameters @{ Staging = (Join-Path $script:RunHome 'stage') } {
+            param($Staging)
+            $context = New-PhxContext -Provider 'x' -Staging $Staging -Config (Read-PhxConfig)
+            { Write-PhxStagedText -Context $context -Path '../out.txt' -Value 'x' } | Should -Throw '*leads out of the staging folder*'
+            { Write-PhxStagedText -Context $context -Path ([IO.Path]::Combine($Staging, 'a.txt')) -Value 'x' } | Should -Throw '*not a path inside the staging folder*'
+            $token = 'gh' + 'p_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+            { Write-PhxStagedText -Context $context -Path 'repos.json' -Value "{ `"t`": `"$token`" }" -FailOnSecret } | Should -Throw 'repos.json line 1: a GitHub token - not staged'
+            [IO.File]::Exists((Join-Path $Staging 'repos.json')) | Should -BeFalse
+            $context.Withheld.Count | Should -Be 0
+        }
+    }
+
+    It 'keeps what a provider held back until its next successful run' {
+        InModuleScope PSPhoenix {
+            $script:LeakNow = $true
+            Register-PhxProvider @{ Name = 'sometimes'; Description = 'a secret, then none'; Restore = {}; Status = {}
+                Backup = {
+                    param($Context)
+                    $value = if ($script:LeakNow) { "Password=$('Winter' + '2024!');" } else { 'Password=$(DbPassword);' }
+                    Write-PhxStagedText -Context $Context -Path 'db.txt' -Value $value
+                }
+            }
+        }
+        Invoke-TestRun | Out-Null
+        Get-PhxOutput { phx status } | Should -Match 'secrets\s+1 file\(s\) held back.*sometimes/db\.txt line 1: a password \(Password\)'
+        InModuleScope PSPhoenix { $script:LeakNow = $false }
+        Invoke-TestRun -Provider sometimes | Should -Match 'sometimes: 1 written'
+        Get-PhxOutput { phx status } | Should -Not -Match 'held back'
+        Test-Path -LiteralPath (Join-Path $script:RunSnapshot 'sometimes/db.txt') | Should -BeTrue
+    }
+
     It 'records a run in which nothing was due as one without providers' {
         Invoke-TestRun | Out-Null
         InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.providers = [ordered]@{ alpha = [ordered]@{ enabled = $false } }; Save-PhxConfig $c }

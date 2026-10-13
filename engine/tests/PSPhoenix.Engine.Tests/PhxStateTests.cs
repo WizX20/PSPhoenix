@@ -43,8 +43,8 @@ public sealed class PhxStateTests : IDisposable
         state.Save(StatePath);
         PhxState read = PhxState.Load(StatePath);
 
-        read.Providers["claude"].Should().Be(new ProviderState(Started, "ok"));
-        read.Providers["repos"].Should().Be(new ProviderState(null, "failed: boom"));
+        read.Providers["claude"].Should().BeEquivalentTo(new ProviderState(Started, "ok", []));
+        read.Providers["repos"].Should().BeEquivalentTo(new ProviderState(null, "failed: boom", []));
         read.Files["claude"][file].Should().Be(tracker.Seen[file]);
         read.PublishedTo.Should().Be(@"D:\Target\Box");
         read.Published["claude"]["memory/a.md"].Should().Be("CD");
@@ -70,8 +70,8 @@ public sealed class PhxStateTests : IDisposable
         state.LastRun.Log.Should().Be(@"C:\logs\run-1.log");
         state.LastRun.Providers.Should().Equal("repos");
         state.LastRun.Failed.Should().BeEmpty();
-        state.Providers["repos"].Should().Be(new ProviderState(Started, "ok"));
-        state.Providers["claude"].Should().Be(new ProviderState(null, "failed: boom"));
+        state.Providers["repos"].Should().BeEquivalentTo(new ProviderState(Started, "ok", []));
+        state.Providers["claude"].Should().BeEquivalentTo(new ProviderState(null, "failed: boom", []));
         state.Files["claude"][@"C:\Users\x\.claude\a.md"].Should().Be(new FileStamp(3, 638956800000000000, "AB"));
         state.Published["repos"]["repos.json"].Should().Be("CD");
         state.PublishedTo.Should().Be(@"D:\Target\Box");
@@ -181,9 +181,24 @@ public sealed class PhxStateTests : IDisposable
         second.Known.Should().ContainKey(file);
         state.Failed("claude", "disk full");
 
-        state.Providers["claude"].Should().Be(new ProviderState(Started, "failed: disk full"));
+        state.Providers["claude"].Should().BeEquivalentTo(new ProviderState(Started, "failed: disk full", []));
         state.Files["claude"].Should().ContainKey(file);
         state.Tracker("repos").Known.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Keeps_what_a_provider_held_back_until_its_next_success_and_saves_it()
+    {
+        PhxState state = new();
+        state.Succeeded("claude", Started, state.Tracker("claude"), ["memory/a.md line 3: a GitHub token"]);
+        state.Failed("claude", "boom");
+
+        state.Providers["claude"].Withheld.Should().Equal("memory/a.md line 3: a GitHub token");
+        state.Save(StatePath);
+        PhxState.Load(StatePath).Providers["claude"].Withheld.Should().Equal("memory/a.md line 3: a GitHub token");
+
+        state.Succeeded("claude", Started.AddHours(1), state.Tracker("claude"));
+        state.Providers["claude"].Withheld.Should().BeEmpty();
     }
 
     [Fact]

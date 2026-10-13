@@ -108,11 +108,19 @@ function Show-PhxStatus {
         }
     }
 
-    $last = (Read-PhxState -Quiet).lastRun
+    $state = Read-PhxState -Quiet
+    $last = $state.LastRun
     $at = if ($last) { ConvertTo-PhxDateTime $last.at }
     if (-not $at) { & $line 'last run' 'none yet - phx run' }
     elseif (@($last.failed).Count) { & $line 'last run' "$(Format-PhxAge $at) - failed: $(@($last.failed) -join ', ') - log: $($last.log)" -Warn }
     else { & $line 'last run' "$(Format-PhxAge $at) - $(@($last.providers).Count) provider(s), all fine" }
+    # Files the secret check held back: not in the snapshot until age (#25) can encrypt them.
+    $held = @(foreach ($name in @($state.Providers.Keys | Sort-Object)) { foreach ($entry in @($state.Providers[$name].Withheld)) { "$name/$entry" } })
+    if ($held.Count) {
+        $shown = ($held | Select-Object -First 3) -join '; '
+        $rest = if ($held.Count -gt 3) { "; and $($held.Count - 3) more" } else { '' }
+        & $line 'secrets' "$($held.Count) file(s) held back, not in the snapshot - a secret is only stored encrypted, with age (#25): $shown$rest" -Warn
+    }
     & $line 'review' 'gitignored files to decide on - arrives with M3 (phx review)'
     & $line 'wip' 'local-only work - arrives with M4'
     if ($warnings.Count) { Write-Host "$($warnings.Count) thing(s) need attention" -ForegroundColor Yellow }

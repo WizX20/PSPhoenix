@@ -93,10 +93,20 @@ unknown keys are refused (a `Platform` typo would otherwise run the provider eve
 `Platforms` defaults to all three but may not be empty; `Cadence` is absent or a whole number of
 minutes, hours or days (`30m`, `1h`, `1d`).
 
-`$Context` carries the loaded config, the provider's staging folder (in the state folder), the state
-store, a logger, the secret writer (age) and a `DryRun` flag; on restore also the root map (an old
-root to its new path) and the repositories selected. A provider never writes outside its
-staging folder during backup, and every `Restore` is idempotent: a second run skips what exists.
+`$Context` carries:
+
+- the loaded config;
+- the provider's staging folder, in the state folder;
+- the state store, and from it the change detection (`$Context.Files`);
+- a logger;
+- what the secret check held back;
+- a `DryRun` flag;
+- on restore, also the root map (an old root to its new path) and the repositories selected.
+
+A provider never writes outside its staging folder during backup, and stages every file through
+`Write-PhxStagedText` or `Copy-PhxStagedFile`. They refuse a path that leads out of staging, and
+scan the file for secrets first (see [Secrets](#secrets)). Every `Restore` is idempotent: a second
+run skips what exists.
 
 **Every provider ships with its `Restore` and a round-trip test** (backup into `$TestDrive`, restore
 into a second `$TestDrive` home, compare). A backup nobody has restored is a hope, not a backup.
@@ -250,6 +260,21 @@ When in doubt the detector says "secret": the cost is a file stored encrypted, a
 
 A finding carries the kind, the line, the column and the key, never the value. A log, a warning
 or `phx status` can name it as it is: `appsettings.json line 12: a secret value (ClientSecret)`.
+
+**Staging.** Every file a provider stages goes through the writer, which scans it before
+anything is written:
+
+- A text with a secret in it is secret as a whole. It is stored only as `.age` (#25), and until
+  age is there it is **held back**: never written to staging, not published, so a file already in
+  the snapshot is removed there.
+- The warning, the run log and `phx status` name the file, the line and the kind, never the value:
+  `held back appsettings.json line 12: a secret value (ClientSecret)`.
+- Before publishing, the run scans the staging folder once more and holds back whatever reached it
+  another way.
+- The state records per provider what its last successful run held back. `phx status` shows them
+  as a warning, and `phx run` adds the count to the provider's line.
+- A file the snapshot cannot do without fails its provider instead, so the last published copy
+  stays. This is the repository inventory, which is kept free of secrets value by value.
 
 The same detector does three more things:
 

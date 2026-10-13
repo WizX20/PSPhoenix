@@ -6,7 +6,11 @@ namespace PSPhoenix.Engine;
 /// <summary>A provider's last run: when it last succeeded (its start), and how the last attempt went.</summary>
 /// <param name="LastRun">The start of the last run in which the provider succeeded, in UTC; none yet when it never did.</param>
 /// <param name="LastResult"><c>ok</c>, or <c>failed: </c> and why.</param>
-public sealed record ProviderState(DateTime? LastRun, string? LastResult);
+/// <param name="Withheld">
+/// The files its last successful run held back because they hold a secret, each as
+/// <c>&lt;file&gt; line &lt;n&gt;: &lt;kind&gt;</c> - never the secret itself.
+/// </param>
+public sealed record ProviderState(DateTime? LastRun, string? LastResult, IReadOnlyList<string>? Withheld = null);
 
 /// <summary>The last run of <c>phx run</c>.</summary>
 /// <param name="At">Its start, in UTC.</param>
@@ -73,19 +77,22 @@ public sealed class PhxState
     /// run now - the start, not the end, so a long run does not push its next turn past the slack of
     /// its cadence - and what it saw is what its next run compares with.
     /// </summary>
-    public void Succeeded(string provider, DateTime started, FileTracker files)
+    public void Succeeded(string provider, DateTime started, FileTracker files, IEnumerable<string>? withheld = null)
     {
         ArgumentNullException.ThrowIfNull(files);
-        Providers[provider] = new ProviderState(started.ToUniversalTime(), "ok");
+        Providers[provider] = new ProviderState(started.ToUniversalTime(), "ok", withheld?.ToArray() ?? []);
         Files[provider] = files.Seen;
     }
 
     /// <summary>
     /// A provider failed: its last run stays the last one it succeeded in - it is due again at once -
-    /// and what its last successful run saw stays what the next one compares with.
+    /// and what its last successful run saw, and held back, stays as it was.
     /// </summary>
     public void Failed(string provider, string message)
-        => Providers[provider] = new ProviderState(Providers.GetValueOrDefault(provider)?.LastRun, $"failed: {message}");
+    {
+        ProviderState? last = Providers.GetValueOrDefault(provider);
+        Providers[provider] = new ProviderState(last?.LastRun, $"failed: {message}", last?.Withheld ?? []);
+    }
 
     /// <summary>
     /// Publishing goes into <paramref name="snapshot"/>: hashes published into another folder must
@@ -194,7 +201,7 @@ public sealed class PhxState
             {
                 if (provider is not null)
                 {
-                    state.Providers[name] = provider with { LastRun = provider.LastRun is { } last ? Utc(last) : null };
+                    state.Providers[name] = provider with { LastRun = provider.LastRun is { } last ? Utc(last) : null, Withheld = Names(provider.Withheld) };
                 }
             }
             foreach ((string name, Dictionary<string, FileStamp?>? files) in Files ?? [])
