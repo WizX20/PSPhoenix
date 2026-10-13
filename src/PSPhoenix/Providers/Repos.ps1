@@ -85,7 +85,9 @@ function Backup-PhxRepos {
     }
     $document = [ordered]@{ format = $script:PhxReposFormat; repositories = @($inventory) }
     if ($Context.DryRun) { & $Context.Log "would record $(@($inventory).Count) repositories" 'Action'; return }
-    Write-PhxTextFile -Path (Join-Path $Context.Staging 'repos.json') -Value ($document | ConvertTo-Json -Depth 10)
+    # The inventory is kept free of secrets value by value (Read-PhxRepoConfig); should one slip
+    # through, the provider fails and the last published inventory stays, rather than none.
+    Write-PhxStagedText -Context $Context -Path 'repos.json' -Value ($document | ConvertTo-Json -Depth 10) -FailOnSecret
     & $Context.Log "$(@($inventory).Count) repositories recorded"
 }
 

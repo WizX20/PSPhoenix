@@ -595,6 +595,22 @@ Describe 'repository identity' {
         InModuleScope PSPhoenix -Parameters @{ Url = $Url } { param($Url) Remove-PhxUrlSecret $Url } | Should -BeExactly $Clean
     }
 
+    It 'recognises secrets by content through one detector, the engine' {
+        InModuleScope PSPhoenix {
+            # Built at run time: nothing token-like is committed.
+            $token = 'gh' + 'p_' + ('d4' * 18)
+            Test-PhxSecretText "`$env:GH_TOKEN = '$token'" | Should -BeTrue
+            Test-PhxSecretText 'Server=db;Password=Winter2024!;' | Should -BeTrue
+            Test-PhxSecretText '"token": "${GITHUB_TOKEN}"' | Should -BeFalse
+            $finding = @(Get-PhxSecretFinding "line one`n  `"ClientSecret`": `"Zx9Qw3Er7Ty1Ui5Op2As8Df4`"")[0]
+            $finding.Line | Should -Be 2
+            $finding.Description | Should -Be 'a secret value (ClientSecret)'
+            "$finding" | Should -Not -Match 'Zx9'
+            Test-PhxTokenLike ('p' * 52) | Should -BeTrue
+            Test-PhxTokenLike 'wouter' | Should -BeFalse
+        }
+    }
+
     It 'masks credentials in text such as a git error' {
         InModuleScope PSPhoenix {
             Hide-PhxSecret 'git clone https://user:secret@github.com/o/r.git failed' | Should -Be 'git clone https://user:***@github.com/o/r.git failed'
@@ -852,6 +868,16 @@ Describe 'scan' {
         $script:ScanOutput -join "`n" | Should -Match 'carries credentials in its URL - recorded without them'
         Get-Content -LiteralPath (Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'repos.json') -Raw | Should -Not -Match $token
         ($script:ScanOutput -join "`n") | Should -Not -Match $token
+    }
+
+    It 'masks a token elsewhere in a remote URL, and keeps the rest of it' {
+        $token = 'gl' + 'pat-' + ('c3' * 10)
+        New-TestRepository (Join-Path $repos 'Query') -Remote 'origin=https://gitlab.example.invalid/o/query.git', "mirror=https://gitlab.example.invalid/o/query.git?private_token=$token" | Out-Null
+        phx roots add $repos 6>$null
+        $records = @(Get-TestScan)
+        @(($records | Where-Object path -EQ 'Query').remotes.mirror.urls) | Should -Be @('https://gitlab.example.invalid/o/query.git?private_token=***')
+        $script:ScanOutput -join "`n" | Should -Match 'remote mirror carries credentials in its URL - recorded without them'
+        Get-Content -LiteralPath (Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'repos.json') -Raw | Should -Not -Match $token
     }
 
     It 'shows a root added after the last scan as not scanned' {
@@ -1321,10 +1347,11 @@ Describe 'repos provider' {
 
     It 'does not record a credential setting that <Case>' -ForEach @(
         # Token-like values are built at run time: nothing token-like is committed.
-        @{ Case = 'writes out a password'; Key = 'credential.https://example.invalid.helper'; Value = '!f() { echo password=hunter2; }; f'; Secret = 'hunter2'; Reason = 'holds a secret' }
-        @{ Case = 'holds a GitLab token'; Key = 'credential.https://gitlab.example.invalid.helper'; Value = "!f() { echo username=x; echo secret=$('glpat-' + 'q' * 20); }; f"; Secret = 'glpat-qqqq'; Reason = 'holds a secret' }
+        @{ Case = 'writes out a password'; Key = 'credential.https://example.invalid.helper'; Value = '!f() { echo password=hunter2; }; f'; Secret = 'hunter2'; Reason = 'holds a password (password)' }
+        @{ Case = 'holds a GitLab token'; Key = 'credential.https://gitlab.example.invalid.helper'; Value = "!f() { echo username=x; echo secret=$('glpat-' + 'q' * 20); }; f"; Secret = 'glpat-qqqq'; Reason = 'holds a GitLab token' }
         @{ Case = 'has an Azure DevOps PAT as user name'; Key = 'credential.https://dev.azure.com.username'; Value = ('p' * 52); Secret = ('p' * 52); Reason = 'has a token as its user name' }
         @{ Case = 'is scoped to a URL with a token in it'; Key = "credential.https://x:$('glpat-' + 'r' * 20)@gitlab.example.invalid.helper"; Value = 'store'; Secret = 'glpat-rrrr'; Reason = 'carries credentials in its URL' }
+        @{ Case = 'is no credential setting but holds a token'; Key = 'core.sshcommand'; Value = "ssh -o SetEnv=GH_TOKEN=$('gh' + 'p_' + 'b2' * 18)"; Secret = 'b2b2b2'; Reason = 'core.sshcommand holds a GitHub token' }
     ) {
         git -C $one config --add $Key $Value
         phx scan 6>$null
@@ -2018,17 +2045,18 @@ Describe 'snapshot' {
         $info.providers.repos.files | Should -Be 1
     }
 
-    It 'does not read the target back when the state knows what it published' {
+    It 'keeps what it published in the state, file by file' {
+        # So the next publish need not read the target back - that it does not is the engine's test
+        # (FolderPublisherTests: Published_hashes_spare_reading_the_destination_back).
         Set-TestMachine 'Box' 'id-1'
         Set-TestStaged repos @{ 'repos.json' = 'one'; 'gone.txt' = 'soon gone' }
         $state = InModuleScope PSPhoenix { New-PhxState }
         InModuleScope PSPhoenix -Parameters @{ State = $state } { param($State) Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider repos -State $State } | Out-Null
         @($state.published['repos'].Keys | Sort-Object) | Should -Be @('gone.txt', 'repos.json')
+        $state.published['repos']['repos.json'] | Should -Be (InModuleScope PSPhoenix { [PSPhoenix.Engine.FileHash]::Sha256Text('one') })
         Set-TestStaged repos @{ 'gone.txt' = '' }
         $result = InModuleScope PSPhoenix -Parameters @{ State = $state } {
             param($State)
-            # Reading a published file back would download it from OneDrive: not needed now.
-            Mock Test-PhxSameFile { throw 'the target was read' }
             (Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider repos -State $State)['repos']
         }
         $result.Unchanged | Should -Be 1
@@ -2165,38 +2193,70 @@ Describe 'state and change detection' {
         }
     }
 
-    It 'saves and reads back providers, files, published hashes and refs' {
-        InModuleScope PSPhoenix -Parameters @{ File = (Join-Path $script:StateHome 'a.txt') } {
-            param($File)
-            $state = New-PhxState
-            $state.providers['repos'] = [ordered]@{ lastRun = '2026-10-09T10:00:00.0000000Z' }
-            $state.files['claude'] = New-PhxPathDictionary
-            $state.files['claude'][$File] = [ordered]@{ size = 3; mtime = 42; sha256 = 'AB' }
-            $state.published['repos'] = New-PhxPathDictionary
-            $state.published['repos']['repos.json'] = 'CD'
-            $state.publishedTo = 'D:\Target\Box'
-            $state.refs['C:/r'] = 'EF'
-            Save-PhxState $state
-            $read = Read-PhxState
-            ConvertTo-PhxDateTime $read.providers['repos'].lastRun | Should -Be ([datetime]::Parse('2026-10-09T10:00:00Z').ToUniversalTime())
-            $read.files['claude'][$File].sha256 | Should -Be 'AB'
-            $read.files['claude'][$File].mtime | Should -Be 42
-            $read.published['repos']['repos.json'] | Should -Be 'CD'
-            $read.publishedTo | Should -Be 'D:\Target\Box'
-            $read.refs['C:/r'] | Should -Be 'EF'
+    It 'says why it ignores a state it cannot read' {
+        InModuleScope PSPhoenix {
+            New-Item -ItemType Directory -Force -Path (Get-PhxStateDir) | Out-Null
+            Set-Content -LiteralPath (Get-PhxStatePath) -Value '{ "version": 99 }'
+            $output = & { $null = Read-PhxState } 6>&1 | Out-String
+            $output | Should -Match 'ignoring .*state\.json \(written by a newer PSPhoenix \(version 99\)\) - the next run takes everything as changed'
+            & { $null = Read-PhxState -Quiet } 6>&1 | Out-String | Should -BeNullOrEmpty
         }
     }
 
-    It 'does not hash a file whose size and mtime are as recorded' {
-        $file = Join-Path $script:StateHome 'tracked.txt'
+    It 'reads the state the PowerShell version of PSPhoenix wrote' {
+        # state.json as PSPhoenix wrote it before the engine had the state: ordered hashtables
+        # through ConvertTo-Json, times as text, and a run in which nothing was due with the
+        # providers @($null) - what @($providers.Name) of no providers is.
+        $file = Join-Path $script:StateHome 'a.txt'
+        Set-Content -LiteralPath $file -Value 'one'
+        $item = Get-Item -LiteralPath $file
+        InModuleScope PSPhoenix -Parameters @{ File = $file; Size = $item.Length; Mtime = $item.LastWriteTimeUtc.Ticks } {
+            param($File, $Size, $Mtime)
+            $now = [DateTime]::UtcNow
+            $none = @()
+            $old = [ordered]@{
+                version     = 1
+                lastRun     = [ordered]@{ at = $now.ToString('o'); providers = @($none.Name); failed = @(); log = 'C:\logs\run.log' }
+                providers   = [ordered]@{ claude = [ordered]@{ lastRun = $now.AddMinutes(-10).ToString('o'); lastResult = 'ok' } }
+                files       = [ordered]@{ claude = @{ $File = [ordered]@{ size = $Size; mtime = $Mtime; sha256 = (Get-PhxFileHash $File) } } }
+                published   = [ordered]@{ claude = @{ 'a.txt' = 'AB' } }
+                publishedTo = 'D:\Target\Box'
+                refs        = @{}
+            }
+            New-Item -ItemType Directory -Force -Path (Get-PhxStateDir) | Out-Null
+            Set-Content -LiteralPath (Get-PhxStatePath) -Value ($old | ConvertTo-Json -Depth 10 -Compress)
+            $state = Read-PhxState
+            @($state.lastRun.providers).Count | Should -Be 0
+            $state.lastRun.log | Should -Be 'C:\logs\run.log'
+            Test-PhxProviderDue -Provider @{ Name = 'claude'; Cadence = '1h' } -State $state | Should -BeFalse
+            Test-PhxFileChanged -Files $state.Tracker('claude') -Path $File | Should -BeFalse
+            $state.PublishedHashes('claude')['a.txt'] | Should -Be 'AB'
+            $state.publishedTo | Should -Be 'D:\Target\Box'
+        }
+    }
+
+    It 'saves and reads back providers, files, published hashes and refs' {
+        # The engine's tests cover the format (PhxStateTests); this is the PowerShell side of it.
+        $file = Join-Path $script:StateHome 'a.txt'
         Set-Content -LiteralPath $file -Value 'one'
         InModuleScope PSPhoenix -Parameters @{ File = $file } {
             param($File)
-            $first = New-PhxFileTracker
-            Test-PhxFileChanged -Files $first -Path $File | Should -BeTrue                       # new
-            Mock Get-PhxFileHash { throw 'hashed' }
-            $next = New-PhxFileTracker -Known $first.Seen
-            Test-PhxFileChanged -Files $next -Path $File | Should -BeFalse                       # a stat, no hash
+            $started = [datetime]::Parse('2026-10-09T10:00:00Z').ToUniversalTime()
+            $state = New-PhxState
+            $tracker = $state.Tracker('claude')
+            Test-PhxFileChanged -Files $tracker -Path $File | Should -BeTrue
+            $state.Succeeded('claude', $started, $tracker)
+            $state.PublishInto('D:\Target\Box')
+            $state.PublishedHashes('repos')['repos.json'] = 'CD'
+            $state.Refs['C:/r'] = 'EF'
+            Save-PhxState $state
+            $read = Read-PhxState
+            ConvertTo-PhxDateTime $read.providers['claude'].lastRun | Should -Be $started
+            $read.providers['claude'].lastResult | Should -Be 'ok'
+            $read.files['claude'][$File].sha256 | Should -Be (Get-PhxFileHash $File)
+            $read.published['repos']['repos.json'] | Should -Be 'CD'
+            $read.publishedTo | Should -Be 'D:\Target\Box'
+            $read.refs['C:/r'] | Should -Be 'EF'
         }
     }
 
@@ -2238,10 +2298,14 @@ Describe 'state and change detection' {
     }
 
     It 'gives each provider the files its own last run saw' {
-        InModuleScope PSPhoenix {
+        $file = Join-Path $script:StateHome 'a.txt'
+        Set-Content -LiteralPath $file -Value 'one'
+        InModuleScope PSPhoenix -Parameters @{ File = $file } {
+            param($File)
             $state = New-PhxState
-            $state.files['claude'] = New-PhxPathDictionary
-            $state.files['claude']['C:/a'] = [ordered]@{ size = 1; mtime = 1; sha256 = 'A' }
+            $tracker = $state.Tracker('claude')
+            Test-PhxFileChanged -Files $tracker -Path $File | Out-Null
+            $state.Succeeded('claude', [DateTime]::UtcNow, $tracker)
             (New-PhxContext -Provider claude -State $state).Files.Known.Count | Should -Be 1
             (New-PhxContext -Provider repos -State $state).Files.Known.Count | Should -Be 0
         }
@@ -2253,22 +2317,25 @@ Describe 'state and change detection' {
             $provider = @{ Name = 'slow'; Cadence = '1h' }
             $state = New-PhxState
             Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeTrue            # never ran
-            $state.providers['slow'] = [ordered]@{ lastRun = $now.AddMinutes(-30).ToString('o') }
+            $state.Succeeded('slow', $now.AddMinutes(-30), (New-PhxFileTracker))
             Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeFalse
-            $state.providers['slow'].lastRun = $now.AddMinutes(-58).ToString('o')
+            $state.Succeeded('slow', $now.AddMinutes(-58), (New-PhxFileTracker))
             Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeTrue             # the hourly run, a bit early
             # The config overrides the provider's cadence; no cadence at all is every run.
             $config = @{ providers = @{ slow = @{ cadence = '1d' } } }
             Test-PhxProviderDue -Provider $provider -State $state -Config $config -Now $now | Should -BeFalse
             Test-PhxProviderDue -Provider @{ Name = 'every'; Cadence = $null } -State $state -Now $now | Should -BeTrue
             # Written before a wrong clock was put right: due, not "in 200 days".
-            $state.providers['slow'].lastRun = $now.AddDays(200).ToString('o')
+            $state.Succeeded('slow', $now.AddDays(200), (New-PhxFileTracker))
             Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeTrue
             # The slack is a tenth of the cadence, at most five minutes: a day is not due 10 minutes early.
             $daily = @{ Name = 'daily'; Cadence = '1d' }
-            $state.providers['daily'] = [ordered]@{ lastRun = $now.AddMinutes(-(24 * 60 - 10)).ToString('o') }
+            $state.Succeeded('daily', $now.AddMinutes(-(24 * 60 - 10)), (New-PhxFileTracker))
             Test-PhxProviderDue -Provider $daily -State $state -Now $now | Should -BeFalse
-            $state.providers['daily'].lastRun = $now.AddMinutes(-(24 * 60 - 4)).ToString('o')
+            $state.Succeeded('daily', $now.AddMinutes(-(24 * 60 - 4)), (New-PhxFileTracker))
+            Test-PhxProviderDue -Provider $daily -State $state -Now $now | Should -BeTrue
+            # A failure keeps the last successful run: the provider is due again at once.
+            $state.Failed('daily', 'boom')
             Test-PhxProviderDue -Provider $daily -State $state -Now $now | Should -BeTrue
         }
     }
@@ -2371,7 +2438,7 @@ Describe 'schedule' {
         # How the last run went comes from the state: through conhost the Task Scheduler sees 0.
         InModuleScope PSPhoenix {
             $state = New-PhxState
-            $state.lastRun = [ordered]@{ at = [DateTime]::UtcNow.ToString('o'); providers = @('repos'); failed = @('repos'); log = 'C:\logs\run.log' }
+            $state.LastRun = [PSPhoenix.Engine.RunRecord]::new([DateTime]::UtcNow, [string[]]@('repos'), [string[]]@('repos'), 'C:\logs\run.log')
             Save-PhxState $state
         }
         $output = Invoke-TestSchedule status
@@ -2559,6 +2626,124 @@ Describe 'run' {
         Get-TestFileTimes | Should -Be $before
         # -Provider runs the one named, due or not.
         Invoke-TestRun -Provider slow | Should -Match 'slow: 0 written, 1 unchanged'
+    }
+
+    It 'holds back every staged file with a secret in it, and keeps the secret out of the snapshot, staging, log and output' {
+        # One file per kind the detector knows (#45), built at run time: nothing token-like is committed.
+        $script:Secrets = [ordered]@{
+            'github.txt'     = 'gh' + 'p_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+            'gitlab.txt'     = 'gl' + 'pat-' + ('q' * 20)
+            'slack.txt'      = 'xo' + 'xb-' + '1234567890-abcdefghijklmnopqrstuvwx'
+            'aws.txt'        = 'AK' + 'IA' + 'ABCDEFGHIJKLMNOP'
+            'npm.txt'        = 'np' + 'm_' + ('a1b2' * 9)
+            'apikey.txt'     = 's' + 'k-proj-' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6'
+            'azdo.txt'       = ('a1B2c3D4' * 9) + 'a1B2' + 'AZ' + 'DO' + 'x9Y8'
+            'jwt.txt'        = 'ey' + 'JhbGciOiJIUzI1NiJ9.ey' + 'JzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV'
+            'key.pem'        = 'MIIEowIBAAKCAQEA' + ('x7Y6' * 12)
+            'remote.txt'     = 'hunter2'
+            'header.txt'     = 'a1B2c3D4e5F6g7H8'
+            'database.txt'   = 'Winter2024!'
+            'storage.txt'    = 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8=='
+            'nuget.config'   = 'pa55word!'
+            'profile.ps1'    = 'f3a9c27d81e4b605f3a9c27d81e4b605'
+            'appsettings.json' = 'Zx9Qw3Er7Ty1Ui5Op2As8Df4'
+        }
+        $script:SecretText = @{
+            'key.pem'        = { param($v) "-----BEGIN RSA PRIVATE" + " KEY-----`n$v`n-----END RSA PRIVATE KEY-----" }
+            'remote.txt'     = { param($v) "url = https://wouter:$v@example.invalid/x.git" }
+            'header.txt'     = { param($v) "Authorization: Bearer $v" }
+            'database.txt'   = { param($v) "Server=db;User Id=sa;Password=$v;" }
+            'storage.txt'    = { param($v) "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=$v;" }
+            'nuget.config'   = { param($v) "<add key=`"ClearTextPassword`" value=`"$v`" />" }
+            'profile.ps1'    = { param($v) "Set-Location ~`n`$env:MY_API_TOKEN = '$v'" }
+            'appsettings.json' = { param($v) "{`n  `"ClientSecret`": `"$v`"`n}" }
+        }
+        $copySource = Join-Path $script:RunHome 'copied.ps1'
+        Set-Content -LiteralPath $copySource -Value "`$env:GH_TOKEN = '$($script:Secrets['github.txt'])'"
+        InModuleScope PSPhoenix -Parameters @{ Secrets = $script:Secrets; SecretText = $script:SecretText; CopySource = $copySource } {
+            param($Secrets, $SecretText, $CopySource)
+            # The provider runs in the module: what it uses goes there.
+            $script:Secrets = $Secrets
+            $script:SecretText = $SecretText
+            $script:CopySource = $CopySource
+            Register-PhxProvider @{ Name = 'leaky'; Description = 'stages secrets'; Restore = {}; Status = {}
+                Backup = {
+                    param($Context)
+                    Write-PhxStagedText -Context $Context -Path 'clean.txt' -Value 'nothing to see'
+                    foreach ($name in $script:Secrets.Keys) {
+                        $text = if ($script:SecretText.ContainsKey($name)) { & $script:SecretText[$name] $script:Secrets[$name] } else { "token $($script:Secrets[$name])" }
+                        Write-PhxStagedText -Context $Context -Path "sub/$name" -Value $text
+                    }
+                    Copy-PhxStagedFile -Context $Context -Source $script:CopySource -Path 'copied.ps1'
+                    # Around the writer: the check before publishing catches it.
+                    Set-Content -LiteralPath (Join-Path $Context.Staging 'direct.txt') -Value "token $($script:Secrets['gitlab.txt'])"
+                }
+            }
+        }
+        $output = Invoke-TestRun
+        $script:RunError | Should -BeNullOrEmpty
+        $held = $script:Secrets.Count + 2
+        $output | Should -Match "leaky: 1 written, 0 unchanged, 0 removed, $held held back \(secrets\)"
+        $output | Should -Match 'held back sub/github\.txt line 1: a GitHub token - a secret is only stored encrypted'
+        $output | Should -Match 'held back sub/appsettings\.json line 2: a secret value \(ClientSecret\)'
+        $output | Should -Match 'held back direct\.txt line 1: a GitLab token'
+        # Only the clean file anywhere: in the snapshot and in staging.
+        @(Get-ChildItem -LiteralPath (Join-Path $script:RunSnapshot 'leaky') -Recurse -File).Name | Should -Be @('clean.txt')
+        $staging = InModuleScope PSPhoenix { Get-PhxStagingPath leaky }
+        @(Get-ChildItem -LiteralPath $staging -Recurse -File).Name | Should -Be @('clean.txt')
+        $state = InModuleScope PSPhoenix { Read-PhxState }
+        @($state.Providers['leaky'].Withheld).Count | Should -Be $held
+        $everything = @(
+            $output
+            Get-Content -LiteralPath $state.lastRun.log -Raw
+            Get-Content -LiteralPath (InModuleScope PSPhoenix { Get-PhxStatePath }) -Raw
+            Get-ChildItem -LiteralPath $script:RunSnapshot, $staging -Recurse -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }
+        ) -join "`n"
+        foreach ($secret in $script:Secrets.Values) { $everything.Contains($secret) | Should -BeFalse -Because 'no secret may reach a snapshot, the staging folder, the log or the output' }
+        $status = Get-PhxOutput { phx status }
+        $status | Should -Match "secrets\s+$held file\(s\) held back, not in the snapshot"
+        $status | Should -Match 'thing\(s\) need attention'
+        foreach ($secret in $script:Secrets.Values) { $status.Contains($secret) | Should -BeFalse }
+    }
+
+    It 'stages only inside the staging folder, and fails on a secret in a file the snapshot cannot do without' {
+        InModuleScope PSPhoenix -Parameters @{ Staging = (Join-Path $script:RunHome 'stage') } {
+            param($Staging)
+            $context = New-PhxContext -Provider 'x' -Staging $Staging -Config (Read-PhxConfig)
+            { Write-PhxStagedText -Context $context -Path '../out.txt' -Value 'x' } | Should -Throw '*leads out of the staging folder*'
+            { Write-PhxStagedText -Context $context -Path ([IO.Path]::Combine($Staging, 'a.txt')) -Value 'x' } | Should -Throw '*not a path inside the staging folder*'
+            $token = 'gh' + 'p_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+            { Write-PhxStagedText -Context $context -Path 'repos.json' -Value "{ `"t`": `"$token`" }" -FailOnSecret } | Should -Throw 'repos.json line 1: a GitHub token - not staged'
+            [IO.File]::Exists((Join-Path $Staging 'repos.json')) | Should -BeFalse
+            $context.Withheld.Count | Should -Be 0
+        }
+    }
+
+    It 'keeps what a provider held back until its next successful run' {
+        InModuleScope PSPhoenix {
+            $script:LeakNow = $true
+            Register-PhxProvider @{ Name = 'sometimes'; Description = 'a secret, then none'; Restore = {}; Status = {}
+                Backup = {
+                    param($Context)
+                    $value = if ($script:LeakNow) { "Password=$('Winter' + '2024!');" } else { 'Password=$(DbPassword);' }
+                    Write-PhxStagedText -Context $Context -Path 'db.txt' -Value $value
+                }
+            }
+        }
+        Invoke-TestRun | Out-Null
+        Get-PhxOutput { phx status } | Should -Match 'secrets\s+1 file\(s\) held back.*sometimes/db\.txt line 1: a password \(Password\)'
+        InModuleScope PSPhoenix { $script:LeakNow = $false }
+        Invoke-TestRun -Provider sometimes | Should -Match 'sometimes: 1 written'
+        Get-PhxOutput { phx status } | Should -Not -Match 'held back'
+        Test-Path -LiteralPath (Join-Path $script:RunSnapshot 'sometimes/db.txt') | Should -BeTrue
+    }
+
+    It 'records a run in which nothing was due as one without providers' {
+        Invoke-TestRun | Out-Null
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.providers = [ordered]@{ alpha = [ordered]@{ enabled = $false } }; Save-PhxConfig $c }
+        Invoke-TestRun | Should -Match 'done in .*: 0 provider\(s\)'
+        @((InModuleScope PSPhoenix { Read-PhxState }).lastRun.providers).Count | Should -Be 0
+        Get-PhxOutput { phx status } | Should -Match 'last run\s+just now - 0 provider\(s\), all fine'
     }
 
     It 'keeps going when a provider fails, keeps its last snapshot, and fails at the end' {

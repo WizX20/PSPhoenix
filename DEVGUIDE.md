@@ -10,7 +10,7 @@ src/PSPhoenix/PSPhoenix.psd1        module manifest (ModuleVersion is the releas
 src/PSPhoenix/Private/*.ps1         helpers, one file per concern (paths, config, provider registry, ...)
 src/PSPhoenix/Providers/*.ps1       one file per backup unit; each calls Register-PhxProvider at import
 src/PSPhoenix/lib/                  PSPhoenix.Engine.dll - build output of engine/ (task build), not in git, in the zip
-engine/src/PSPhoenix.Engine/        the engine: C# (.NET 8) - atomic writes, hashing; publishing and state next
+engine/src/PSPhoenix.Engine/        the engine: C# (.NET 8) - atomic writes, hashing, publishing, state, change detection, the secret scan
 engine/tests/PSPhoenix.Engine.Tests/ its xUnit v3 tests, with FluentAssertions 7
 tests/PSPhoenix.Tests.ps1           Pester 5+ suite; never touches the real home, registry or Task Scheduler
 tests/Scripts.Tests.ps1             the dev scripts in scripts/ (dev-link, cut-changelog), each pointed at $TestDrive
@@ -70,8 +70,9 @@ task help                       # print `phx --help` (the README quotes it)
 
 1. Read [docs/design.md → Provider contract](docs/design.md#provider-contract) and the provider's row in the table.
 2. Create `src/PSPhoenix/Providers/<Name>.ps1` that calls `Register-PhxProvider` with `Name`, `Description`, `Platforms`, `Cadence`, and the `Backup`, `Restore` and `Status` scriptblocks. Helpers only that provider needs stay in its file, prefixed `<Name>`.
-3. Write the round-trip test first.
-4. If the provider deviates from the design, change `docs/design.md` in the same PR.
+3. Stage every file through `Write-PhxStagedText` or `Copy-PhxStagedFile` (`-Context $Context -Path <relative>`). They scan the file for secrets and hold back a file that holds one ([design → Secrets](docs/design.md#secrets)). Never write into `$Context.Staging` directly: the check before publishing would still hold the file back, but by then the plaintext was on disk.
+4. Write the round-trip test first.
+5. If the provider deviates from the design, change `docs/design.md` in the same PR.
 
 ## GitHub account: everything as WizX20
 

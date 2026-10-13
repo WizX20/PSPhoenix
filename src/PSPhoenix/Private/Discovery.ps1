@@ -142,12 +142,20 @@ function Read-PhxRepoConfig {
             Write-Host "  ${Path}: $(Hide-PhxSecret $key) $reason - not recorded" -ForegroundColor Yellow
             continue
         }
+        # Any other setting with a secret in its value is not recorded either: the inventory is
+        # plain text. (A remote URL is recorded without it, below.)
+        if ($key -notmatch '^remote\..+\.(url|pushurl)$' -and ($finding = @(Get-PhxSecretFinding "$value")[0])) {
+            Write-Host "  ${Path}: $key holds $($finding.Description) - not recorded" -ForegroundColor Yellow
+            continue
+        }
         if ($origin -ne 'file:.git/config') { $included.Add([ordered]@{ key = $key; value = $value }); continue }
         if ($key -match '^remote\.(?<name>.+)\.(?<kind>url|pushurl)$') {
             $name = $Matches.name
             $field = if ($Matches.kind -eq 'url') { 'urls' } else { 'pushUrls' }
             if (-not $value) { continue }
-            $url = Remove-PhxUrlSecret $value
+            # user:password@ and a token as user name go; a secret anywhere else in it (a token in
+            # its query) is masked.
+            $url = Hide-PhxSecret (Remove-PhxUrlSecret $value)
             if ($url -cne $value) { Write-Host "  ${Path}: remote $name carries credentials in its URL - recorded without them" -ForegroundColor Yellow }
             if (-not $remotes.Contains($name)) { $remotes[$name] = [ordered]@{ urls = @(); pushUrls = @() } }
             $remotes[$name][$field] += $url

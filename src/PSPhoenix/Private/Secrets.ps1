@@ -1,21 +1,25 @@
 # What looks like a credential, and how PSPhoenix keeps it out of snapshots, logs and error
-# messages (docs/design.md -> Secrets). Recognised by form: known token prefixes, `password=`, and
-# credentials inside a URL. #45 extends this to every file a provider stages.
+# messages (docs/design.md -> Secrets). One detector, the engine's SecretScanner: tokens by their
+# published formats, private keys, credentials in URLs and authorization headers, and values under
+# password- or secret-like keys. A finding names the kind, line and column - never the value.
 
-# Tokens by their published prefixes: GitHub (classic and fine-grained), GitLab, Slack, AWS keys.
-$script:PhxTokenPattern = '\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})'
+function Get-PhxSecretFinding {
+    # The secrets in a text, in order: Kind, Line, Column, Key and Description of each.
+    param([AllowEmptyString()][string]$Text)
+    [PSPhoenix.Engine.SecretScanner]::Scan($Text)
+}
 
 function Test-PhxSecretText {
-    # True when text holds a secret written out: a token with a known prefix, or `password=`.
+    # True when text holds a secret.
     param([AllowEmptyString()][string]$Text)
-    $Text -match $script:PhxTokenPattern -or $Text -match '(?i)\bpassw(or)?d\s*='
+    [PSPhoenix.Engine.SecretScanner]::Scan($Text).Count -gt 0
 }
 
 function Test-PhxTokenLike {
-    # A user name that is itself a credential: a GitHub, GitLab or Slack token, or a long opaque
-    # string such as an Azure DevOps PAT.
+    # A user name that is itself a credential: a token with a known prefix, or a long opaque string
+    # such as an Azure DevOps PAT.
     param([string]$Text)
-    $Text -match '^(gh[pousr]_|github_pat_|glpat-|xox[abprs]-)' -or ($Text.Length -ge 32 -and $Text -match '^[A-Za-z0-9_-]+$')
+    [PSPhoenix.Engine.SecretScanner]::IsTokenLike($Text)
 }
 
 function Remove-PhxUrlSecret {
@@ -30,12 +34,10 @@ function Remove-PhxUrlSecret {
 }
 
 function Hide-PhxSecret {
-    # Text for a log line or an error message: credentials in any URL inside it masked, and any
-    # token with a known prefix.
+    # Text for a log line or an error message: every secret in it masked as ***, a password in a URL
+    # after its user name (user:***@).
     param([AllowEmptyString()][string]$Text)
-    $Text = [regex]::Replace($Text, $script:PhxTokenPattern, '***')
-    $Text = [regex]::Replace($Text, '(?<=://)(?<user>[^/@:\s]*):[^/@\s]*@', { "$($args[0].Groups['user'].Value):***@" })
-    [regex]::Replace($Text, '(?<=://)(?<user>[^/@:\s]+)@', { if (Test-PhxTokenLike $args[0].Groups['user'].Value) { '***@' } else { $args[0].Value } })
+    [PSPhoenix.Engine.SecretScanner]::Mask($Text)
 }
 
 function Get-PhxCredentialSecret {
@@ -45,5 +47,6 @@ function Get-PhxCredentialSecret {
     param([Parameter(Mandatory)][string]$Key, [AllowEmptyString()][AllowNull()][string]$Value)
     if ($Key -match '^credential\.(?<url>.+)\.[^.]+$' -and (Remove-PhxUrlSecret $Matches.url) -cne $Matches.url) { return 'carries credentials in its URL' }
     if ($Key -match '\.username$' -and (Test-PhxTokenLike "$Value")) { return 'has a token as its user name' }
-    if (Test-PhxSecretText "$Value") { return 'holds a secret' }
+    $finding = @(Get-PhxSecretFinding "$Value")[0]
+    if ($finding) { return "holds $($finding.Description)" }
 }

@@ -93,10 +93,20 @@ unknown keys are refused (a `Platform` typo would otherwise run the provider eve
 `Platforms` defaults to all three but may not be empty; `Cadence` is absent or a whole number of
 minutes, hours or days (`30m`, `1h`, `1d`).
 
-`$Context` carries the loaded config, the provider's staging folder (in the state folder), the state
-store, a logger, the secret writer (age) and a `DryRun` flag; on restore also the root map (an old
-root to its new path) and the repositories selected. A provider never writes outside its
-staging folder during backup, and every `Restore` is idempotent: a second run skips what exists.
+`$Context` carries:
+
+- the loaded config;
+- the provider's staging folder, in the state folder;
+- the state store, and from it the change detection (`$Context.Files`);
+- a logger;
+- what the secret check held back;
+- a `DryRun` flag;
+- on restore, also the root map (an old root to its new path) and the repositories selected.
+
+A provider never writes outside its staging folder during backup, and stages every file through
+`Write-PhxStagedText` or `Copy-PhxStagedFile`. They refuse a path that leads out of staging, and
+scan the file for secrets first (see [Secrets](#secrets)). Every `Restore` is idempotent: a second
+run skips what exists.
 
 **Every provider ships with its `Restore` and a round-trip test** (backup into `$TestDrive`, restore
 into a second `$TestDrive` home, compare). A backup nobody has restored is a hope, not a backup.
@@ -138,7 +148,9 @@ Including everything is not an option; a pure allowlist misses files nobody thou
    Gradle wrappers, ignored lock files.
 4. **Binary extensions and a size cap** (default 1 MB). A larger file needs an explicit include.
 5. **Secret classification** by name: `.env`, `.env.*`, `secrets.*`, `*.pfx`, `*.pem`, `*.key`,
-   `id_*`, plus per-repository `secret` patterns. Secret files are only ever stored as `.age`.
+   `id_*`, plus per-repository `secret` patterns - and by content: a text file the
+   [detector](#secrets) finds a secret in is secret as a whole. Secret files are only ever stored
+   as `.age`.
 6. **Review**: a candidate nobody decided on yet is `pending` and is **not** backed up. The wizard
    and `phx review` show pending files per repository; the answer (include, exclude, exclude
    pattern, secret) is stored in the config. `phx status` reports the number of pending files.
@@ -216,6 +228,60 @@ Encryption uses [age](https://age-encryption.org):
   would be unreadable - exactly the case this tool exists for.
 - `age` is an external binary (`scoop install age`, `winget install FiloSottile.age`). Without it,
   secret-classified items are skipped and `phx status` says so.
+
+**Detection.** A file is secret by its name (see [Gitignored files](#gitignored-files-filters-and-review))
+or by its content. One detector in the engine, `SecretScanner`, reads content. It finds:
+
+- **Tokens, by their published formats:**
+  - GitHub (`ghp_` and the other `gh?_` prefixes, `github_pat_`), GitLab (`glpat-`), Slack (`xox?-`);
+  - AWS access keys, npm tokens, `sk-` API keys;
+  - Azure DevOps PATs, classic and current;
+  - JSON web tokens.
+- **Private key blocks** (`-----BEGIN … PRIVATE KEY-----`).
+- **Credentials in URLs** (`user:password@`, or a token as the user name) and **authorization headers**.
+- **Values assigned to a key that names a password or a secret**, in JSON, XML, YAML, INI, `.env`,
+  connection strings and PowerShell (`$env:X = '…'`):
+  - Under a password key (`Password`, `pwd`, `ClearTextPassword`), any real value counts: a human
+    password has little entropy.
+  - Under a secret key (`token`, `apiKey`, `clientSecret`, `AccountKey`, `_authToken`), a value
+    counts when it looks random: 12 or more characters, no whitespace, at least 3 bits of entropy
+    per character.
+  - The key's last word decides. `accessToken` names a token, `tokenType` a type.
+
+These are not secrets:
+
+- references (`${TOKEN}`, `$(Token)`, `%PASSWORD%`, Key Vault references);
+- placeholders (`<your-key>`, `changeme`, `xxxx`);
+- paths and URLs;
+- GUIDs, hashes and base64 data under keys that name no secret.
+
+When in doubt the detector says "secret": the cost is a file stored encrypted, and the review
+(#27) can overrule it per file.
+
+A finding carries the kind, the line, the column and the key, never the value. A log, a warning
+or `phx status` can name it as it is: `appsettings.json line 12: a secret value (ClientSecret)`.
+
+**Staging.** Every file a provider stages goes through the writer, which scans it before
+anything is written:
+
+- A text with a secret in it is secret as a whole. It is stored only as `.age` (#25), and until
+  age is there it is **held back**: never written to staging, not published, so a file already in
+  the snapshot is removed there.
+- The warning, the run log and `phx status` name the file, the line and the kind, never the value:
+  `held back appsettings.json line 12: a secret value (ClientSecret)`.
+- Before publishing, the run scans the staging folder once more and holds back whatever reached it
+  another way.
+- The state records per provider what its last successful run held back. `phx status` shows them
+  as a warning, and `phx run` adds the count to the provider's line.
+- A file the snapshot cannot do without fails its provider instead, so the last published copy
+  stays. This is the repository inventory, which is kept free of secrets value by value.
+
+The same detector does three more things:
+
+- it masks every log line and error message;
+- it keeps secrets out of the repository inventory: a setting that holds one is not recorded, and
+  a remote URL is recorded without it;
+- it is the check behind `Test-PhxSecretText`.
 
 ## Targets
 
@@ -449,8 +515,9 @@ library that ships inside the module, `lib/PSPhoenix.Engine.dll` (`engine/` in t
 with its own xUnit tests):
 
 - writing a file through a temporary name and one rename, copying, hashing (SHA-256);
-- publishing the staged files into the snapshot; the state and change detection (moving next);
-- the content scan for secrets (M3, #45) is built there.
+- publishing the staged files into the snapshot;
+- the state (`state.json`) and change detection - a provider's `$Context.Files`;
+- the secret scan (`SecretScanner`, #45): what is a secret, by content - see [Secrets](#secrets).
 
 It targets .NET 8, what PowerShell 7.4 runs on, and depends on nothing but .NET: PowerShell calls
 its public classes, and an exception it throws reaches the user as its own message. The module
