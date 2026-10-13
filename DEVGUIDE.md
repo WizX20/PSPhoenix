@@ -10,7 +10,7 @@ src/PSPhoenix/PSPhoenix.psd1        module manifest (ModuleVersion is the releas
 src/PSPhoenix/Private/*.ps1         helpers, one file per concern (paths, config, provider registry, ...)
 src/PSPhoenix/Providers/*.ps1       one file per backup unit; each calls Register-PhxProvider at import
 src/PSPhoenix/lib/                  PSPhoenix.Engine.dll - build output of engine/ (task build), not in git, in the zip
-engine/src/PSPhoenix.Engine/        the engine: C# (.NET 8) - atomic writes, hashing, publishing; the state next
+engine/src/PSPhoenix.Engine/        the engine: C# (.NET 8) - atomic writes, hashing, publishing, state, change detection
 engine/tests/PSPhoenix.Engine.Tests/ its xUnit v3 tests, with FluentAssertions 7
 tests/PSPhoenix.Tests.ps1           Pester 5+ suite; never touches the real home, registry or Task Scheduler
 tests/Scripts.Tests.ps1             the dev scripts in scripts/ (dev-link, cut-changelog), each pointed at $TestDrive

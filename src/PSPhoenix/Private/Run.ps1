@@ -85,7 +85,7 @@ function New-PhxRunLog {
 function Get-PhxRunProvider {
     # The providers this run runs: the one named - whatever its cadence - or every one that applies
     # to this platform, is enabled and is due. Says why it leaves one out.
-    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [Parameter(Mandatory)][System.Collections.IDictionary]$State, [string]$Name)
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [Parameter(Mandatory)][PSPhoenix.Engine.PhxState]$State, [string]$Name)
     if ($Name) {
         $provider = Get-PhxProvider $Name
         if (-not $provider) { throw "no provider '$Name' - see: phx providers" }
@@ -153,7 +153,7 @@ function Invoke-PhxRun {
                 $message = Hide-PhxSecret $_.Exception.Message
                 Write-PhxRunLine "  ${name} failed: $message" Red
                 $failed.Add($name)
-                $state.providers[$name] = [ordered]@{ lastRun = $state.providers[$name].lastRun; lastResult = "failed: $message" }
+                $state.Failed($name, $message)
             }
         }
         $results = if ($succeeded.Count) { Publish-PhxSnapshot -Config $config -Provider @($succeeded) -State $state } else { @{} }
@@ -163,16 +163,14 @@ function Invoke-PhxRun {
                 # Its last snapshot stays as it was; the next run tries again.
                 Write-PhxRunLine "  $name failed to publish: $($result.Error)" Red
                 $failed.Add($name)
-                $state.providers[$name] = [ordered]@{ lastRun = $state.providers[$name].lastRun; lastResult = "failed: $($result.Error)" }
+                $state.Failed($name, $result.Error)
                 continue
             }
-            # The start of the run, not its end: a long run must not push the provider's next turn
-            # past the slack of its cadence.
-            $state.providers[$name] = [ordered]@{ lastRun = $started.ToString('o'); lastResult = 'ok' }
-            $state.files[$name] = $trackers[$name].Seen
+            # Its last run is the start of this one; what it saw is what its next run compares with.
+            $state.Succeeded($name, $started, $trackers[$name])
             Write-PhxRunLine ('  {0}: {1} written, {2} unchanged, {3} removed' -f $name, $result.Written, $result.Unchanged, $result.Removed)
         }
-        $state.lastRun = [ordered]@{ at = $started.ToString('o'); providers = @($providers.Name); failed = @($failed); log = $script:PhxRunLog }
+        $state.LastRun = [PSPhoenix.Engine.RunRecord]::new($started, [string[]]@($providers | ForEach-Object Name), [string[]]@($failed), $script:PhxRunLog)
         $seconds = [Math]::Round(([DateTime]::UtcNow - $started).TotalSeconds, 1)
         if ($failed.Count) { throw "$($failed.Count) provider(s) failed: $($failed -join ', ') - log: $script:PhxRunLog" }
         Write-PhxRunLine "done in ${seconds}s: $($succeeded.Count) provider(s) - log: $script:PhxRunLog" Green
@@ -185,8 +183,8 @@ function Invoke-PhxRun {
         # What the run learnt is kept, also when it failed half-way: phx status must not go on
         # showing the run before as the last one.
         if ($state) {
-            if (-not $state.lastRun -or (ConvertTo-PhxDateTime $state.lastRun.at) -lt $started) {
-                $state.lastRun = [ordered]@{ at = $started.ToString('o'); providers = @(); failed = @('run'); log = $script:PhxRunLog }
+            if (-not $state.LastRun -or $state.LastRun.At -lt $started) {
+                $state.LastRun = [PSPhoenix.Engine.RunRecord]::new($started, [string[]]@(), [string[]]@('run'), $script:PhxRunLog)
             }
             Save-PhxState $state
         }

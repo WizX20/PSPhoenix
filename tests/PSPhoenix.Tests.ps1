@@ -2166,38 +2166,70 @@ Describe 'state and change detection' {
         }
     }
 
-    It 'saves and reads back providers, files, published hashes and refs' {
-        InModuleScope PSPhoenix -Parameters @{ File = (Join-Path $script:StateHome 'a.txt') } {
-            param($File)
-            $state = New-PhxState
-            $state.providers['repos'] = [ordered]@{ lastRun = '2026-10-09T10:00:00.0000000Z' }
-            $state.files['claude'] = New-PhxPathDictionary
-            $state.files['claude'][$File] = [ordered]@{ size = 3; mtime = 42; sha256 = 'AB' }
-            $state.published['repos'] = New-PhxPathDictionary
-            $state.published['repos']['repos.json'] = 'CD'
-            $state.publishedTo = 'D:\Target\Box'
-            $state.refs['C:/r'] = 'EF'
-            Save-PhxState $state
-            $read = Read-PhxState
-            ConvertTo-PhxDateTime $read.providers['repos'].lastRun | Should -Be ([datetime]::Parse('2026-10-09T10:00:00Z').ToUniversalTime())
-            $read.files['claude'][$File].sha256 | Should -Be 'AB'
-            $read.files['claude'][$File].mtime | Should -Be 42
-            $read.published['repos']['repos.json'] | Should -Be 'CD'
-            $read.publishedTo | Should -Be 'D:\Target\Box'
-            $read.refs['C:/r'] | Should -Be 'EF'
+    It 'says why it ignores a state it cannot read' {
+        InModuleScope PSPhoenix {
+            New-Item -ItemType Directory -Force -Path (Get-PhxStateDir) | Out-Null
+            Set-Content -LiteralPath (Get-PhxStatePath) -Value '{ "version": 99 }'
+            $output = & { $null = Read-PhxState } 6>&1 | Out-String
+            $output | Should -Match 'ignoring .*state\.json \(written by a newer PSPhoenix \(version 99\)\) - the next run takes everything as changed'
+            & { $null = Read-PhxState -Quiet } 6>&1 | Out-String | Should -BeNullOrEmpty
         }
     }
 
-    It 'does not hash a file whose size and mtime are as recorded' {
-        $file = Join-Path $script:StateHome 'tracked.txt'
+    It 'reads the state the PowerShell version of PSPhoenix wrote' {
+        # state.json as PSPhoenix wrote it before the engine had the state: ordered hashtables
+        # through ConvertTo-Json, times as text, and a run in which nothing was due with the
+        # providers @($null) - what @($providers.Name) of no providers is.
+        $file = Join-Path $script:StateHome 'a.txt'
+        Set-Content -LiteralPath $file -Value 'one'
+        $item = Get-Item -LiteralPath $file
+        InModuleScope PSPhoenix -Parameters @{ File = $file; Size = $item.Length; Mtime = $item.LastWriteTimeUtc.Ticks } {
+            param($File, $Size, $Mtime)
+            $now = [DateTime]::UtcNow
+            $none = @()
+            $old = [ordered]@{
+                version     = 1
+                lastRun     = [ordered]@{ at = $now.ToString('o'); providers = @($none.Name); failed = @(); log = 'C:\logs\run.log' }
+                providers   = [ordered]@{ claude = [ordered]@{ lastRun = $now.AddMinutes(-10).ToString('o'); lastResult = 'ok' } }
+                files       = [ordered]@{ claude = @{ $File = [ordered]@{ size = $Size; mtime = $Mtime; sha256 = (Get-PhxFileHash $File) } } }
+                published   = [ordered]@{ claude = @{ 'a.txt' = 'AB' } }
+                publishedTo = 'D:\Target\Box'
+                refs        = @{}
+            }
+            New-Item -ItemType Directory -Force -Path (Get-PhxStateDir) | Out-Null
+            Set-Content -LiteralPath (Get-PhxStatePath) -Value ($old | ConvertTo-Json -Depth 10 -Compress)
+            $state = Read-PhxState
+            @($state.lastRun.providers).Count | Should -Be 0
+            $state.lastRun.log | Should -Be 'C:\logs\run.log'
+            Test-PhxProviderDue -Provider @{ Name = 'claude'; Cadence = '1h' } -State $state | Should -BeFalse
+            Test-PhxFileChanged -Files $state.Tracker('claude') -Path $File | Should -BeFalse
+            $state.PublishedHashes('claude')['a.txt'] | Should -Be 'AB'
+            $state.publishedTo | Should -Be 'D:\Target\Box'
+        }
+    }
+
+    It 'saves and reads back providers, files, published hashes and refs' {
+        # The engine's tests cover the format (PhxStateTests); this is the PowerShell side of it.
+        $file = Join-Path $script:StateHome 'a.txt'
         Set-Content -LiteralPath $file -Value 'one'
         InModuleScope PSPhoenix -Parameters @{ File = $file } {
             param($File)
-            $first = New-PhxFileTracker
-            Test-PhxFileChanged -Files $first -Path $File | Should -BeTrue                       # new
-            Mock Get-PhxFileHash { throw 'hashed' }
-            $next = New-PhxFileTracker -Known $first.Seen
-            Test-PhxFileChanged -Files $next -Path $File | Should -BeFalse                       # a stat, no hash
+            $started = [datetime]::Parse('2026-10-09T10:00:00Z').ToUniversalTime()
+            $state = New-PhxState
+            $tracker = $state.Tracker('claude')
+            Test-PhxFileChanged -Files $tracker -Path $File | Should -BeTrue
+            $state.Succeeded('claude', $started, $tracker)
+            $state.PublishInto('D:\Target\Box')
+            $state.PublishedHashes('repos')['repos.json'] = 'CD'
+            $state.Refs['C:/r'] = 'EF'
+            Save-PhxState $state
+            $read = Read-PhxState
+            ConvertTo-PhxDateTime $read.providers['claude'].lastRun | Should -Be $started
+            $read.providers['claude'].lastResult | Should -Be 'ok'
+            $read.files['claude'][$File].sha256 | Should -Be (Get-PhxFileHash $File)
+            $read.published['repos']['repos.json'] | Should -Be 'CD'
+            $read.publishedTo | Should -Be 'D:\Target\Box'
+            $read.refs['C:/r'] | Should -Be 'EF'
         }
     }
 
@@ -2239,10 +2271,14 @@ Describe 'state and change detection' {
     }
 
     It 'gives each provider the files its own last run saw' {
-        InModuleScope PSPhoenix {
+        $file = Join-Path $script:StateHome 'a.txt'
+        Set-Content -LiteralPath $file -Value 'one'
+        InModuleScope PSPhoenix -Parameters @{ File = $file } {
+            param($File)
             $state = New-PhxState
-            $state.files['claude'] = New-PhxPathDictionary
-            $state.files['claude']['C:/a'] = [ordered]@{ size = 1; mtime = 1; sha256 = 'A' }
+            $tracker = $state.Tracker('claude')
+            Test-PhxFileChanged -Files $tracker -Path $File | Out-Null
+            $state.Succeeded('claude', [DateTime]::UtcNow, $tracker)
             (New-PhxContext -Provider claude -State $state).Files.Known.Count | Should -Be 1
             (New-PhxContext -Provider repos -State $state).Files.Known.Count | Should -Be 0
         }
@@ -2254,22 +2290,25 @@ Describe 'state and change detection' {
             $provider = @{ Name = 'slow'; Cadence = '1h' }
             $state = New-PhxState
             Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeTrue            # never ran
-            $state.providers['slow'] = [ordered]@{ lastRun = $now.AddMinutes(-30).ToString('o') }
+            $state.Succeeded('slow', $now.AddMinutes(-30), (New-PhxFileTracker))
             Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeFalse
-            $state.providers['slow'].lastRun = $now.AddMinutes(-58).ToString('o')
+            $state.Succeeded('slow', $now.AddMinutes(-58), (New-PhxFileTracker))
             Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeTrue             # the hourly run, a bit early
             # The config overrides the provider's cadence; no cadence at all is every run.
             $config = @{ providers = @{ slow = @{ cadence = '1d' } } }
             Test-PhxProviderDue -Provider $provider -State $state -Config $config -Now $now | Should -BeFalse
             Test-PhxProviderDue -Provider @{ Name = 'every'; Cadence = $null } -State $state -Now $now | Should -BeTrue
             # Written before a wrong clock was put right: due, not "in 200 days".
-            $state.providers['slow'].lastRun = $now.AddDays(200).ToString('o')
+            $state.Succeeded('slow', $now.AddDays(200), (New-PhxFileTracker))
             Test-PhxProviderDue -Provider $provider -State $state -Now $now | Should -BeTrue
             # The slack is a tenth of the cadence, at most five minutes: a day is not due 10 minutes early.
             $daily = @{ Name = 'daily'; Cadence = '1d' }
-            $state.providers['daily'] = [ordered]@{ lastRun = $now.AddMinutes(-(24 * 60 - 10)).ToString('o') }
+            $state.Succeeded('daily', $now.AddMinutes(-(24 * 60 - 10)), (New-PhxFileTracker))
             Test-PhxProviderDue -Provider $daily -State $state -Now $now | Should -BeFalse
-            $state.providers['daily'].lastRun = $now.AddMinutes(-(24 * 60 - 4)).ToString('o')
+            $state.Succeeded('daily', $now.AddMinutes(-(24 * 60 - 4)), (New-PhxFileTracker))
+            Test-PhxProviderDue -Provider $daily -State $state -Now $now | Should -BeTrue
+            # A failure keeps the last successful run: the provider is due again at once.
+            $state.Failed('daily', 'boom')
             Test-PhxProviderDue -Provider $daily -State $state -Now $now | Should -BeTrue
         }
     }
@@ -2372,7 +2411,7 @@ Describe 'schedule' {
         # How the last run went comes from the state: through conhost the Task Scheduler sees 0.
         InModuleScope PSPhoenix {
             $state = New-PhxState
-            $state.lastRun = [ordered]@{ at = [DateTime]::UtcNow.ToString('o'); providers = @('repos'); failed = @('repos'); log = 'C:\logs\run.log' }
+            $state.LastRun = [PSPhoenix.Engine.RunRecord]::new([DateTime]::UtcNow, [string[]]@('repos'), [string[]]@('repos'), 'C:\logs\run.log')
             Save-PhxState $state
         }
         $output = Invoke-TestSchedule status
@@ -2560,6 +2599,14 @@ Describe 'run' {
         Get-TestFileTimes | Should -Be $before
         # -Provider runs the one named, due or not.
         Invoke-TestRun -Provider slow | Should -Match 'slow: 0 written, 1 unchanged'
+    }
+
+    It 'records a run in which nothing was due as one without providers' {
+        Invoke-TestRun | Out-Null
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.providers = [ordered]@{ alpha = [ordered]@{ enabled = $false } }; Save-PhxConfig $c }
+        Invoke-TestRun | Should -Match 'done in .*: 0 provider\(s\)'
+        @((InModuleScope PSPhoenix { Read-PhxState }).lastRun.providers).Count | Should -Be 0
+        Get-PhxOutput { phx status } | Should -Match 'last run\s+just now - 0 provider\(s\), all fine'
     }
 
     It 'keeps going when a provider fails, keeps its last snapshot, and fails at the end' {

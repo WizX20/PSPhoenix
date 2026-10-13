@@ -64,11 +64,11 @@ function Test-PhxProviderDue {
     # Whether a run should run this provider now: its cadence has passed since it last ran.
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Provider,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][PSPhoenix.Engine.PhxState]$State,
         [System.Collections.IDictionary]$Config,
         [datetime]$Now = [DateTime]::UtcNow
     )
-    $last = if ($State.providers[$Provider.Name] -is [System.Collections.IDictionary]) { $State.providers[$Provider.Name].lastRun }
+    $last = $State.Providers[$Provider.Name].LastRun
     Test-PhxDue -Last $last -Every (Get-PhxProviderCadence -Provider $Provider -Config $Config) -Now $Now
 }
 
