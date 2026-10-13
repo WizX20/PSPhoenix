@@ -63,7 +63,9 @@ function Show-PhxStatus {
         if ($problem) { & $line 'machine' $problem -Warn }
         else { & $line 'machine' "$(Get-PhxMachineName $config)   snapshot in $snapshot" }
     }
-    & $line 'interval' "$($config.interval) - the background run arrives with M2 (phx schedule)"
+    & $line 'interval' $config.interval
+    $schedule = try { Get-PhxScheduleLine -Config $config } catch { [pscustomobject]@{ Text = "cannot read the task: $($_.Exception.Message)"; Warn = $true } }
+    & $line 'schedule' $schedule.Text -Warn:$schedule.Warn
 
     $roots = @($config.roots | Where-Object { $_ })
     $cache = Read-PhxRepoCache

@@ -1,7 +1,8 @@
 # PSPhoenix design
 
-Status: **draft**. M1 is built - `phx init`, `phx roots`, `phx scan`, `phx status` and the `repos`
-provider; the rest is not yet (see [Roadmap](#roadmap)). This document is the contract the milestones
+Status: **draft**. M1 and M2 are built - `phx init`, `phx roots`, `phx scan`, `phx status`, the
+`repos` provider, the snapshot, `phx run` and `phx schedule`; the rest is not yet (see
+[Roadmap](#roadmap)). This document is the contract the milestones
 build towards; change it in the same PR as the code that deviates from it.
 
 ## Problem
@@ -306,14 +307,26 @@ One target can hold several machines side by side; restore picks one.
 
 Windows: a per-user Task Scheduler task `\PSPhoenix\Backup`.
 
-- Triggers: every `interval` (default `1h`, set with `phx schedule --every 2h`), and at logon after a
-  5-minute delay.
+- Triggers: every `interval` (default `1h`, 15m to 31d, set with `phx schedule -Every 2h`), and at
+  logon after a 5-minute delay.
 - Settings: `StartWhenAvailable` (a run missed during sleep or shutdown happens right after),
   `MultipleInstances IgnoreNew` (never overlapping runs), `ExecutionTimeLimit` 15 minutes,
-  priority 7 (below normal), optionally AC power only.
-- Action: `conhost.exe --headless pwsh.exe -NoProfile -NonInteractive -File <module>\phx-task.ps1`.
-  Without `conhost --headless` a console window flashes up every run, `-WindowStyle Hidden`
-  included.
+  priority 7 (below normal); it runs on battery too. The principal is the user, logged on
+  (`Interactive`): the run needs the user's credential store and `gh` keyring.
+- Action: `conhost.exe --headless "<pwsh>" -NoProfile -NonInteractive -File "<module>\phx-task.ps1"`,
+  naming the PowerShell of the installation that ran `phx schedule on` - a Microsoft Store one
+  through its execution alias, which outlives the versioned folder it lives in. Without
+  `conhost --headless` a console window flashes up every run, `-WindowStyle Hidden` included. The
+  Task Scheduler sees only conhost's exit code, always 0: how a run went is read from the state.
+- The module folder it names is one an update leaves in place: imported through Scoop's modules
+  folder it already is one (a junction to `apps\psphoenix\current`); imported from a version folder
+  with a `current` next to it, `current` is named instead.
+- `phx schedule status` and `phx status` check the registered task against what `phx schedule on`
+  would register now - a PowerShell or module that is gone, another module than this one, another
+  interval than the config's - and say `phx schedule on` fixes it. `phx init` asks whether to run in
+  the background, defaulting to what is so now (on for a first init): Enter leaves a matching task
+  alone, no removes it. `-Every` goes with `on` only, and the interval is saved once the task is
+  registered, so a failed registration leaves config and task agreeing.
 
 Rejected alternatives:
 
@@ -336,7 +349,7 @@ phx review                        decide on pending gitignored candidates
 phx scan                          re-discover repositories under the roots
 phx roots add|rm|list             manage roots; add takes -Depth <n> (1-10, default 3); roots
                                   may not overlap - discovery would see repositories twice
-phx schedule on|off|status        manage the scheduled task; -Every <n>h sets the interval
+phx schedule on|off|status        manage the scheduled task; -Every 30m|1h|1d sets the interval
 phx restore                       rebuild this machine from a snapshot (see below)
 phx providers                     the providers registered for this platform
 phx version                       module version
@@ -355,7 +368,8 @@ set before (kept, with a warning, when `gh` is not logged in with it), else what
 helpers say, else the active account; suggests the OneDrive for Business folder as target, with a
 note on where company data belongs when another folder is chosen; names the machine (the computer
 name, not a folder another installation wrote); takes an interval from 15 minutes to 31 days (Task
-Scheduler's longest repetition). Each later milestone adds its step.
+Scheduler's longest repetition); and, on Windows, asks to turn the schedule on. Each later milestone
+adds its step.
 
 `phx run` is one backup run, and what the scheduled task calls (through `phx-task.ps1` next to the
 module, headless and at below-normal priority). It needs the set-up from `phx init` and the target
@@ -451,3 +465,7 @@ is not an object, an `enabled` that is not true or false, a `cadence` that is no
    without PSPhoenix and lets the scheduled run work without any secret. Leaning age.
 4. **Repository visibility**: Scoop downloads release assets anonymously, so the repository must be
    public for `scoop install`, as with PSWorktree and PSVsCommand.
+5. **Machine id and roaming profiles**: the id lives in the config, in the roaming `%APPDATA%`. With
+   roaming profiles or folder redirection two machines could share it and write one folder. A
+   machine-bound copy in the local state folder would catch that, but losing the state would then
+   lock a machine out of its own snapshot - left open until someone needs it.

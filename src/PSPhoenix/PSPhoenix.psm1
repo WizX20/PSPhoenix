@@ -23,11 +23,10 @@ foreach ($folder in 'Private', 'Providers') {
 
 # Commands that exist in the help but arrive with a later milestone (docs/design.md -> Roadmap).
 $script:PhxPlanned = [ordered]@{
-    schedule = 'M2'
     review   = 'M3'
     restore  = 'M6'
 }
-$script:PhxCommands = @($script:PhxPlanned.Keys) + @('init', 'status', 'run', 'roots', 'scan', 'providers', 'version', 'help')
+$script:PhxCommands = @($script:PhxPlanned.Keys) + @('init', 'status', 'run', 'schedule', 'roots', 'scan', 'providers', 'version', 'help')
 
 function Get-PhxVersion { (Get-Module PSPhoenix).Version }
 
@@ -46,7 +45,7 @@ USAGE:
   phx scan                        re-discover repositories under the roots
   phx roots add|rm|list [<path>]  the folders that hold your repositories; add: -Depth <n>
   phx run [-Provider <name>]      one backup run now (the scheduled task calls this)
-  phx schedule on|off|status      the background task; -Every <n>h sets the interval   (M2)
+  phx schedule on|off|status      the background task; -Every 30m|1h|1d sets the interval
   phx review                      decide on new gitignored files                       (M3)
   phx restore [-From <target>]    rebuild this machine from a snapshot                 (M6)
   phx providers                   what gets backed up on this platform
@@ -79,7 +78,6 @@ function phx {
     # -ProgressAction, -ErrorAction, ...). It declares the flags of milestones that are not built
     # yet, so the help and the command line agree from the start. One suppression per flag, so
     # the rule stays live for every other parameter; each goes once its milestone uses the flag.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Every', Justification = 'phx schedule -Every arrives with M2.')]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'From', Justification = 'phx restore -From arrives with M6.')]
     [CmdletBinding()]
     param(
@@ -116,6 +114,7 @@ function phx {
             'init' { Invoke-PhxInit }
             'status' { Show-PhxStatus }
             'run' { Invoke-PhxRun -Provider $Provider }
+            'schedule' { Invoke-PhxScheduleCommand -Action $Arg -Every $Every }
             'providers' { Show-PhxProviders }
             'version' { Write-Host "PSPhoenix $(Get-PhxVersion)" }
         }
