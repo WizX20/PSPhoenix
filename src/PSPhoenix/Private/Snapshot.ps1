@@ -87,10 +87,12 @@ function ConvertTo-PhxTimestamp {
 
 function Test-PhxSameFile {
     # True when $Path exists with the content of $Source: the length first, the hash only then.
-    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Path)
+    # -SourceHash is $Source's hash when the caller has it already.
+    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Path, [string]$SourceHash)
     if (-not [IO.File]::Exists($Path)) { return $false }
     if ([IO.FileInfo]::new($Source).Length -ne [IO.FileInfo]::new($Path).Length) { return $false }
-    (Get-PhxFileHash $Source) -eq (Get-PhxFileHash $Path)
+    $hash = if ($SourceHash) { $SourceHash } else { Get-PhxFileHash $Source }
+    $hash -eq (Get-PhxFileHash $Path)
 }
 
 function Publish-PhxFolder {
@@ -104,7 +106,12 @@ function Publish-PhxFolder {
     # file under either spelling, and removing "the other one" would remove the file just kept. A
     # file staged under another spelling than the published one is removed and copied again, so a
     # rename that only changes case reaches the snapshot too.
-    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Destination)
+    #
+    # -Published (relative path -> SHA-256 as last published, from the state) spares reading the
+    # target back: a staged file whose hash matches, with the published file still there at its
+    # length, is unchanged. Reading a file in a OneDrive folder can mean downloading it first. The
+    # dictionary is updated to what the destination holds afterwards.
+    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Destination, [System.Collections.IDictionary]$Published)
     $staged = @(if ([IO.Directory]::Exists($Source)) {
             [IO.Directory]::EnumerateFiles($Source, '*', [IO.SearchOption]::AllDirectories) | ForEach-Object { [IO.Path]::GetRelativePath($Source, $_) }
         })
@@ -126,18 +133,28 @@ function Publish-PhxFolder {
     foreach ($relative in $staged) {
         $file = Join-Path $Source $relative
         $target = Join-Path $Destination $relative
-        if (Test-PhxSameFile -Source $file -Path $target) { $unchanged++; continue }
+        $hash = Get-PhxFileHash $file
+        $known = $null -ne $Published -and $Published.ContainsKey($relative) -and $Published[$relative] -eq $hash -and
+            [IO.File]::Exists($target) -and [IO.FileInfo]::new($target).Length -eq [IO.FileInfo]::new($file).Length
+        if ($null -ne $Published) { $Published[$relative] = $hash }
+        if ($known -or (Test-PhxSameFile -Source $file -Path $target -SourceHash $hash)) { $unchanged++; continue }
         Copy-PhxFile -Source $file -Path $target
         $written++
     }
+    if ($null -ne $Published) { foreach ($key in @($Published.Keys)) { if (-not $wanted.Contains($key)) { [void]$Published.Remove($key) } } }
     [pscustomobject]@{ Written = $written; Unchanged = $unchanged; Removed = $removed; Files = $staged.Count }
 }
 
 function Publish-PhxSnapshot {
     # Publishes the staged files of these providers, and the config, into this machine's snapshot
     # folder. phoenix.json records when each provider's files last changed; it is rewritten only
-    # when something was. Returns the result per provider.
-    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Provider)
+    # when something was. With -State, the hashes it last published come from there and go back
+    # there. Returns the result per provider.
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Config,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Provider,
+        [System.Collections.IDictionary]$State
+    )
     if (-not $Config.machine -or -not $Config.machine.id) { throw 'this machine has no id yet - run phx init' }
     $snapshot = Get-PhxSnapshotPath $Config
     $info = Assert-PhxSnapshotWritable -Path $snapshot -Config $Config
@@ -160,10 +177,21 @@ function Publish-PhxSnapshot {
             $providers[$name] = [ordered]@{ changedAt = ConvertTo-PhxTimestamp $info.providers[$name].changedAt; files = $info.providers[$name].files }
         }
     }
+    # The published hashes belong to one snapshot folder: after a move to another target, or a
+    # renamed machine, an older copy there must not pass for what was published.
+    if ($State -and -not [string]::Equals("$($State.publishedTo)", $snapshot, (Get-PhxPathComparison))) {
+        $State.published = [ordered]@{}
+        $State.publishedTo = $snapshot
+    }
     $changed = $false
     $results = [ordered]@{}
     foreach ($name in $Provider) {
-        $result = Publish-PhxFolder -Source (Get-PhxStagingPath $name) -Destination (Join-Path $snapshot $name)
+        $published = $null
+        if ($State) {
+            if (-not $State.published.Contains($name)) { $State.published[$name] = New-PhxPathDictionary }
+            $published = $State.published[$name]
+        }
+        $result = Publish-PhxFolder -Source (Get-PhxStagingPath $name) -Destination (Join-Path $snapshot $name) -Published $published
         $results[$name] = $result
         if ($result.Written -or $result.Removed -or -not $providers.Contains($name)) {
             $providers[$name] = [ordered]@{ changedAt = $now; files = $result.Files }
