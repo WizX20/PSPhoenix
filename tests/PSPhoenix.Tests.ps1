@@ -2018,17 +2018,18 @@ Describe 'snapshot' {
         $info.providers.repos.files | Should -Be 1
     }
 
-    It 'does not read the target back when the state knows what it published' {
+    It 'keeps what it published in the state, file by file' {
+        # So the next publish need not read the target back - that it does not is the engine's test
+        # (FolderPublisherTests: Published_hashes_spare_reading_the_destination_back).
         Set-TestMachine 'Box' 'id-1'
         Set-TestStaged repos @{ 'repos.json' = 'one'; 'gone.txt' = 'soon gone' }
         $state = InModuleScope PSPhoenix { New-PhxState }
         InModuleScope PSPhoenix -Parameters @{ State = $state } { param($State) Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider repos -State $State } | Out-Null
         @($state.published['repos'].Keys | Sort-Object) | Should -Be @('gone.txt', 'repos.json')
+        $state.published['repos']['repos.json'] | Should -Be (InModuleScope PSPhoenix { [PSPhoenix.Engine.FileHash]::Sha256Text('one') })
         Set-TestStaged repos @{ 'gone.txt' = '' }
         $result = InModuleScope PSPhoenix -Parameters @{ State = $state } {
             param($State)
-            # Reading a published file back would download it from OneDrive: not needed now.
-            Mock Test-PhxSameFile { throw 'the target was read' }
             (Publish-PhxSnapshot -Config (Read-PhxConfig) -Provider repos -State $State)['repos']
         }
         $result.Unchanged | Should -Be 1
