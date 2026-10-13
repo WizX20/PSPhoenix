@@ -23,13 +23,26 @@ function Get-PhxStableModulePath {
     $ModuleBase
 }
 
+function Get-PhxPwshPath {
+    # The PowerShell the task starts: the pwsh of this installation, under a path that lasts. A
+    # Microsoft Store PowerShell lives in a versioned WindowsApps folder that the next update
+    # replaces; its execution alias in the user's WindowsApps folder stays.
+    param([string]$PowerShellHome = $PSHOME, [string]$LocalAppData = $env:LOCALAPPDATA)
+    $exe = Join-Path $PowerShellHome $(if ($script:OnWindows) { 'pwsh.exe' } else { 'pwsh' })
+    if ($exe -match '[\\/]WindowsApps[\\/]Microsoft\.PowerShell') {
+        $alias = Join-Path $LocalAppData 'Microsoft\WindowsApps\pwsh.exe'
+        if ([IO.File]::Exists($alias)) { return $alias }
+    }
+    $exe
+}
+
 function New-PhxTaskDefinition {
     # What the scheduled task should be, as a plain object: the action - conhost --headless, so no
     # console window flashes up each run - and the triggers and settings of docs/design.md.
     param(
         [Parameter(Mandatory)][TimeSpan]$Interval,
         [string]$ModulePath = (Get-PhxStableModulePath),
-        [string]$Pwsh = (Get-Process -Id $PID).Path
+        [string]$Pwsh = (Get-PhxPwshPath)
     )
     $task = Join-Path $ModulePath 'phx-task.ps1'
     [pscustomobject]@{
@@ -45,18 +58,25 @@ function New-PhxTaskDefinition {
     }
 }
 
-function Register-PhxScheduledTask {
-    # Registers (or replaces) \PSPhoenix\Backup from a definition. Touches the real Task Scheduler.
+function New-PhxScheduledTask {
+    # The Task Scheduler's object for a definition - built in memory by the ScheduledTasks cmdlets,
+    # registered nowhere; Register-PhxScheduledTask does that.
     param([Parameter(Mandatory)]$Definition)
+    $user = [Environment]::UserDomainName + '\' + [Environment]::UserName
     $action = New-ScheduledTaskAction -Execute $Definition.Execute -Argument $Definition.Arguments
     $every = New-ScheduledTaskTrigger -Once -At ([DateTime]::Now.AddMinutes(1)) -RepetitionInterval $Definition.Interval
-    $logon = New-ScheduledTaskTrigger -AtLogOn -User ([Environment]::UserDomainName + '\' + [Environment]::UserName)
+    $logon = New-ScheduledTaskTrigger -AtLogOn -User $user
     $logon.Delay = [System.Xml.XmlConvert]::ToString($Definition.LogonDelay)
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit $Definition.ExecutionLimit `
         -Priority $Definition.Priority -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-    $principal = New-ScheduledTaskPrincipal -UserId ([Environment]::UserDomainName + '\' + [Environment]::UserName) -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskPath $script:PhxTaskPath -TaskName $script:PhxTaskName -Action $action -Trigger $every, $logon `
-        -Settings $settings -Principal $principal -Description $Definition.Description -Force | Out-Null
+    $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+    New-ScheduledTask -Action $action -Trigger $every, $logon -Settings $settings -Principal $principal -Description $Definition.Description
+}
+
+function Register-PhxScheduledTask {
+    # Registers (or replaces) \PSPhoenix\Backup from a definition. Touches the real Task Scheduler.
+    param([Parameter(Mandatory)]$Definition)
+    Register-ScheduledTask -TaskPath $script:PhxTaskPath -TaskName $script:PhxTaskName -InputObject (New-PhxScheduledTask $Definition) -Force | Out-Null
 }
 
 function Unregister-PhxScheduledTask {
@@ -65,18 +85,24 @@ function Unregister-PhxScheduledTask {
 }
 
 function Get-PhxScheduledTask {
-    # \PSPhoenix\Backup as a plain object - { Arguments, Interval, LastRunTime, LastResult,
-    # NextRunTime } - or nothing when it is not registered. Reads the real Task Scheduler.
+    # \PSPhoenix\Backup as a plain object (ConvertFrom-PhxScheduledTask), or nothing when it is not
+    # registered. Reads the real Task Scheduler.
     $task = Get-ScheduledTask -TaskPath $script:PhxTaskPath -TaskName $script:PhxTaskName -ErrorAction SilentlyContinue
     if (-not $task) { return }
-    $info = $task | Get-ScheduledTaskInfo
-    $repetition = @($task.Triggers | Where-Object { $_.Repetition.Interval })[0].Repetition.Interval
+    ConvertFrom-PhxScheduledTask -Task $task -Info ($task | Get-ScheduledTaskInfo)
+}
+
+function ConvertFrom-PhxScheduledTask {
+    # { Arguments, Interval, LastRunTime, NextRunTime } from the Task Scheduler's task and its info.
+    # Its own last result is left out: through conhost --headless it is always conhost's 0 - the
+    # state says how the run went.
+    param([Parameter(Mandatory)]$Task, $Info)
+    $repetition = @($Task.Triggers | Where-Object { $_.Repetition.Interval })[0].Repetition.Interval
     [pscustomobject]@{
-        Arguments   = @($task.Actions)[0].Arguments
+        Arguments   = @($Task.Actions)[0].Arguments
         Interval    = if ($repetition) { [System.Xml.XmlConvert]::ToTimeSpan($repetition) }
-        LastRunTime = $info.LastRunTime
-        LastResult  = $info.LastTaskResult
-        NextRunTime = $info.NextRunTime
+        LastRunTime = $Info.LastRunTime
+        NextRunTime = $Info.NextRunTime
     }
 }
 
@@ -122,14 +148,16 @@ function Enable-PhxSchedule {
     if (-not (Test-PhxCanSchedule)) { throw "phx schedule runs on Windows for now - on $(Get-PhxCurrentPlatform), run phx run from cron or a systemd timer (#5)" }
     if (-not [IO.File]::Exists((Get-PhxConfigPath))) { throw 'not set up yet - run: phx init' }
     $config = Read-PhxConfig
-    if ($Every) {
-        if (-not (Test-PhxInterval $Every)) { throw "-Every $Every - give 15m to 31d, like 30m, 1h or 1d" }
+    if ($Every -and -not (Test-PhxInterval $Every)) { throw "-Every $Every - give 15m to 31d, like 30m, 1h or 1d" }
+    $interval = if ($Every) { $Every } else { "$($config.interval)" }
+    $definition = New-PhxTaskDefinition -Interval (ConvertTo-PhxTimeSpan $interval)
+    # The task first: a registration that fails leaves the config as it was, so the two agree.
+    Register-PhxScheduledTask -Definition $definition
+    if ($Every -and $Every -ne $config.interval) {
         $config.interval = $Every
         Save-PhxConfig $config
     }
-    $definition = New-PhxTaskDefinition -Interval (ConvertTo-PhxTimeSpan "$($config.interval)")
-    Register-PhxScheduledTask -Definition $definition
-    Write-Host "scheduled: every $($config.interval) and 5 minutes after logon - task $($script:PhxTaskPath)$($script:PhxTaskName)" -ForegroundColor Green
+    Write-Host "scheduled: every $interval and 5 minutes after logon - task $($script:PhxTaskPath)$($script:PhxTaskName)" -ForegroundColor Green
     Write-Host "  it runs $($definition.Script); phx status shows the last run" -ForegroundColor DarkGray
 }
 
@@ -146,10 +174,14 @@ function Show-PhxSchedule {
     if (-not $task) { Write-Host 'not scheduled - phx schedule on' -ForegroundColor Yellow; return }
     $config = Read-PhxConfig
     Write-Host "task      $($script:PhxTaskPath)$($script:PhxTaskName), every $(Format-PhxSpan $task.Interval) and at logon"
-    $last = if (-not $task.LastRunTime -or $task.LastRunTime.Year -lt 2000) { 'never yet' }
-    elseif ($task.LastResult -eq 0) { "$($task.LastRunTime.ToString('yyyy-MM-dd HH:mm')), fine" }
-    else { "$($task.LastRunTime.ToString('yyyy-MM-dd HH:mm')), failed (result $($task.LastResult)) - its log: phx status" }
-    Write-Host "last run  $last"
+    # Started by the task - and how that went, from the state: the Task Scheduler only sees conhost.
+    $started = if (-not $task.LastRunTime -or $task.LastRunTime.Year -lt 2000) { 'never yet' } else { $task.LastRunTime.ToString('yyyy-MM-dd HH:mm') }
+    Write-Host "started   $started"
+    $last = (Read-PhxState -Quiet).lastRun
+    $at = if ($last) { ConvertTo-PhxDateTime $last.at }
+    if (-not $at) { Write-Host 'last run  none yet' }
+    elseif (@($last.failed).Count) { Write-Host "last run  $(Format-PhxAge $at), failed: $(@($last.failed) -join ', ') - log: $($last.log)" -ForegroundColor Yellow }
+    else { Write-Host "last run  $(Format-PhxAge $at), fine" }
     if ($task.NextRunTime) { Write-Host "next run  $($task.NextRunTime.ToString('yyyy-MM-dd HH:mm'))" }
     foreach ($problem in @(Get-PhxScheduleProblem -Task $task -Config $config)) { Write-Host "warning   $problem" -ForegroundColor Yellow }
 }
@@ -158,6 +190,7 @@ function Invoke-PhxScheduleCommand {
     # phx schedule on|off|status [-Every <duration>]; -Every alone means on.
     param([string]$Action, [string]$Every)
     if (-not $Action) { $Action = if ($Every) { 'on' } else { 'status' } }
+    if ($Every -and $Action -ne 'on') { throw "-Every goes with on: phx schedule on -Every $Every" }
     switch ($Action) {
         'on' { Enable-PhxSchedule -Every $Every }
         'off' { Disable-PhxSchedule }

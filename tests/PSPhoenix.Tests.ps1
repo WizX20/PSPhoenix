@@ -1582,8 +1582,8 @@ Describe 'init' {
         $other = Join-Path (Join-Path $script:InitOneDrive 'PSPhoenix') 'Box'
         New-Item -ItemType Directory -Force -Path $other | Out-Null
         Set-Content -LiteralPath (Join-Path $other 'notes.txt') -Value 'mine'
-        # roots, two accounts, target, machine (taken, then the suggested free one), interval, save?
-        Set-TestAnswer '' '' '' '' 'Box' '' '' ''
+        # roots, two accounts, target, machine (taken, then the suggested free one), interval, schedule?, save?
+        Set-TestAnswer '' '' '' '' 'Box' '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'holds files but no phoenix.json'
         (InModuleScope PSPhoenix { Read-PhxConfig }).machine.name | Should -Be 'Box-2'
     }
@@ -1599,6 +1599,27 @@ Describe 'init' {
         $output | Should -Match 'Box holds the snapshot of another installation'
         $script:Answers.Count | Should -Be 0
         (InModuleScope PSPhoenix { Read-PhxConfig }).machine.name | Should -Be 'Box-2'
+    }
+
+    It 'leaves a matching task alone on Enter, and removes it on no' {
+        Set-TestAnswer '' '' '' '' '' '' '' '' ''
+        phx init 6>$null
+        $script:Registered | Should -HaveCount 1
+        # The task is there now, as init registered it.
+        $script:InitTask = InModuleScope PSPhoenix {
+            $definition = New-PhxTaskDefinition -Interval ([TimeSpan]::FromHours(1))
+            [pscustomobject]@{ Arguments = $definition.Arguments; Interval = $definition.Interval }
+        }
+        Mock Get-PhxScheduledTask -ModuleName PSPhoenix { $script:InitTask }
+        $script:Unregistered = 0
+        Mock Unregister-PhxScheduledTask -ModuleName PSPhoenix { $script:Unregistered++ }
+        # roots, two accounts, target, machine, interval, schedule? (default yes: it is on), save?
+        Set-TestAnswer '' '' '' '' '' '' '' ''
+        phx init 6>$null
+        $script:Registered | Should -HaveCount 1
+        Set-TestAnswer '' '' '' '' '' '' 'n' ''
+        phx init 6>$null
+        $script:Unregistered | Should -Be 1
     }
 
     It 'leaves the schedule off when told so' {
@@ -2286,10 +2307,86 @@ Describe 'schedule' {
             [pscustomobject]@{ Arguments = $definition.Arguments; Interval = $definition.Interval; LastRunTime = [datetime]'2026-10-12 08:00'; LastResult = 1; NextRunTime = [datetime]'2026-10-12 12:00' }
         }
         Mock Get-PhxScheduledTask -ModuleName PSPhoenix { $script:ScheduledTask }
+        # How the last run went comes from the state: through conhost the Task Scheduler sees 0.
+        InModuleScope PSPhoenix {
+            $state = New-PhxState
+            $state.lastRun = [ordered]@{ at = [DateTime]::UtcNow.ToString('o'); providers = @('repos'); failed = @('repos'); log = 'C:\logs\run.log' }
+            Save-PhxState $state
+        }
         $output = Invoke-TestSchedule status
-        $output | Should -Match 'last run\s+2026-10-12 08:00, failed \(result 1\)'
+        $output | Should -Match 'started\s+2026-10-12 08:00'
+        $output | Should -Match 'last run\s+just now, failed: repos - log: C:\\logs\\run.log'
         $output | Should -Match 'next run\s+2026-10-12 12:00'
         $output | Should -Match 'it runs every 4h, the config says 1h - phx schedule on'
+    }
+
+    It 'takes -Every only with on, and leaves the config alone when registering fails' {
+        Invoke-TestSchedule off '2h' | Out-Null
+        $script:ScheduleError.Exception.Message | Should -BeLike '*-Every goes with on*'
+        Mock Register-PhxScheduledTask -ModuleName PSPhoenix { throw 'Access is denied' }
+        Invoke-TestSchedule on '2h' | Out-Null
+        $script:ScheduleError.Exception.Message | Should -BeLike '*Access is denied*'
+        (InModuleScope PSPhoenix { Read-PhxConfig }).interval | Should -Be '1h'
+    }
+
+    It 'names what is wrong with a task: a PowerShell that is gone, an action it does not know' {
+        InModuleScope PSPhoenix {
+            $config = Read-PhxConfig
+            $good = New-PhxTaskDefinition -Interval ([TimeSpan]::FromHours(1))
+            $gone = [pscustomobject]@{ Arguments = $good.Arguments.Replace($good.Pwsh, 'C:\gone\pwsh.exe'); Interval = $good.Interval }
+            @(Get-PhxScheduleProblem -Task $gone -Config $config) | Should -Match 'starts C:\\gone\\pwsh.exe, which is gone'
+            $other = [pscustomobject]@{ Arguments = 'something else'; Interval = $good.Interval }
+            @(Get-PhxScheduleProblem -Task $other -Config $config) | Should -Match 'not the one phx schedule on sets'
+            @(Get-PhxScheduleProblem -Task ([pscustomobject]@{ Arguments = $good.Arguments; Interval = $good.Interval }) -Config $config) | Should -HaveCount 0
+        }
+    }
+
+    It 'starts the PowerShell of this installation, a Store one through its alias' {
+        $store = Join-Path $TestDrive 'Program Files/WindowsApps/Microsoft.PowerShell_7.5.0.0_x64__8wekyb3d8bbwe'
+        $local = Join-Path $TestDrive 'Local'
+        New-Item -ItemType Directory -Force -Path (Join-Path $local 'Microsoft/WindowsApps') | Out-Null
+        Set-Content -LiteralPath (Join-Path $local 'Microsoft/WindowsApps/pwsh.exe') -Value ''
+        InModuleScope PSPhoenix -Parameters @{ Store = $store; Local = $local } {
+            param($Store, $Local)
+            $script:OnWindowsSaved = $script:OnWindows
+            $script:OnWindows = $true
+            try {
+                Get-PhxPwshPath -PowerShellHome $Store -LocalAppData $Local | Should -Be (Join-Path $Local 'Microsoft\WindowsApps\pwsh.exe')
+                Get-PhxPwshPath -PowerShellHome 'C:\Program Files\PowerShell\7' -LocalAppData $Local | Should -Be (Join-Path 'C:\Program Files\PowerShell\7' 'pwsh.exe')
+            }
+            finally { $script:OnWindows = $script:OnWindowsSaved }
+        }
+    }
+
+    It 'reads a registered task into a plain object' {
+        InModuleScope PSPhoenix {
+            $task = [pscustomobject]@{
+                Actions  = @([pscustomobject]@{ Arguments = '--headless "pwsh.exe" -File "x"' })
+                Triggers = @([pscustomobject]@{ Repetition = [pscustomobject]@{ Interval = $null } }, [pscustomobject]@{ Repetition = [pscustomobject]@{ Interval = 'PT2H' } })
+            }
+            $info = [pscustomobject]@{ LastRunTime = [datetime]'2026-10-12 08:00'; NextRunTime = [datetime]'2026-10-12 10:00'; LastTaskResult = 0 }
+            $read = ConvertFrom-PhxScheduledTask -Task $task -Info $info
+            $read.Arguments | Should -Be '--headless "pwsh.exe" -File "x"'
+            $read.Interval | Should -Be ([TimeSpan]::FromHours(2))
+            $read.NextRunTime | Should -Be ([datetime]'2026-10-12 10:00')
+        }
+    }
+
+    It 'builds the task with the triggers, settings and principal of the design' -Skip:(-not $IsWindows) {
+        # New-ScheduledTask* only build objects in memory - nothing is registered.
+        $task = InModuleScope PSPhoenix { New-PhxScheduledTask (New-PhxTaskDefinition -Interval ([TimeSpan]::FromHours(1)) -ModulePath 'C:\M' -Pwsh 'C:\P\pwsh.exe') }
+        $task.Actions[0].Execute | Should -Be 'conhost.exe'
+        @($task.Triggers) | Should -HaveCount 2
+        $task.Triggers[0].Repetition.Interval | Should -Be 'PT1H'
+        $task.Triggers[0].Repetition.Duration | Should -BeNullOrEmpty
+        $task.Triggers[1].Delay | Should -Be 'PT5M'
+        $task.Settings.StartWhenAvailable | Should -BeTrue
+        $task.Settings.MultipleInstances | Should -Be 'IgnoreNew'
+        $task.Settings.ExecutionTimeLimit | Should -Be 'PT15M'
+        $task.Settings.Priority | Should -Be 7
+        $task.Settings.DisallowStartIfOnBatteries | Should -BeFalse
+        $task.Principal.LogonType | Should -Be 'Interactive'
+        $task.Principal.RunLevel | Should -Be 'Limited'
     }
 
     It 'says where it does not work yet, and refuses an unknown action' {

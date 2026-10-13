@@ -314,15 +314,19 @@ Windows: a per-user Task Scheduler task `\PSPhoenix\Backup`.
   priority 7 (below normal); it runs on battery too. The principal is the user, logged on
   (`Interactive`): the run needs the user's credential store and `gh` keyring.
 - Action: `conhost.exe --headless "<pwsh>" -NoProfile -NonInteractive -File "<module>\phx-task.ps1"`,
-  naming the PowerShell that ran `phx schedule on`. Without `conhost --headless` a console window
-  flashes up every run, `-WindowStyle Hidden` included.
+  naming the PowerShell of the installation that ran `phx schedule on` - a Microsoft Store one
+  through its execution alias, which outlives the versioned folder it lives in. Without
+  `conhost --headless` a console window flashes up every run, `-WindowStyle Hidden` included. The
+  Task Scheduler sees only conhost's exit code, always 0: how a run went is read from the state.
 - The module folder it names is one an update leaves in place: imported through Scoop's modules
   folder it already is one (a junction to `apps\psphoenix\current`); imported from a version folder
   with a `current` next to it, `current` is named instead.
 - `phx schedule status` and `phx status` check the registered task against what `phx schedule on`
   would register now - a PowerShell or module that is gone, another module than this one, another
-  interval than the config's - and say `phx schedule on` fixes it. `phx init` asks to turn the
-  schedule on.
+  interval than the config's - and say `phx schedule on` fixes it. `phx init` asks whether to run in
+  the background, defaulting to what is so now (on for a first init): Enter leaves a matching task
+  alone, no removes it. `-Every` goes with `on` only, and the interval is saved once the task is
+  registered, so a failed registration leaves config and task agreeing.
 
 Rejected alternatives:
 
@@ -461,3 +465,7 @@ is not an object, an `enabled` that is not true or false, a `cadence` that is no
    without PSPhoenix and lets the scheduled run work without any secret. Leaning age.
 4. **Repository visibility**: Scoop downloads release assets anonymously, so the repository must be
    public for `scoop install`, as with PSWorktree and PSVsCommand.
+5. **Machine id and roaming profiles**: the id lives in the config, in the roaming `%APPDATA%`. With
+   roaming profiles or folder redirection two machines could share it and write one folder. A
+   machine-bound copy in the local state folder would catch that, but losing the state would then
+   lock a machine out of its own snapshot - left open until someone needs it.

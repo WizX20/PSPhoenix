@@ -222,11 +222,15 @@ function Invoke-PhxInit {
         $target = Select-PhxInitTarget -Current $config.target
         $machine = Select-PhxInitMachine -TargetPath $target.path -Current $config.machine
         $interval = Select-PhxInitInterval -Current $config.interval
-        # Step 7: the background run. Asked only where phx schedule works (Windows, for now).
+        # Step 7: the background run. Asked only where phx schedule works (Windows, for now). The
+        # default is what is so now - on for a first init - so Enter all the way changes nothing.
         $schedule = $false
+        $registered = $null
         if (Test-PhxCanSchedule) {
+            $registered = Get-PhxScheduledTask
+            $default = if ([IO.File]::Exists($configPath)) { [bool]$registered } else { $true }
             Write-PhxInitStep 'Schedule - back up in the background' "a task in your Task Scheduler runs phx every $interval and after logon; phx schedule off removes it"
-            $schedule = Read-PhxInitYesNo -Prompt '  Turn it on?'
+            $schedule = Read-PhxInitYesNo -Prompt '  Run it in the background?' -Default $default
         }
         Write-PhxInitStep 'Later milestones' 'secrets (an age key, M3) and the review of gitignored files (M3) are asked here once they exist'
 
@@ -252,6 +256,10 @@ function Invoke-PhxInit {
     Save-PhxConfig $config
     Save-PhxRepoCache -Roots $roots -Records $records
     Write-Host "saved $configPath" -ForegroundColor Green
-    if ($schedule) { Enable-PhxSchedule }
+    if ($schedule) {
+        # Registered already, as it should be (the same interval, this module): left alone.
+        if (-not $registered -or @(Get-PhxScheduleProblem -Task $registered -Config $config).Count) { Enable-PhxSchedule }
+    }
+    elseif ($registered) { Disable-PhxSchedule }
     Write-Host 'next: phx run for a first backup now, then phx status' -ForegroundColor Green
 }
