@@ -135,7 +135,7 @@ Describe 'module surface' {
     It 'fails a command that is not built yet, naming its milestone' {
         { phx schedule -ErrorAction Stop } | Should -Throw '*not built yet*M2*'
         { phx restore -ErrorAction Stop } | Should -Throw '*not built yet*M6*'
-        phx run -ErrorAction SilentlyContinue
+        phx review -ErrorAction SilentlyContinue
         $? | Should -BeFalse
     }
 
@@ -1649,7 +1649,7 @@ Describe 'status' {
         $output | Should -Match 'repos\s+3 repositories, 1 without a remote'
         $output | Should -Match 'WizX20: 1'
         $output | Should -Match 'account\s+wpaap on github.com \(1 repositories\) - logged in to gh'
-        $output | Should -Match 'last run\s+arrives with M2'
+        $output | Should -Match 'last run\s+none yet - phx run'
         $output | Should -Match 'nothing needs attention'
     }
 
@@ -2178,6 +2178,287 @@ Describe 'state and change detection' {
             $state = New-PhxState
             [object]::ReferenceEquals((New-PhxContext -Provider repos -State $state).State, $state) | Should -BeTrue
         }
+    }
+}
+
+Describe 'run' {
+    BeforeEach {
+        $script:RunHome = Use-TestHome
+        $script:RunTarget = Join-Path $script:RunHome 'Target'
+        $script:RunSnapshot = Join-Path $script:RunTarget 'Box'
+        New-Item -ItemType Directory -Path $script:RunTarget | Out-Null
+        InModuleScope PSPhoenix -Parameters @{ Target = $script:RunTarget } {
+            param($Target)
+            $c = Read-PhxConfig
+            $c.target = [ordered]@{ type = 'folder'; path = $Target }
+            $c.machine = [ordered]@{ name = 'Box'; id = 'id-box' }
+            Save-PhxConfig $c
+            # Test providers only - the repos provider has tests of its own.
+            $script:SavedProviders = $script:PhxProviders
+            $script:PhxProviders = [ordered]@{}
+            $script:AlphaText = 'alpha 1'
+            $script:BrokenFails = $false
+            Register-PhxProvider @{ Name = 'alpha'; Description = 'every run'; Restore = {}; Status = {}
+                Backup = { param($Context) Set-Content -LiteralPath (Join-Path $Context.Staging 'alpha.txt') -Value $script:AlphaText; & $Context.Log 'alpha wrote its file' }
+            }
+            Register-PhxProvider @{ Name = 'slow'; Description = 'once a day'; Cadence = '1d'; Restore = {}; Status = {}
+                Backup = { param($Context) Set-Content -LiteralPath (Join-Path $Context.Staging 'slow.txt') -Value 'slow' }
+            }
+        }
+        function Invoke-TestRun {
+            # phx run with real switches; its output, and its error as $script:RunError.
+            param([string]$Provider)
+            $script:RunError = $null
+            $output = if ($Provider) { Get-PhxOutput { phx run -Provider $Provider -ErrorAction SilentlyContinue -ErrorVariable failure; $script:RunError = $failure } }
+            else { Get-PhxOutput { phx run -ErrorAction SilentlyContinue -ErrorVariable failure; $script:RunError = $failure } }
+            $script:RunError = @($script:RunError | Where-Object FullyQualifiedErrorId -Like 'PhxCommandFailed*')[0]
+            $output
+        }
+        function Get-TestFileTimes { @(Get-ChildItem -LiteralPath $script:RunSnapshot -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.LastWriteTimeUtc.Ticks)" }) }
+    }
+    AfterEach {
+        InModuleScope PSPhoenix { $script:PhxProviders = $script:SavedProviders }
+    }
+
+    It 'refuses to run before phx init, and without its target folder' {
+        Use-TestHome | Out-Null
+        Invoke-TestRun | Out-Null
+        $script:RunError.Exception.Message | Should -BeLike '*not set up yet - run: phx init*'
+        Use-TestHome | Out-Null
+        InModuleScope PSPhoenix -Parameters @{ Target = (Join-Path $TestDrive 'unplugged') } {
+            param($Target)
+            $c = Read-PhxConfig; $c.target = [ordered]@{ type = 'folder'; path = $Target }; Save-PhxConfig $c
+        }
+        Invoke-TestRun | Out-Null
+        $script:RunError.Exception.Message | Should -BeLike '*unplugged not found - a disconnected drive?*'
+    }
+
+    It 'runs the providers, publishes them, records the run and logs it' {
+        $output = Invoke-TestRun
+        $script:RunError | Should -BeNullOrEmpty
+        $output | Should -Match 'alpha wrote its file'
+        $output | Should -Match 'done in .*2 provider\(s\)'
+        Get-Content -LiteralPath (Join-Path $script:RunSnapshot 'alpha/alpha.txt') | Should -Be 'alpha 1'
+        Test-Path -LiteralPath (Join-Path $script:RunSnapshot 'slow/slow.txt') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:RunSnapshot 'phoenix.json') | Should -BeTrue
+        $state = InModuleScope PSPhoenix { Read-PhxState }
+        $state.providers['alpha'].lastResult | Should -Be 'ok'
+        @($state.lastRun.providers) | Should -Be @('alpha', 'slow')
+        Get-Content -LiteralPath $state.lastRun.log -Raw | Should -Match '\[alpha\] alpha wrote its file'
+        Get-PhxOutput { phx status } | Should -Match 'last run\s+just now - 2 provider\(s\), all fine'
+    }
+
+    It 'writes nothing when nothing changed, and leaves out a provider that is not due' {
+        Invoke-TestRun | Out-Null
+        $before = Get-TestFileTimes
+        Start-Sleep -Milliseconds 50
+        $output = Invoke-TestRun
+        $output | Should -Match 'slow: not due yet'
+        $output | Should -Match 'alpha: 0 written, 1 unchanged, 0 removed'
+        Get-TestFileTimes | Should -Be $before
+        # -Provider runs the one named, due or not.
+        Invoke-TestRun -Provider slow | Should -Match 'slow: 0 written, 1 unchanged'
+    }
+
+    It 'keeps going when a provider fails, keeps its last snapshot, and fails at the end' {
+        InModuleScope PSPhoenix {
+            Register-PhxProvider @{ Name = 'flaky'; Description = 'fails on demand'; Restore = {}; Status = {}
+                Backup = { param($Context) if ($script:BrokenFails) { throw 'boom' }; Set-Content -LiteralPath (Join-Path $Context.Staging 'flaky.txt') -Value 'good' }
+            }
+        }
+        Invoke-TestRun | Out-Null
+        InModuleScope PSPhoenix { $script:BrokenFails = $true; $script:AlphaText = 'alpha 2' }
+        $output = Invoke-TestRun
+        $output | Should -Match 'flaky failed: boom'
+        $script:RunError.Exception.Message | Should -BeLike '*1 provider(s) failed: flaky - log:*'
+        Get-Content -LiteralPath (Join-Path $script:RunSnapshot 'flaky/flaky.txt') | Should -Be 'good'
+        Get-Content -LiteralPath (Join-Path $script:RunSnapshot 'alpha/alpha.txt') | Should -Be 'alpha 2'
+        (InModuleScope PSPhoenix { Read-PhxState }).providers['flaky'].lastResult | Should -Be 'failed: boom'
+        Get-PhxOutput { phx status } | Should -Match 'last run\s+just now - failed: flaky'
+    }
+
+    It 'leaves out a disabled provider, and refuses one it does not know' {
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.providers['alpha'] = [ordered]@{ enabled = $false }; Save-PhxConfig $c }
+        Invoke-TestRun | Should -Match 'alpha: disabled in the config'
+        Test-Path -LiteralPath (Join-Path $script:RunSnapshot 'alpha') | Should -BeFalse
+        Invoke-TestRun -Provider nope | Out-Null
+        $script:RunError.Exception.Message | Should -BeLike "*no provider 'nope'*"
+    }
+
+    It 'refuses to run while another run holds the lock, and writes nothing then' {
+        # A config from before machine ids: a run that does not run must not give it one.
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.machine = [ordered]@{ name = 'Box'; id = $null }; Save-PhxConfig $c }
+        $before = Get-Content -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) -Raw
+        $lockPath = Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'run.lock'
+        New-Item -ItemType Directory -Force -Path (Split-Path $lockPath) | Out-Null
+        $held = [IO.FileStream]::new($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            Invoke-TestRun | Out-Null
+            $script:RunError.Exception.Message | Should -BeLike '*another phx run is in progress*'
+            Get-Content -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) -Raw | Should -Be $before
+        }
+        finally { $held.Dispose() }
+        Invoke-TestRun | Out-Null
+        $script:RunError | Should -BeNullOrEmpty
+    }
+
+    It 'gives a config from before machine ids one, and refuses the folder of another installation' {
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.machine = [ordered]@{ name = $null; id = $null }; $c.machine.name = 'Box'; Save-PhxConfig $c }
+        Invoke-TestRun | Out-Null
+        $id = (InModuleScope PSPhoenix { Read-PhxConfig }).machine.id
+        [guid]::Parse($id) | Should -Not -BeNullOrEmpty
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.machine.id = 'someone-else'; Save-PhxConfig $c }
+        Invoke-TestRun | Out-Null
+        $script:RunError.Exception.Message | Should -BeLike '*holds the snapshot of another installation*'
+    }
+
+    It 'scans first when discovery is due' {
+        $repos = Join-Path $script:RunHome 'Repos'
+        New-TestRepository (Join-Path $repos 'One') -Remote 'origin=https://github.com/o/one.git' | Out-Null
+        phx roots add $repos 6>$null
+        Invoke-TestRun | Should -Match 'scan: discovery is due'
+        Invoke-TestRun | Should -Not -Match 'scan: discovery is due'
+    }
+
+    It 'publishes nothing of a provider that failed half-way, and keeps no file state of it' {
+        $tracked = Join-Path $script:RunHome 'tracked.txt'
+        Set-Content -LiteralPath $tracked -Value 'v1'
+        InModuleScope PSPhoenix -Parameters @{ Tracked = $tracked } {
+            param($Tracked)
+            $script:TrackedFile = $Tracked
+            $script:HalfFails = $false
+            $script:SawChange = $null
+            Register-PhxProvider @{ Name = 'half'; Description = 'stages, then fails'; Restore = {}; Status = {}
+                Backup = {
+                    param($Context)
+                    $script:SawChange = Test-PhxFileChanged -Files $Context.Files -Path $script:TrackedFile
+                    Set-Content -LiteralPath (Join-Path $Context.Staging 'half.txt') -Value 'half'
+                    if ($script:HalfFails) { throw 'died half-way' }
+                }
+            }
+        }
+        Invoke-TestRun | Out-Null
+        Set-Content -LiteralPath $tracked -Value 'v2'
+        Remove-Item -LiteralPath (Join-Path $script:RunSnapshot 'half/half.txt')
+        InModuleScope PSPhoenix { $script:HalfFails = $true }
+        Invoke-TestRun | Out-Null
+        InModuleScope PSPhoenix { $script:SawChange } | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:RunSnapshot 'half/half.txt') | Should -BeFalse
+        # The failed run did not record v2 as seen: the next run still sees the change.
+        InModuleScope PSPhoenix { $script:HalfFails = $false }
+        Invoke-TestRun | Out-Null
+        InModuleScope PSPhoenix { $script:SawChange } | Should -BeTrue
+    }
+
+    It 'keeps tokens out of the log, logs warnings, and counts a written error as a failure' {
+        InModuleScope PSPhoenix {
+            $script:FakeToken = 'ghp_' + ('a' * 36)
+            Register-PhxProvider @{ Name = 'noisy'; Description = 'prints'; Restore = {}; Status = {}
+                Backup = {
+                    param($Context)
+                    & $Context.Log "the token is $script:FakeToken"
+                    Write-Warning 'something odd'
+                    Write-Error 'something broke'
+                }
+            }
+        }
+        $output = Invoke-TestRun
+        $output | Should -Match 'noisy failed: 1 error\(s\): something broke'
+        $log = Get-Content -LiteralPath (InModuleScope PSPhoenix { Read-PhxState }).lastRun.log -Raw
+        $log | Should -Not -Match 'ghp_a'
+        $log | Should -Match '\[noisy\] the token is \*\*\*'
+        $log | Should -Match '\[noisy\] warning: something odd'
+        $log | Should -Match '\[noisy\] error: something broke'
+    }
+
+    It 'records the start of the run as the providers'' last run' {
+        InModuleScope PSPhoenix {
+            Register-PhxProvider @{ Name = 'clock'; Description = 'notes the time'; Restore = {}; Status = {}
+                Backup = { $script:ClockRan = [DateTime]::UtcNow }
+            }
+        }
+        Invoke-TestRun | Out-Null
+        $lastRun = InModuleScope PSPhoenix { ConvertTo-PhxDateTime (Read-PhxState).providers['clock'].lastRun }
+        $lastRun | Should -BeLessOrEqual (InModuleScope PSPhoenix { $script:ClockRan })
+    }
+
+    It 'does not probe the target with a file of its own' {
+        # Creating and deleting a probe file in OneDrive every hour is an upload every hour.
+        Mock Test-PhxWritableFolder -ModuleName PSPhoenix { throw 'probed' }
+        Invoke-TestRun | Out-Null
+        $script:RunError | Should -BeNullOrEmpty
+    }
+
+    It 'publishes the other providers when one cannot be, and records the run' -Skip:(-not $IsWindows) {
+        # Windows holds a file open without sharing; Linux lets a rename replace it anyway.
+        Invoke-TestRun | Out-Null
+        InModuleScope PSPhoenix { $script:AlphaText = 'alpha 2' }
+        $held = [IO.File]::Open((Join-Path $script:RunSnapshot 'alpha/alpha.txt'), 'Open', 'Read', 'None')
+        try {
+            InModuleScope PSPhoenix { $script:SlowNow = $true }
+            $output = Invoke-TestRun -Provider alpha
+            $output | Should -Match 'alpha failed to publish: alpha.txt:'
+            $script:RunError.Exception.Message | Should -BeLike '*1 provider(s) failed: alpha*'
+        }
+        finally { $held.Dispose() }
+        $state = InModuleScope PSPhoenix { Read-PhxState }
+        @($state.lastRun.failed) | Should -Be @('alpha')
+        $state.providers['alpha'].lastResult | Should -BeLike 'failed: alpha.txt:*'
+    }
+
+    It 'goes on with the last scan when the scan fails' {
+        $repos = Join-Path $script:RunHome 'Repos'
+        New-Item -ItemType Directory -Path $repos | Out-Null
+        phx roots add $repos 6>$null
+        Mock Invoke-PhxScan -ModuleName PSPhoenix { throw 'the disk went away' }
+        Invoke-TestRun | Should -Match 'scan failed: the disk went away - going on with the last scan'
+        $script:RunError | Should -BeNullOrEmpty
+    }
+
+    It 'copes with a line without a colour, as a host without a console writes it' {
+        # On a CI runner a plain Write-Host line carries colour -1, which Write-Host itself refuses.
+        InModuleScope PSPhoenix {
+            $message = [System.Management.Automation.HostInformationMessage]@{ Message = 'plain'; ForegroundColor = [Enum]::ToObject([ConsoleColor], -1) }
+            { Invoke-PhxLogged -Action { Write-Information -MessageData $message -InformationAction Continue } 6>$null } | Should -Not -Throw
+        }
+    }
+
+    It 'keeps only the newest logs' {
+        InModuleScope PSPhoenix { $script:SavedKeep = $script:PhxRunLogKeep; $script:PhxRunLogKeep = 2 }
+        try { 1..3 | ForEach-Object { Invoke-TestRun | Out-Null } }
+        finally { InModuleScope PSPhoenix { $script:PhxRunLogKeep = $script:SavedKeep } }
+        $logs = Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'logs'
+        @(Get-ChildItem -LiteralPath $logs -Filter 'run-*.log') | Should -HaveCount 2
+    }
+}
+
+Describe 'the scheduled entry point' {
+    It 'runs phx run headless and exits with its result' {
+        # A process of its own, as the Task Scheduler starts it - with this test's environment, so
+        # the config and state stay in $TestDrive.
+        $testHome = Use-TestHome
+        $task = Join-Path (Split-Path $PSScriptRoot -Parent) 'src/PSPhoenix/phx-task.ps1'
+        $pwsh = (Get-Process -Id $PID).Path
+        $output = & $pwsh -NoProfile -NonInteractive -File $task 2>&1 | Out-String
+        $LASTEXITCODE | Should -Be 1
+        $output | Should -Match 'not set up yet'
+
+        $repos = Join-Path $testHome 'Repos'
+        New-TestRepository (Join-Path $repos 'One') -Remote 'origin=https://github.com/o/one.git' | Out-Null
+        $target = Join-Path $testHome 'Target'
+        New-Item -ItemType Directory -Path $target | Out-Null
+        phx roots add $repos 6>$null
+        InModuleScope PSPhoenix -Parameters @{ Target = $target } {
+            param($Target)
+            $c = Read-PhxConfig; $c.target = [ordered]@{ type = 'folder'; path = $Target }; $c.machine = [ordered]@{ name = 'Box'; id = 'id-box' }
+            # The child runs real providers: every one but repos stays off, so none of them ever
+            # reaches this machine's real home (~/.claude, the PowerShell profile, winget, ...).
+            foreach ($name in @($script:PhxProviders.Keys | Where-Object { $_ -ne 'repos' })) { $c.providers[$name] = [ordered]@{ enabled = $false } }
+            Save-PhxConfig $c
+        }
+        & $pwsh -NoProfile -NonInteractive -File $task *> $null
+        $LASTEXITCODE | Should -Be 0
+        Test-Path -LiteralPath (Join-Path $target 'Box/repos/repos.json') | Should -BeTrue
     }
 }
 

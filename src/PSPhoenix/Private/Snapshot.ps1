@@ -131,15 +131,26 @@ function Publish-PhxFolder {
         }
     }
     foreach ($relative in $staged) {
-        $file = Join-Path $Source $relative
-        $target = Join-Path $Destination $relative
-        $hash = Get-PhxFileHash $file
-        $known = $null -ne $Published -and $Published.ContainsKey($relative) -and $Published[$relative] -eq $hash -and
-            [IO.File]::Exists($target) -and [IO.FileInfo]::new($target).Length -eq [IO.FileInfo]::new($file).Length
-        if ($null -ne $Published) { $Published[$relative] = $hash }
-        if ($known -or (Test-PhxSameFile -Source $file -Path $target -SourceHash $hash)) { $unchanged++; continue }
-        Copy-PhxFile -Source $file -Path $target
-        $written++
+        # A file that cannot be read or written (held open in the target) names itself.
+        try {
+            $file = Join-Path $Source $relative
+            $target = Join-Path $Destination $relative
+            $hash = Get-PhxFileHash $file
+            $known = $null -ne $Published -and $Published.ContainsKey($relative) -and $Published[$relative] -eq $hash -and
+                [IO.File]::Exists($target) -and [IO.FileInfo]::new($target).Length -eq [IO.FileInfo]::new($file).Length
+            if ($known -or (Test-PhxSameFile -Source $file -Path $target -SourceHash $hash)) {
+                if ($null -ne $Published) { $Published[$relative] = $hash }
+                $unchanged++
+                continue
+            }
+            Copy-PhxFile -Source $file -Path $target
+            if ($null -ne $Published) { $Published[$relative] = $hash }
+            $written++
+        }
+        catch {
+            if ($null -ne $Published) { [void]$Published.Remove($relative) }
+            throw "${relative}: $($_.Exception.InnerException.Message ?? $_.Exception.Message)"
+        }
     }
     if ($null -ne $Published) { foreach ($key in @($Published.Keys)) { if (-not $wanted.Contains($key)) { [void]$Published.Remove($key) } } }
     [pscustomobject]@{ Written = $written; Unchanged = $unchanged; Removed = $removed; Files = $staged.Count }
@@ -191,7 +202,13 @@ function Publish-PhxSnapshot {
             if (-not $State.published.Contains($name)) { $State.published[$name] = New-PhxPathDictionary }
             $published = $State.published[$name]
         }
-        $result = Publish-PhxFolder -Source (Get-PhxStagingPath $name) -Destination (Join-Path $snapshot $name) -Published $published
+        # One provider that cannot be published (a file held open in the target) does not stop the
+        # others; its result carries the error.
+        try { $result = Publish-PhxFolder -Source (Get-PhxStagingPath $name) -Destination (Join-Path $snapshot $name) -Published $published }
+        catch {
+            $results[$name] = [pscustomobject]@{ Error = Hide-PhxSecret $_.Exception.Message }
+            continue
+        }
         $results[$name] = $result
         if ($result.Written -or $result.Removed -or -not $providers.Contains($name)) {
             $providers[$name] = [ordered]@{ changedAt = $now; files = $result.Files }
