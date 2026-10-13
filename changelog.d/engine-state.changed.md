@@ -1,0 +1,1 @@
+- refactor: engine - the state (`state.json`, same format) and change detection run in the engine. A state that cannot be read is ignored with the reason it gives

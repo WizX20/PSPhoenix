@@ -450,7 +450,7 @@ with its own xUnit tests):
 
 - writing a file through a temporary name and one rename, copying, hashing (SHA-256);
 - publishing the staged files into the snapshot;
-- the state and change detection (moving next);
+- the state (`state.json`) and change detection - a provider's `$Context.Files`;
 - the content scan for secrets (M3, #45) is built there.
 
 It targets .NET 8, what PowerShell 7.4 runs on, and depends on nothing but .NET: PowerShell calls

@@ -93,20 +93,13 @@ function Publish-PhxFolder {
     # -Published (relative path -> SHA-256 as last published, from the state) spares reading the
     # target back: reading a file in a OneDrive folder can mean downloading it first. It is updated
     # to what the destination holds afterwards, also when publishing failed half-way.
-    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Destination, [System.Collections.IDictionary]$Published)
-    $hashes = $null
-    if ($null -ne $Published) {
-        $hashes = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::FromComparison((Get-PhxPathComparison)))
-        foreach ($key in $Published.Keys) { $hashes[$key] = "$($Published[$key])" }
-    }
-    try { [PSPhoenix.Engine.FolderPublisher]::Publish($Source, $Destination, $hashes) }
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination,
+        [System.Collections.Generic.IDictionary[string, string]]$Published
+    )
+    try { [PSPhoenix.Engine.FolderPublisher]::Publish($Source, $Destination, $Published) }
     catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
-    finally {
-        if ($null -ne $Published) {
-            $Published.Clear()
-            foreach ($key in $hashes.Keys) { $Published[$key] = $hashes[$key] }
-        }
-    }
 }
 
 function Publish-PhxSnapshot {
@@ -117,7 +110,7 @@ function Publish-PhxSnapshot {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Config,
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Provider,
-        [System.Collections.IDictionary]$State
+        [PSPhoenix.Engine.PhxState]$State
     )
     if (-not $Config.machine -or -not $Config.machine.id) { throw 'this machine has no id yet - run phx init' }
     $snapshot = Get-PhxSnapshotPath $Config
@@ -143,18 +136,11 @@ function Publish-PhxSnapshot {
     }
     # The published hashes belong to one snapshot folder: after a move to another target, or a
     # renamed machine, an older copy there must not pass for what was published.
-    if ($State -and -not [string]::Equals("$($State.publishedTo)", $snapshot, (Get-PhxPathComparison))) {
-        $State.published = [ordered]@{}
-        $State.publishedTo = $snapshot
-    }
+    if ($State) { $State.PublishInto($snapshot) }
     $changed = $false
     $results = [ordered]@{}
     foreach ($name in $Provider) {
-        $published = $null
-        if ($State) {
-            if (-not $State.published.Contains($name)) { $State.published[$name] = New-PhxPathDictionary }
-            $published = $State.published[$name]
-        }
+        $published = if ($State) { $State.PublishedHashes($name) }
         # One provider that cannot be published (a file held open in the target) does not stop the
         # others; its result carries the error.
         try { $result = Publish-PhxFolder -Source (Get-PhxStagingPath $name) -Destination (Join-Path $snapshot $name) -Published $published }
