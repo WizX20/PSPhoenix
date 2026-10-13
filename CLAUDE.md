@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-**PSPhoenix** — a PowerShell 7.4+ module (`src/PSPhoenix/`) exporting one command, `phx`: it backs up what a developer machine would lose in a crash — the repository inventory (remotes, GitHub account, repo-local identity), local-only git work, selected gitignored files, Claude Code memory and settings, and the machine setup (winget, Scoop, PowerShell, Windows Terminal, WSL, environment) — and rebuilds a new machine from it. Tracked files are never copied: a restore clones them.
+**PSPhoenix** — a PowerShell 7.4+ module (`src/PSPhoenix/`, with a C# engine in `engine/`) exporting one command, `phx`: it backs up what a developer machine would lose in a crash — the repository inventory (remotes, GitHub account, repo-local identity), local-only git work, selected gitignored files, Claude Code memory and settings, and the machine setup (winget, Scoop, PowerShell, Windows Terminal, WSL, environment) — and rebuilds a new machine from it. Tracked files are never copied: a restore clones them.
 
 The design and roadmap are in [docs/design.md](docs/design.md) — read it before building anything; it is the contract. Layout, tests and the release pipeline: [DEVGUIDE.md](DEVGUIDE.md). Conventions: [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -19,7 +19,9 @@ This repo is published under the **WizX20** account from a machine whose active 
 ## Commands
 
 ```powershell
-task check        # lint + test — run before every push
+task check        # lint + engine tests + Pester — run before every push
+task build        # the engine (engine/, .NET SDK 10+) into src/PSPhoenix/lib; test/pack/help/link do it first
+task test:engine  # the engine's xUnit tests
 task test         # Pester (needs Pester 5+); `task test -- tests/PSPhoenix.Tests.ps1`
 task test:linux   # the suite in a Linux container (Docker) - run it at the top of a stack
 task lint         # PSScriptAnalyzer; exclusions + reasons in PSScriptAnalyzerSettings.psd1
@@ -35,6 +37,7 @@ task merge-stack -- 38 39 40 # merge stacked PRs bottom-up (only when asked) - s
 - **Never touch the real machine from a test.** No real `~/.claude`, `$PROFILE`, registry, Task Scheduler, `winget`/`scoop`/`gh` calls: redirect paths into `$TestDrive` (`Use-TestHome`) and mock the thin wrapper functions around external tools. The same goes for trying things out by hand: use a throwaway config dir.
 - **Behaviour changes need a Pester test; every provider needs a round-trip test** (backup into one fake home, restore into another, compare). Private helpers are reachable via `InModuleScope PSPhoenix`. Call `phx` with real switches inside `Get-PhxOutput { phx run -Provider repos }`.
 - **PowerShell 7.4+**, Windows first, Linux pwsh must keep working (CI runs both): `Join-Path` for paths, `[\\/]` in test regexes, Windows-only tools behind `$script:OnWindows`.
+- **Engine** (`engine/`, [design](docs/design.md#engine)): C#, `net8.0`, no package dependencies; what moves many files or keeps the books goes there, with xUnit tests (FluentAssertions stays on **7.x** — 8 is commercial). The DLL is build output (`src/PSPhoenix/lib/`, gitignored). PowerShell wrappers rethrow the engine's own exception (`catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }`); pass full paths only. After a C# change, a new session: .NET never unloads the old engine, and the module refuses to import another one into a session that has one.
 - **Providers**: one file per provider in `src/PSPhoenix/Providers/`, registering through `Register-PhxProvider`. A provider writes only inside its staging folder during backup; every `Restore` is idempotent.
 - **Secrets**: only ever written encrypted (age, to the recipient in the config). Never DPAPI, never a token or private key in a snapshot, a log or test output.
 - **Design is the contract**: a change that deviates from `docs/design.md` updates it in the same PR.

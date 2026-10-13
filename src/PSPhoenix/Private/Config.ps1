@@ -48,6 +48,13 @@ function Read-PhxConfig {
         if ($settings.Contains('enabled') -and $settings.enabled -isnot [bool]) { throw "config ${path}: providers.$name.enabled must be true or false" }
         if ($settings.Contains('cadence') -and -not (ConvertTo-PhxTimeSpan "$($settings.cadence)")) { throw "config ${path}: providers.$name.cadence '$($settings.cadence)' must look like 30m, 1h or 1d" }
     }
+    # The target is written to: a relative path would mean wherever the process happens to run.
+    if ($null -ne $merged.target) {
+        if ($merged.target -isnot [System.Collections.IDictionary]) { throw "config ${path}: target must be an object" }
+        if ($null -ne $merged.target.path -and ($merged.target.path -isnot [string] -or -not [IO.Path]::IsPathFullyQualified($merged.target.path))) {
+            throw "config ${path}: target $($merged.target.path) is not a full path"
+        }
+    }
     # The machine name becomes a folder in the target: ..\x must not lead out of it.
     if ($merged.machine -isnot [System.Collections.IDictionary]) { throw "config ${path}: machine must be an object" }
     if ($merged.machine.name -and -not (Test-PhxMachineName "$($merged.machine.name)")) { throw "config ${path}: machine name '$($merged.machine.name)' is not a folder name - letters, digits, dot, dash, underscore" }

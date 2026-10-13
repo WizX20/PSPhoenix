@@ -39,11 +39,26 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The engine (engine/) builds with the .NET SDK 10 (engine/global.json) and targets .NET 8,
+      # what PowerShell 7.4 runs on: its tests need that runtime.
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
       - name: Lint (PSScriptAnalyzer)
         shell: pwsh
         run: ./scripts/lint.ps1
 
+      - name: Test the engine (xUnit)
+        working-directory: engine
+        shell: pwsh
+        run: dotnet test --configuration Release -- --report-xunit-trx --report-xunit-trx-filename engine-test-results.trx --results-directory ../dist
+
+      # Builds the engine into the module first (scripts/build.ps1).
       - name: Test (Pester)
+        if: success() || failure()
         shell: pwsh
         run: ./scripts/test.ps1 -CI
 
@@ -51,7 +66,9 @@ jobs:
         if: always()
         with:
           name: test-results-${{ matrix.name }}
-          path: dist/test-results.xml
+          path: |
+            dist/test-results.xml
+            dist/engine-test-results.trx
 
   pack:
     name: pack module zip
@@ -61,6 +78,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
+      # Builds the engine (Release) into the zip.
       - name: Pack
         shell: pwsh
         run: ./scripts/pack.ps1

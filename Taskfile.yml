@@ -13,15 +13,26 @@ tasks:
       - git config user.name
       - git config user.email
 
+  build:
+    desc: Build the engine (engine/, .NET SDK 10+) into src/PSPhoenix/lib - test, pack, help and link do it first
+    cmds:
+      - '{{.PS}} -File scripts/build.ps1 {{.CLI_ARGS}}'
+
   lint:
     desc: PSScriptAnalyzer over src/, scripts/ and tests/
     cmds:
       - '{{.PS}} -File scripts/lint.ps1'
 
   test:
-    desc: Pester suite (Pester 5+). Pass a path after -- to run one file
+    desc: Pester suite (Pester 5+), after building the engine. Pass a path after -- to run one file
     cmds:
       - '{{.PS}} -File scripts/test.ps1 {{.CLI_ARGS}}'
+
+  test:engine:
+    desc: The engine's xUnit tests (engine/tests)
+    dir: engine
+    cmds:
+      - dotnet test --configuration Release {{.CLI_ARGS}}
 
   test:linux:
     desc: The Pester suite in a Linux container (needs Docker), like the pwsh-linux CI job. Pass a path after -- for one file
@@ -29,18 +40,21 @@ tasks:
       - '{{.PS}} -File scripts/test-linux.ps1 {{.CLI_ARGS}}'
 
   check:
-    desc: lint + test, what CI runs
+    desc: lint + engine tests + Pester, what CI runs
     cmds:
       - task: lint
+      - task: test:engine
       - task: test
 
   help:
     desc: Print `phx --help` from the working copy (the README quotes this - keep them in sync)
+    deps: [build]
     cmds:
       - '{{.PS}} -Command "Import-Module ./src/PSPhoenix -Force; phx --help"'
 
   link:
     desc: Dev install - junction src/PSPhoenix into your CurrentUser module path (task unlink to undo)
+    deps: [build]
     cmds:
       - '{{.PS}} -File scripts/dev-link.ps1'
 

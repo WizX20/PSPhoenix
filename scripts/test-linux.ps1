@@ -3,9 +3,11 @@
 Runs the Pester suite in a Linux container, as the pwsh-linux CI job does.
 
 .DESCRIPTION
-Needs Docker. Starts a throwaway PowerShell container, mounts the working copy read-only at
-/src, installs git (and, through scripts/test.ps1, Pester) inside it and runs the suite there.
-Nothing on the host changes. Exits with the suite's exit code.
+Needs Docker. Builds the engine on the host first (scripts/build.ps1 - the container has no
+.NET SDK, and the DLL runs on any platform), then starts a throwaway PowerShell container, mounts
+the working copy read-only at /src, installs git (and, through scripts/test.ps1, Pester) inside it
+and runs the suite there. Nothing on the host changes but the engine build. Exits with the
+suite's exit code.
 
 .PARAMETER Path
 Test file(s) or folder(s), as for scripts/test.ps1 - relative to the current folder or full
@@ -39,7 +41,8 @@ $inside = foreach ($item in $Path) {
     }
     "'/src/$($relative.Replace('\', '/').Replace("'", "''"))'"
 }
-$test = if ($inside) { "& /src/scripts/test.ps1 -Path $($inside -join ',')" } else { '& /src/scripts/test.ps1' }
+$test = if ($inside) { "& /src/scripts/test.ps1 -NoBuild -Path $($inside -join ',')" } else { '& /src/scripts/test.ps1 -NoBuild' }
+& (Join-Path $PSScriptRoot 'build.ps1')
 
 # safe.directory: the mounted working copy belongs to another user inside the container.
 $steps = @(

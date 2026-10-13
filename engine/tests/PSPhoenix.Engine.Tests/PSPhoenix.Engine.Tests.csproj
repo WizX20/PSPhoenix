@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- xUnit v3 on Microsoft.Testing.Platform (engine/global.json: `dotnet test` from engine/, or
+       `dotnet run` this project), with FluentAssertions. FluentAssertions stays on 7.x: from 8.0
+       on it carries a commercial license (Xceed); 7.x is Apache 2.0. .github/dependabot.yml
+       ignores its major updates. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!-- Test names read as sentences (CA1707), xUnit wants public test classes (CA1515), and tests
+         carry no XML documentation (CS1591). -->
+    <NoWarn>$(NoWarn);CA1707;CA1515;CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="FluentAssertions" Version="7.2.2" />
+    <PackageReference Include="xunit.v3" Version="4.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="FluentAssertions" />
+    <Using Include="Xunit" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\PSPhoenix.Engine\PSPhoenix.Engine.csproj" />
+  </ItemGroup>
+</Project>

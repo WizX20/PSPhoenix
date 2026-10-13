@@ -112,6 +112,5 @@ function Get-PhxRefsHash {
     param([Parameter(Mandatory)][string]$Path)
     $refs = @(Invoke-PhxGit -Repository $Path -Arguments 'for-each-ref', '--format=%(refname) %(objectname)')
     $head = @(Invoke-PhxGit -Repository $Path -Arguments 'rev-parse', '--symbolic-full-name', 'HEAD', 'HEAD' -AllowFailure)
-    $bytes = [Text.Encoding]::UTF8.GetBytes((@($refs) + @($head)) -join "`n")
-    [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
+    [PSPhoenix.Engine.FileHash]::Sha256Text((@($refs) + @($head)) -join "`n")
 }

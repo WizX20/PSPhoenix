@@ -441,6 +441,24 @@ A root needs a full path; a hand-written one without `depth` gets 3, and a depth
 error, like any other invalid config: an `interval` that is not 15m to 31d, a `providers.<name>` that
 is not an object, an `enabled` that is not true or false, a `cadence` that is not a duration.
 
+## Engine
+
+`phx`, the wizard, the commands and the providers are PowerShell: they talk to the user and to
+tools - git, gh, winget, the Task Scheduler. What moves many files or keeps the books is a C#
+library that ships inside the module, `lib/PSPhoenix.Engine.dll` (`engine/` in the repository,
+with its own xUnit tests):
+
+- writing a file through a temporary name and one rename, copying, hashing (SHA-256);
+- publishing the staged files into the snapshot; the state and change detection (moving next);
+- the content scan for secrets (M3, #45) is built there.
+
+It targets .NET 8, what PowerShell 7.4 runs on, and depends on nothing but .NET: PowerShell calls
+its public classes, and an exception it throws reaches the user as its own message. The module
+does not import without it. It is loaded from its bytes, so no session holds the file open: an
+update or an uninstall replaces it while PowerShell runs. .NET keeps the engine a session loaded
+first, so importing a module with another engine (an update, another working copy) into that
+session is refused - a new session loads it.
+
 ## Roadmap
 
 | Milestone | Scope |

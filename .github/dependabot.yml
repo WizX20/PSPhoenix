@@ -1,7 +1,7 @@
 version: 2
 updates:
-  # The only dependencies are the actions in the workflows. Monthly is plenty for a repo this
-  # size - weekly bumps mean a CI run (and a notification) for every checkout@vN+1.
+  # The actions in the workflows. Monthly is plenty for a repo this size - weekly bumps mean a CI
+  # run (and a notification) for every checkout@vN+1.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -14,3 +14,23 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+
+  # The engine's test packages (the engine itself depends on nothing but .NET), in one pull request.
+  - package-ecosystem: nuget
+    directory: /engine
+    schedule:
+      interval: monthly
+      timezone: Europe/Amsterdam
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      test-packages:
+        patterns: ["*"]
+    ignore:
+      # From 8.0 on FluentAssertions carries a commercial license (Xceed); 7.x is Apache 2.0.
+      - dependency-name: FluentAssertions
+        update-types: ["version-update:semver-major"]

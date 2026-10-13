@@ -6,22 +6,29 @@ Runs the Pester suite in tests/. Exits non-zero when a test fails.
 `task test` and the CI workflow both call this. Needs Pester 5 or newer (the built-in Pester
 3.4 that ships with Windows PowerShell cannot run these tests); on CI it is installed on the
 fly, locally the script tells you how. Extra arguments are passed to Invoke-Pester's -Path
-filter, so `task test -- tests/PSPhoenix.Tests.ps1` runs a single file.
+filter, so `task test -- tests/PSPhoenix.Tests.ps1` runs a single file. It builds the engine
+first (scripts/build.ps1): the suite tests the module with the engine of this working copy.
 
 .PARAMETER Path
 Test file(s) or folder(s) to run. Defaults to the whole tests/ folder.
 
 .PARAMETER CI
 Also write an NUnit XML report to dist/test-results.xml, for the CI job to upload.
+
+.PARAMETER NoBuild
+Use the engine already in src/PSPhoenix/lib - where there is no .NET SDK, as in the Linux
+container of scripts/test-linux.ps1.
 #>
 [CmdletBinding()]
 param(
     [string[]]$Path,
-    [switch]$CI
+    [switch]$CI,
+    [switch]$NoBuild
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 if (-not $Path) { $Path = @(Join-Path $root 'tests') }
+if (-not $NoBuild) { & (Join-Path $PSScriptRoot 'build.ps1') }
 
 $pester = Get-Module -ListAvailable Pester | Where-Object { $_.Version -ge [version]'5.0' } |
     Sort-Object Version -Descending | Select-Object -First 1

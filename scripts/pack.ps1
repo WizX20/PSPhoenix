@@ -7,7 +7,8 @@ The zip is what a GitHub Release carries and what the Scoop manifest downloads. 
 `extract_dir: "PSPhoenix"` strips the top-level folder, so the install dir IS the module folder
 (PSPhoenix.psd1 at its root) and the `psmodule` junction ~/scoop/modules/PSPhoenix points straight at it.
 The version comes from src/PSPhoenix/PSPhoenix.psd1 - stamp it first with scripts/set-version.ps1.
-Prints the zip path and its SHA256 (the value bucket/psphoenix.json needs).
+The engine is built first (scripts/build.ps1, Release), so the zip carries lib/PSPhoenix.Engine.dll
+of exactly this version. Prints the zip path and its SHA256 (the value bucket/psphoenix.json needs).
 #>
 [CmdletBinding()]
 param()
@@ -15,6 +16,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $src = Join-Path $root 'src/PSPhoenix'
 $version = (Import-PowerShellDataFile -LiteralPath (Join-Path $src 'PSPhoenix.psd1')).ModuleVersion
+& (Join-Path $PSScriptRoot 'build.ps1') -Configuration Release
 
 $dist = Join-Path $root 'dist'
 $stage = Join-Path $dist 'PSPhoenix'
@@ -26,6 +28,8 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Get-ChildItem -LiteralPath $src -Force | Copy-Item -Destination $stage -Recurse
 Get-ChildItem -LiteralPath $stage -Recurse -Force -Filter '.gitkeep' | Remove-Item -Force
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE'), (Join-Path $root 'NOTICE') -Destination $stage
+# The module does not import without its engine.
+if (-not (Test-Path -LiteralPath (Join-Path $stage 'lib/PSPhoenix.Engine.dll'))) { throw 'the staged module has no lib/PSPhoenix.Engine.dll' }
 
 $zip = Join-Path $dist "PSPhoenix-$version.zip"
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
