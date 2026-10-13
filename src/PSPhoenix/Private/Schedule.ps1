@@ -28,9 +28,10 @@ function Get-PhxPwshPath {
     # Microsoft Store PowerShell lives in a versioned WindowsApps folder that the next update
     # replaces; its execution alias in the user's WindowsApps folder stays.
     param([string]$PowerShellHome = $PSHOME, [string]$LocalAppData = $env:LOCALAPPDATA)
-    $exe = Join-Path $PowerShellHome $(if ($script:OnWindows) { 'pwsh.exe' } else { 'pwsh' })
+    # Combine, not Join-Path: no drive is looked up for a path that is only text here.
+    $exe = [IO.Path]::Combine($PowerShellHome, $(if ($script:OnWindows) { 'pwsh.exe' } else { 'pwsh' }))
     if ($exe -match '[\\/]WindowsApps[\\/]Microsoft\.PowerShell') {
-        $alias = Join-Path $LocalAppData 'Microsoft\WindowsApps\pwsh.exe'
+        $alias = [IO.Path]::Combine($LocalAppData, 'Microsoft', 'WindowsApps', 'pwsh.exe')
         if ([IO.File]::Exists($alias)) { return $alias }
     }
     $exe
@@ -44,7 +45,7 @@ function New-PhxTaskDefinition {
         [string]$ModulePath = (Get-PhxStableModulePath),
         [string]$Pwsh = (Get-PhxPwshPath)
     )
-    $task = Join-Path $ModulePath 'phx-task.ps1'
+    $task = [IO.Path]::Combine($ModulePath, 'phx-task.ps1')
     [pscustomobject]@{
         Execute          = 'conhost.exe'
         Arguments        = "--headless `"$Pwsh`" -NoProfile -NonInteractive -File `"$task`""

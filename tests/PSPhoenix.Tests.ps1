@@ -2351,8 +2351,8 @@ Describe 'schedule' {
             $script:OnWindowsSaved = $script:OnWindows
             $script:OnWindows = $true
             try {
-                Get-PhxPwshPath -PowerShellHome $Store -LocalAppData $Local | Should -Be (Join-Path $Local 'Microsoft\WindowsApps\pwsh.exe')
-                Get-PhxPwshPath -PowerShellHome 'C:\Program Files\PowerShell\7' -LocalAppData $Local | Should -Be (Join-Path 'C:\Program Files\PowerShell\7' 'pwsh.exe')
+                Get-PhxPwshPath -PowerShellHome $Store -LocalAppData $Local | Should -Be ([IO.Path]::Combine($Local, 'Microsoft', 'WindowsApps', 'pwsh.exe'))
+                Get-PhxPwshPath -PowerShellHome 'C:\Program Files\PowerShell\7' -LocalAppData $Local | Should -Be ([IO.Path]::Combine('C:\Program Files\PowerShell\7', 'pwsh.exe'))
             }
             finally { $script:OnWindows = $script:OnWindowsSaved }
         }
@@ -2401,7 +2401,7 @@ Describe 'schedule' {
         InModuleScope PSPhoenix {
             $definition = New-PhxTaskDefinition -Interval ([TimeSpan]::FromMinutes(30)) -ModulePath 'C:\Mods\PSPhoenix' -Pwsh 'C:\PS\pwsh.exe'
             $definition.Execute | Should -Be 'conhost.exe'
-            $definition.Arguments | Should -Be ('--headless "C:\PS\pwsh.exe" -NoProfile -NonInteractive -File "' + (Join-Path 'C:\Mods\PSPhoenix' 'phx-task.ps1') + '"')
+            $definition.Arguments | Should -Be ('--headless "C:\PS\pwsh.exe" -NoProfile -NonInteractive -File "' + [IO.Path]::Combine('C:\Mods\PSPhoenix', 'phx-task.ps1') + '"')
             $definition.LogonDelay | Should -Be ([TimeSpan]::FromMinutes(5))
             $definition.ExecutionLimit | Should -Be ([TimeSpan]::FromMinutes(15))
             $definition.Priority | Should -Be 7
