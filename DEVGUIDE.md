@@ -70,8 +70,9 @@ task help                       # print `phx --help` (the README quotes it)
 
 1. Read [docs/design.md → Provider contract](docs/design.md#provider-contract) and the provider's row in the table.
 2. Create `src/PSPhoenix/Providers/<Name>.ps1` that calls `Register-PhxProvider` with `Name`, `Description`, `Platforms`, `Cadence`, and the `Backup`, `Restore` and `Status` scriptblocks. Helpers only that provider needs stay in its file, prefixed `<Name>`.
-3. Write the round-trip test first.
-4. If the provider deviates from the design, change `docs/design.md` in the same PR.
+3. Stage every file through `Write-PhxStagedText` or `Copy-PhxStagedFile` (`-Context $Context -Path <relative>`). They scan the file for secrets and hold back a file that holds one ([design → Secrets](docs/design.md#secrets)). Never write into `$Context.Staging` directly: the check before publishing would still hold the file back, but by then the plaintext was on disk.
+4. Write the round-trip test first.
+5. If the provider deviates from the design, change `docs/design.md` in the same PR.
 
 ## GitHub account: everything as WizX20
 

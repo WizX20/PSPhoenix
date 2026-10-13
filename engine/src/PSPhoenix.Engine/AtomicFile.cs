@@ -32,6 +32,22 @@ public static class AtomicFile
         }
     }
 
+    /// <summary>Writes <paramref name="bytes"/> as they are.</summary>
+    public static void WriteAllBytes(string path, byte[] bytes)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        string temporary = TemporaryPath(path);
+        try
+        {
+            File.WriteAllBytes(temporary, bytes);
+            MoveIntoPlace(temporary, path);
+        }
+        finally
+        {
+            File.Delete(temporary);
+        }
+    }
+
     /// <summary>Copies <paramref name="source"/> to <paramref name="path"/>.</summary>
     public static void Copy(string source, string path)
     {

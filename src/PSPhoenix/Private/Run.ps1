@@ -135,6 +135,7 @@ function Invoke-PhxRun {
         $succeeded = [Collections.Generic.List[string]]::new()
         $failed = [Collections.Generic.List[string]]::new()
         $trackers = @{}
+        $withheld = @{}
         foreach ($entry in $providers) {
             $name = $entry.Name
             Write-PhxRunLine "${name}:" Cyan
@@ -145,8 +146,10 @@ function Invoke-PhxRun {
                 if ([IO.Directory]::Exists($staging)) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction Stop }
                 [IO.Directory]::CreateDirectory($staging) | Out-Null
                 $context = New-PhxContext -Provider $name -Staging $staging -Config $config -State $state
-                Invoke-PhxLogged -Source $name -Action { & $entry.Backup $context } | Out-Null
+                # Then the last secret check on what it staged, whichever way it got there.
+                Invoke-PhxLogged -Source $name -Action { & $entry.Backup $context; Remove-PhxStagedSecret -Context $context } | Out-Null
                 $trackers[$name] = $context.Files
+                $withheld[$name] = [string[]]@($context.Withheld)
                 $succeeded.Add($name)
             }
             catch {
@@ -167,8 +170,9 @@ function Invoke-PhxRun {
                 continue
             }
             # Its last run is the start of this one; what it saw is what its next run compares with.
-            $state.Succeeded($name, $started, $trackers[$name])
-            Write-PhxRunLine ('  {0}: {1} written, {2} unchanged, {3} removed' -f $name, $result.Written, $result.Unchanged, $result.Removed)
+            $state.Succeeded($name, $started, $trackers[$name], $withheld[$name])
+            $held = if ($withheld[$name].Count) { ", $($withheld[$name].Count) held back (secrets)" } else { '' }
+            Write-PhxRunLine ('  {0}: {1} written, {2} unchanged, {3} removed{4}' -f $name, $result.Written, $result.Unchanged, $result.Removed, $held)
         }
         $state.LastRun = [PSPhoenix.Engine.RunRecord]::new($started, [string[]]@($providers | ForEach-Object Name), [string[]]@($failed), $script:PhxRunLog)
         $seconds = [Math]::Round(([DateTime]::UtcNow - $started).TotalSeconds, 1)
