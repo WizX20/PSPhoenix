@@ -1,1 +1,0 @@
-- fix: repos - a clone from a `*.ghe.com` host gets its token in `GH_TOKEN`, where gh reads it, not in `GH_ENTERPRISE_TOKEN`

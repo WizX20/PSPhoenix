@@ -1,1 +1,0 @@
-- fix: config - an `interval`, a provider's `enabled` or `cadence` that is not valid makes the config invalid, with the key named, instead of being used as it is

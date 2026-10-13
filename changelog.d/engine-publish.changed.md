@@ -1,1 +1,0 @@
-- refactor: engine - publishing the snapshot runs in the engine. A file in the snapshot that cannot be removed is named in the error too, and a rename that only changes case is recorded under its new spelling
