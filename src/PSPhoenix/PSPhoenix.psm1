@@ -42,7 +42,7 @@ and settings, and the machine setup - winget, Scoop, PowerShell, Windows Termina
 environment variables.
 
 USAGE:
-  phx init                        set up or change: roots, accounts, target, interval
+  phx init                        set up or change: roots, accounts, target, machine, interval
   phx status                      what is set up, and what needs attention
   phx scan                        re-discover repositories under the roots
   phx roots add|rm|list [<path>]  the folders that hold your repositories; add: -Depth <n>
