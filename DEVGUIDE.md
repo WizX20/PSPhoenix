@@ -9,11 +9,14 @@ src/PSPhoenix/PSPhoenix.psm1        loader, help, the `phx` dispatcher and its c
 src/PSPhoenix/PSPhoenix.psd1        module manifest (ModuleVersion is the release version)
 src/PSPhoenix/Private/*.ps1         helpers, one file per concern (paths, config, provider registry, ...)
 src/PSPhoenix/Providers/*.ps1       one file per backup unit; each calls Register-PhxProvider at import
+src/PSPhoenix/lib/                  PSPhoenix.Engine.dll - build output of engine/ (task build), not in git, in the zip
+engine/src/PSPhoenix.Engine/        the engine: C# (.NET 8) - atomic writes, hashing; publishing and state next
+engine/tests/PSPhoenix.Engine.Tests/ its xUnit v3 tests, with FluentAssertions 7
 tests/PSPhoenix.Tests.ps1           Pester 5+ suite; never touches the real home, registry or Task Scheduler
 tests/Scripts.Tests.ps1             the dev scripts in scripts/ (dev-link, cut-changelog), each pointed at $TestDrive
 docs/design.md                      the design and the roadmap - the contract the code builds towards
 changelog.d/                        one release-notes fragment per pull request; the release folds them into CHANGELOG.md
-scripts/                            lint / test / pack / set-version / cut-changelog / dev-link
+scripts/                            build / lint / test / pack / set-version / cut-changelog / dev-link
 bucket/psphoenix.json               Scoop manifest; this repo doubles as the Scoop bucket
 .github/workflows/ci.yml            lint + test on pwsh (Windows and Linux), then pack
 .github/workflows/release.yml       weekly / manual release: stamp, test, pack, bump bucket, tag, GitHub Release
@@ -21,7 +24,7 @@ bucket/psphoenix.json               Scoop manifest; this repo doubles as the Sco
 Taskfile.yml                        `task --list`
 ```
 
-The loader dot-sources `Private/` and then `Providers/`, each in file-name order. Only `phx` is exported.
+The loader loads the engine from `lib/`, then dot-sources `Private/` and then `Providers/`, each in file-name order. Only `phx` is exported.
 
 ## Running from source
 
@@ -33,23 +36,34 @@ task unlink                     # remove the junction
 
 Or skip the junction and load by path: `Import-Module ./src/PSPhoenix -Force`.
 
-Requires **PowerShell 7.4+**, git, and [Task](https://taskfile.dev) for the `task` shortcuts (every task is a one-liner you can also run by hand). Unlike PSWorktree and PSVsCommand there is no Windows PowerShell 5.1 support: the scheduled run, parallel clones (`ForEach-Object -Parallel`), `ConvertFrom-Json -AsHashtable` and the crypto lean on PowerShell 7.
+Requires **PowerShell 7.4+**, git, the **.NET SDK 10+** for the engine (`winget install Microsoft.DotNet.SDK.10`; its tests also need the .NET 8 runtime), and [Task](https://taskfile.dev) for the `task` shortcuts (every task is a one-liner you can also run by hand). Unlike PSWorktree and PSVsCommand there is no Windows PowerShell 5.1 support: the scheduled run, parallel clones (`ForEach-Object -Parallel`), `ConvertFrom-Json -AsHashtable` and the engine lean on PowerShell 7.
+
+### The engine
+
+`engine/` is a C# library the module loads from `src/PSPhoenix/lib/` ([design](docs/design.md#engine)). `task build` (`scripts/build.ps1`) builds it in Release with the module's version and copies the DLL there; `task test`, `task pack`, `task help` and `task link` build first, so you rarely call it yourself. An unchanged build copies nothing.
+
+- **One engine per session.** .NET never unloads an assembly: after a C# change, start a new PowerShell session before `Import-Module PSPhoenix -Force`. The module refuses to import with another engine than the one the session loaded (it compares the DLL's SHA-256), so a stale engine never runs under new scripts; the same engine from another folder is fine.
+- **No held DLL.** The module loads the engine from its bytes (`[Reflection.Assembly]::Load`), so no session holds `lib/PSPhoenix.Engine.dll` open: a build, an update or an uninstall replaces it while sessions run.
+- **Errors.** The PowerShell wrappers rethrow the engine's exception itself, so a message reads `<path> is not a full path`, not `Exception calling "WriteAllText" with "2" argument(s): ...`. Do the same for a new call into the engine.
+- The engine depends on nothing but .NET: a NuGet package there would have to match the one PowerShell loaded already. Paths into it are always full paths - .NET resolves a relative one against the process's folder, not PowerShell's location, so the engine refuses them.
 
 ## Tests and lint
 
 ```powershell
-task check                      # lint + test, what CI runs
+task check                      # lint + engine tests + Pester, what CI runs
 task lint                       # PSScriptAnalyzer over src/, scripts/, tests/
-task test                       # Pester; `task test -- tests/PSPhoenix.Tests.ps1` for one file
+task test:engine                # the engine's xUnit tests (dotnet test in engine/)
+task test                       # Pester, after task build; `task test -- tests/PSPhoenix.Tests.ps1` for one file
 task test:linux                 # the same suite in a Linux container (Docker), like CI's pwsh-linux job
 task help                       # print `phx --help` (the README quotes it)
 ```
 
+- The engine's tests are **xUnit v3** on Microsoft.Testing.Platform (`engine/global.json` opts `dotnet test` in; run it from `engine/`) with **FluentAssertions 7**. Stay on 7.x: from 8.0 on FluentAssertions carries a commercial license; Dependabot ignores its major updates. A behaviour of the engine gets an xUnit test; the Pester suite keeps testing what `phx` does with it.
 - Tests need **Pester 5+** (`Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser -Force -SkipPublisherCheck`) and lint needs **PSScriptAnalyzer** (`Install-Module PSScriptAnalyzer -Scope CurrentUser`). On CI both are installed on the fly when missing.
 - **Nothing in the suite may touch the real machine.** Config and state paths derive from `APPDATA`/`LOCALAPPDATA` (Windows) and `XDG_CONFIG_HOME`/`XDG_STATE_HOME` (elsewhere); `Use-TestHome` points them into `$TestDrive`. Providers follow the same rule: a fake home per test, and anything that reaches outside the file system (the registry, Task Scheduler, `winget`, `scoop`, `gh`) goes through a small wrapper function the tests mock.
 - **Every provider gets a round-trip test**: back up into one `$TestDrive` home, restore into another, compare. Git-backed tests build throwaway repositories (a bare `origin` plus a clone) the way PSWorktree's suite does.
 - `phx` prints through `Write-Host`; tests capture it with `6>&1` (the `Get-PhxOutput { phx ... }` helper). Call `phx` with real switches inside the block — splatting `'-Provider'` as a string would bind it positionally.
-- CI runs the suite on Windows and Linux (pwsh); `task test:linux` runs the Linux half locally in a throwaway `mcr.microsoft.com/powershell` container, with the working copy mounted read-only. No `\` in a path that reaches git or gets compared: build paths with `Join-Path`, match separators in test regexes with `[\\/]`.
+- CI runs both suites on Windows and Linux; `task test:linux` runs the Pester half locally in a throwaway `mcr.microsoft.com/powershell` container, with the working copy mounted read-only and the engine built on the host first. No `\` in a path that reaches git or gets compared: build paths with `Join-Path`, match separators in test regexes with `[\\/]`.
 - When `task help` changes, paste it into the README's help block. Three lines differ per machine or release — keep `PSPhoenix <version>`, `config: %APPDATA%\PSPhoenix\config.json` and `module: <module folder>` there. A test compares the two with those three lines normalised, so a help change without the README fails `task test`.
 
 ## Adding a provider

@@ -1,6 +1,14 @@
 # Build output (task pack / CI): the release zip, the staged module folder, test results
 dist/
 
+# The engine's build output; scripts/build.ps1 copies the DLL into the module's lib/
+src/PSPhoenix/lib/
+engine/**/bin/
+engine/**/obj/
+engine/**/TestResults/
+.vs/
+*.user
+
 # Claude Code session state (worktrees, locks); the project skills are shared
 .claude/*
 !.claude/skills/

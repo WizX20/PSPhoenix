@@ -164,6 +164,13 @@ jobs:
           # this job, and none of them needs to push. Only the push step gets the token.
           persist-credentials: false
 
+      # The engine (engine/): SDK 10 builds it, its tests run on .NET 8.
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
       - name: Stamp version and changelog
         shell: pwsh
         run: |
@@ -172,10 +179,15 @@ jobs:
           ./scripts/cut-changelog.ps1 -Version $env:VERSION -FallbackFromGit | Out-Null
           Get-Content dist/release-notes.md
 
+      # The engine is built with the stamped version: test.ps1 builds it, pack.ps1 ships it.
       - name: Lint + test the stamped module
         shell: pwsh
         run: |
           ./scripts/lint.ps1
+          Push-Location engine
+          dotnet test --configuration Release
+          if ($LASTEXITCODE) { throw "engine tests failed ($LASTEXITCODE)" }
+          Pop-Location
           ./scripts/test.ps1
 
       - name: Pack

@@ -68,7 +68,7 @@ Unblock-File .\PSPhoenix-<version>.zip
 Expand-Archive .\PSPhoenix-<version>.zip -DestinationPath (Join-Path (Split-Path $PROFILE.CurrentUserAllHosts) 'Modules')
 ```
 
-To update, delete that `PSPhoenix` folder and extract the new zip. **From a checkout** (to work on PSPhoenix itself): `task link`, see [DEVGUIDE.md](DEVGUIDE.md#running-from-source).
+To update, delete that `PSPhoenix` folder and extract the new zip. **From a checkout** (to work on PSPhoenix itself): `task link` - it builds the engine, which needs the .NET SDK 10 or newer - see [DEVGUIDE.md](DEVGUIDE.md#running-from-source).
 
 ## Help: `phx help`
 

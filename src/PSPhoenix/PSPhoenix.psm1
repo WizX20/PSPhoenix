@@ -5,11 +5,33 @@
 # environment). The design, including what is not built yet, is docs/design.md.
 #
 # Exports one command, `phx`. Helpers live in Private/, one file per concern; every backup unit is
-# a provider in Providers/ that registers itself through Register-PhxProvider. PowerShell 7.4+:
-# unlike PSWorktree this module is not 5.1-compatible - the scheduled run, the parallel clones and
-# the JSON handling lean on PowerShell 7.
+# a provider in Providers/ that registers itself through Register-PhxProvider. What moves many
+# files is the engine, a C# library in lib/ (engine/ in the repository). PowerShell 7.4+: unlike
+# PSWorktree this module is not 5.1-compatible - the scheduled run, the parallel clones, the JSON
+# handling and the engine lean on PowerShell 7.
 
 $script:OnWindows = [System.Environment]::OSVersion.Platform -eq 'Win32NT'
+
+# The engine (docs/design.md -> Engine), loaded from its bytes: no process holds the DLL open, so
+# an update, an uninstall or a build replaces it while sessions run. .NET never unloads it, though:
+# a session keeps the engine it loaded first. Importing the module again with the same engine -
+# from any folder - reuses it; one with another engine (an update, another working copy) needs a
+# new session, or the old engine would answer for the new scripts.
+$script:PhxEnginePath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'lib/PSPhoenix.Engine.dll'))
+if (-not [IO.File]::Exists($script:PhxEnginePath)) {
+    throw "$script:PhxEnginePath is missing - the release zip carries it; in a working copy build it: task build"
+}
+$bytes = [IO.File]::ReadAllBytes($script:PhxEnginePath)
+$engine = '{0} {1}' -f [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)), $script:PhxEnginePath
+$loaded = [AppDomain]::CurrentDomain.GetData('PSPhoenix.Engine')
+if (-not $loaded) {
+    [Reflection.Assembly]::Load($bytes) | Out-Null
+    [AppDomain]::CurrentDomain.SetData('PSPhoenix.Engine', $engine)
+}
+elseif (($loaded -split ' ', 2)[0] -ne ($engine -split ' ', 2)[0]) {
+    throw "this session runs the PSPhoenix engine from $(($loaded -split ' ', 2)[1]); $script:PhxEnginePath is another one - start a new PowerShell session to import PSPhoenix from $PSScriptRoot"
+}
+Remove-Variable bytes, engine, loaded
 # No module-wide $ErrorActionPreference: a caller's 'Stop' must reach phx's errors. (From
 # PowerShell 7.2 on, a native tool's stderr is no error record unless redirected, so 'Stop' does
 # not turn git's progress output into a throw.)

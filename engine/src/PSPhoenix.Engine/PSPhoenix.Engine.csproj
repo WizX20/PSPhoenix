@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The engine of the PSPhoenix module: what moves many files or holds the state. PowerShell calls
+       its public classes; it depends on nothing but .NET itself - a package here would have to
+       match the one PowerShell already loaded. scripts/build.ps1 builds it into src/PSPhoenix/lib
+       with the module's version. -->
+  <PropertyGroup>
+    <RootNamespace>PSPhoenix.Engine</RootNamespace>
+    <AssemblyName>PSPhoenix.Engine</AssemblyName>
+    <Description>The engine of PSPhoenix (phx): writing, hashing and publishing files.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="PSPhoenix.Engine.Tests" />
+  </ItemGroup>
+</Project>

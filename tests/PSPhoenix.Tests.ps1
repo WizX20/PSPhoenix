@@ -176,6 +176,65 @@ Describe 'module surface' {
     }
 }
 
+Describe 'engine' {
+    # The C# library in lib/ (engine/ in the repository; its own tests are in engine/tests).
+    BeforeAll {
+        $script:ModuleDir = Split-Path $script:ModulePath -Parent
+        $script:EngineDll = [IO.Path]::GetFullPath((Join-Path $script:ModuleDir 'lib/PSPhoenix.Engine.dll'))
+        $script:Engine = [AppDomain]::CurrentDomain.GetAssemblies().Where({ $_.GetName().Name -eq 'PSPhoenix.Engine' }, 'First')[0]
+    }
+
+    It 'is loaded from lib in the module folder, from its bytes' {
+        $script:Engine | Should -Not -BeNullOrEmpty
+        ([AppDomain]::CurrentDomain.GetData('PSPhoenix.Engine') -split ' ', 2)[1] | Should -Be $script:EngineDll
+        # Loaded from bytes, the assembly has no file behind it.
+        $script:Engine.Location | Should -BeNullOrEmpty
+    }
+
+    It 'does not hold the DLL open: an update or a build can replace it while sessions run' {
+        $copy = Join-Path (Use-TestHome) 'PSPhoenix'
+        Copy-Item -LiteralPath $script:ModuleDir -Destination $copy -Recurse
+        $dll = Join-Path $copy 'lib/PSPhoenix.Engine.dll'
+        $pwsh = (Get-Process -Id $PID).Path
+        # The session that imported the module opens the file exclusively, then deletes it.
+        $command = "Import-Module '$copy'; [IO.File]::Open('$dll', 'Open', 'ReadWrite', 'None').Dispose(); Remove-Item -LiteralPath '$dll'; 'replaceable'"
+        & $pwsh -NoProfile -NonInteractive -Command $command 2>&1 | Out-String | Should -Match 'replaceable'
+    }
+
+    It 'carries the version of the module' {
+        # scripts/build.ps1 stamps it: a release ships the engine it tested.
+        $version = $script:Engine.GetName().Version
+        "$($version.Major).$($version.Minor).$($version.Build)" | Should -Be (Get-Module PSPhoenix).Version.ToString()
+    }
+
+    It 'is required: a module folder without it does not import, and says how to build it' {
+        $copy = Join-Path (Use-TestHome) 'PSPhoenix'
+        Copy-Item -LiteralPath $script:ModuleDir -Destination $copy -Recurse
+        Remove-Item -LiteralPath (Join-Path $copy 'lib') -Recurse -Force
+        $pwsh = (Get-Process -Id $PID).Path
+        $output = & $pwsh -NoProfile -NonInteractive -Command "Import-Module '$copy'" 2>&1 | Out-String
+        $LASTEXITCODE | Should -Not -Be 0
+        $output | Should -Match 'PSPhoenix\.Engine\.dll is missing'
+        $output | Should -Match 'task build'
+    }
+
+    It 'imports again with the same engine from any folder, and refuses another engine in the same session' {
+        # .NET keeps the first engine for the session: another one - an update, another working copy
+        # - would run on it. The same engine under another path (a junction, a copy) is fine.
+        $root = Use-TestHome
+        $same = Join-Path $root 'same/PSPhoenix'
+        $other = Join-Path $root 'other/PSPhoenix'
+        Copy-Item -LiteralPath $script:ModuleDir -Destination (New-Item -ItemType Directory -Path (Split-Path $same)).FullName -Recurse
+        Copy-Item -LiteralPath $script:ModuleDir -Destination (New-Item -ItemType Directory -Path (Split-Path $other)).FullName -Recurse
+        [IO.File]::AppendAllText((Join-Path $other 'lib/PSPhoenix.Engine.dll'), 'another build')
+        $pwsh = (Get-Process -Id $PID).Path
+        $command = "Import-Module '$script:ModulePath'; Import-Module '$script:ModulePath' -Force; Import-Module '$same' -Force; 'again'; Import-Module '$other' -Force"
+        $output = & $pwsh -NoProfile -NonInteractive -Command $command 2>&1 | Out-String
+        $output | Should -Match 'again'
+        $output | Should -Match 'this session runs the PSPhoenix engine from .*another one - start a new PowerShell session'
+    }
+}
+
 Describe 'paths' {
     It 'keeps config and state apart, both under the redirected home' {
         $root = Use-TestHome
@@ -325,6 +384,8 @@ Describe 'config' {
         @{ Case = 'provider settings are no object'; Json = '{ "version": 1, "providers": { "winget": true } }'; Message = '*providers.winget must be an object*' }
         @{ Case = 'provider enabled is no boolean'; Json = '{ "version": 1, "providers": { "winget": { "enabled": "no" } } }'; Message = '*providers.winget.enabled must be true or false*' }
         @{ Case = 'provider cadence is no duration'; Json = '{ "version": 1, "providers": { "winget": { "cadence": "daily" } } }'; Message = "*providers.winget.cadence 'daily' must look like 30m, 1h or 1d*" }
+        @{ Case = 'target is a relative path'; Json = '{ "version": 1, "target": { "type": "folder", "path": "Backups" } }'; Message = '*target Backups is not a full path*' }
+        @{ Case = 'target is no object'; Json = '{ "version": 1, "target": "D:/Backups" }'; Message = '*target must be an object*' }
     ) {
         Use-TestHome | Out-Null
         InModuleScope PSPhoenix -Parameters @{ Json = $Json } {
@@ -2796,6 +2857,15 @@ Describe 'atomic writes' {
         $misses = $reader | Wait-Job | Receive-Job
         Remove-Job $reader
         $misses | Should -Be 0
+    }
+
+    It 'fails with what the engine says, not wrapped in "Exception calling"' {
+        # The message reaches the user (phx status, a failed run).
+        { InModuleScope PSPhoenix { Write-PhxTextFile -Path 'relative.json' -Value 'x' } } |
+            Should -Throw -ExpectedMessage 'relative.json is not a full path*'
+        $missing = Join-Path (Use-TestHome) 'missing.txt'
+        { InModuleScope PSPhoenix -Parameters @{ Path = $missing } { param($Path) Get-PhxFileHash -Path $Path } } |
+            Should -Throw -ExceptionType ([IO.FileNotFoundException])
     }
 }
 
