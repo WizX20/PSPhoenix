@@ -50,6 +50,9 @@ public enum SecretKind
 
     /// <summary>Text the scan could not finish: treated as a secret, never as clean.</summary>
     Unscannable,
+
+    /// <summary>A file secret by its name or by a decision in the review (<c>.env</c>, <c>*.pfx</c>), whatever its content.</summary>
+    SecretFile,
 }
 
 /// <summary>
@@ -255,6 +258,7 @@ public static partial class SecretScanner
         SecretKind.Password => "a password",
         SecretKind.SecretValue => "a secret value",
         SecretKind.Unscannable => "text the secret scan could not finish",
+        SecretKind.SecretFile => "a secret file",
         _ => kind.ToString(),
     };
 

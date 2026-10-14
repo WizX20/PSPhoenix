@@ -33,6 +33,8 @@ function Format-PhxWithheld {
     # many more secrets it holds. Never the secret.
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][object[]]$Findings)
     $first = $Findings[0]
+    # A file secret by its name has no line to point at.
+    if ($first.Kind -eq [PSPhoenix.Engine.SecretKind]::SecretFile) { return "$($Path.Replace('\', '/')): $($first.Description)" }
     $more = if ($Findings.Count -gt 1) { " (and $($Findings.Count - 1) more)" } else { '' }
     "$($Path.Replace('\', '/')) line $($first.Line): $($first.Description)$more"
 }
@@ -71,10 +73,11 @@ function Write-PhxStagedText {
 
 function Copy-PhxStagedFile {
     # Stages a copy of $Source at $Path, relative to the provider's staging folder. A binary file
-    # is copied unscanned: whether it is secret goes by its name, which the provider decides on.
-    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Path)
+    # is copied unscanned: whether it is secret goes by its name, which the provider decides on -
+    # -Secret stages it only encrypted, whatever its content (a .env, a .pfx).
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Path, [switch]$Secret)
     $target = Resolve-PhxStagedPath -Context $Context -Path $Path
-    try { $staged = [PSPhoenix.Engine.StagingWriter]::CopyFile($Source, $target, $Context.Sealer) }
+    try { $staged = [PSPhoenix.Engine.StagingWriter]::CopyFile($Source, $target, $Context.Sealer, [bool]$Secret) }
     catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
     Add-PhxStagedResult -Context $Context -Path $Path -Staged $staged
 }

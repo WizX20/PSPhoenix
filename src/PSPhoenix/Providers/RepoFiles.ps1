@@ -1,0 +1,288 @@
+# The repo-files provider (docs/design.md -> Gitignored files: filters and review): the gitignored
+# files of each repository that matter - local config, a secret source, IDE user files. Git lists
+# them, the engine walks and filters them (IgnoredFiles), and the review's decisions in the config
+# (FileRules) say which go into the snapshot: a candidate nobody decided on is pending and is not
+# backed up. A file secret by its name or content is stored only as <name>.age. Restore copies them
+# back into the repository's new place, decrypting the secrets; a file that differs is never
+# overwritten.
+#
+# Snapshot: repo-files/<identity>/<path>, and files.json - which repository each folder belongs to
+# (its root and path) and which files are in it, so a restore needs nothing else.
+
+$script:PhxRepoFilesFormat = 1
+
+function Get-PhxRepoFilesStatePath { Join-Path (Get-PhxStateDir) 'repo-files.json' }
+
+function Get-PhxRepoFileRule {
+    # The review's decisions for one repository as the engine's FileRules: its own include, secret
+    # and exclude patterns, and the exclude patterns for every repository (files.exclude).
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [Parameter(Mandatory)][string]$Identity)
+    $files = $Config.files
+    $own = if ($files.repos -is [System.Collections.IDictionary]) { $files.repos[$Identity] }
+    $include = [string[]]@($own.include | Where-Object { $_ })
+    $secret = [string[]]@($own.secret | Where-Object { $_ })
+    $exclude = [string[]]@(@($own.exclude) + @($files.exclude) | Where-Object { $_ })
+    try { [PSPhoenix.Engine.FileRules]::new($include, $secret, $exclude) }
+    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
+}
+
+function Get-PhxIgnoredFile {
+    # The gitignored files of one repository's main worktree, through the built-in filters (the
+    # engine's IgnoredFiles): git lists them - an ignored folder as one entry - and the engine walks
+    # the folders. Returns an IgnoredFileList.
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][long]$MaxBytes, [string[]]$SecretPatterns = @())
+    $output = @(Invoke-PhxGit -Repository $Path -Arguments 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '--no-empty-directory', '-z') -join "`n"
+    $entries = [string[]]@($output.Split([char]0) | Where-Object { $_ })
+    try { [PSPhoenix.Engine.IgnoredFiles]::List($Path, $entries, $MaxBytes, $SecretPatterns) }
+    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
+}
+
+function Get-PhxMaxFileBytes {
+    # The size cap: files.maxKB (default 1 MB). A larger file needs an explicit include.
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config)
+    $kb = $Config.files.maxKB
+    if ($kb -isnot [int] -and $kb -isnot [long]) { $kb = 1024 }
+    [long]$kb * 1024
+}
+
+function Get-PhxRepoFileCandidate {
+    # One repository's gitignored files with the decision on each: { Path, Size, SecretName,
+    # Filter, Decision }, and whether the walk was cut short. Throws when git cannot list them.
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Record, [Parameter(Mandatory)][System.Collections.IDictionary]$Config)
+    $own = if ($Config.files.repos -is [System.Collections.IDictionary]) { $Config.files.repos[$Record.identity] }
+    $list = Get-PhxIgnoredFile -Path (Get-PhxRepoKey $Record) -MaxBytes (Get-PhxMaxFileBytes $Config) -SecretPatterns ([string[]]@($own.secret | Where-Object { $_ }))
+    $rules = Get-PhxRepoFileRule -Config $Config -Identity $Record.identity
+    [pscustomobject]@{
+        Files     = @(foreach ($file in $list.Files) {
+                [pscustomobject]@{ Path = $file.Path; Size = $file.Size; SecretName = $file.SecretName; Filter = "$($file.Filter)"; Decision = "$($rules.Decide($file))" }
+            })
+        Truncated = $list.Truncated
+    }
+}
+
+function ConvertTo-PhxSnapshotFolder {
+    # A repository identity as a folder path in the snapshot: its segments, each a valid file name
+    # on every platform.
+    param([Parameter(Mandatory)][string]$Identity)
+    $segments = foreach ($segment in $Identity.Split('/', [StringSplitOptions]::RemoveEmptyEntries)) {
+        $clean = $segment -replace '[<>:"|?*\\\x00-\x1f]', '_'
+        if ($clean -in '.', '..') { '_' } else { $clean.TrimEnd('.', ' ') }
+    }
+    @($segments) -join '/'
+}
+
+function Get-PhxRepoFolderMap {
+    # The snapshot folder of each repository, by its place on disk: its identity, and for the same
+    # remote cloned twice a ~2, ~3 after the second one - in path order, so it stays put.
+    param([object[]]$Records = @())
+    $map = [ordered]@{}
+    $used = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($record in @($Records | Sort-Object { Get-PhxRepoKey $_ })) {
+        $base = ConvertTo-PhxSnapshotFolder $record.identity
+        $folder = $base
+        for ($n = 2; -not $used.Add($folder); $n++) { $folder = "$base~$n" }
+        $map[(Get-PhxRepoKey $record)] = $folder
+    }
+    $map
+}
+
+function Read-PhxRepoFilesManifest {
+    # files.json of a repo-files folder - staging or snapshot - or nothing.
+    param([Parameter(Mandatory)][string]$Folder)
+    $file = Join-Path $Folder 'files.json'
+    if (-not [IO.File]::Exists($file)) { return }
+    $document = ConvertTo-PhxCaseInsensitive (Get-Content -LiteralPath $file -Raw | ConvertFrom-Json -AsHashtable)
+    if ($document.format -gt $script:PhxRepoFilesFormat) { throw "$file was written by a newer PSPhoenix (format $($document.format)) - update PSPhoenix first" }
+    $document
+}
+
+function Copy-PhxPublishedRepoFile {
+    # A repository this run cannot read (an offline root, git refusing it): what the last backup
+    # holds of it goes into staging again, so publishing does not remove it from the snapshot.
+    # Returns its manifest entry, or nothing when the last backup has none.
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Key)
+    $snapshot = try { Join-Path (Get-PhxSnapshotPath $Context.Config) $Context.Provider } catch { return }
+    $manifest = try { Read-PhxRepoFilesManifest $snapshot } catch { return }
+    $entry = @($manifest.repositories | Where-Object { $_ -and [string]::Equals((Get-PhxRepoPath -Root $_.root -RelativePath $_.path), $Key, (Get-PhxPathComparison)) })[0]
+    if (-not $entry) { return }
+    foreach ($file in @($entry.files)) {
+        $source = Join-Path (Join-Path $snapshot $entry.folder) $file.stored
+        if (-not [IO.File]::Exists($source)) { continue }
+        # Already as the snapshot needs it: plain, or encrypted.
+        Copy-PhxStagedFile -Context $Context -Source $source -Path "$($entry.folder)/$($file.stored)"
+    }
+    $entry
+}
+
+function Backup-PhxRepoFiles {
+    # The decided gitignored files of every repository the last scan found, into staging under the
+    # repository's folder, and files.json. Pending ones are counted, not copied: the state folder
+    # keeps the list for phx status and the review.
+    param([Parameter(Mandatory)]$Context)
+    $cache = Read-PhxRepoCache
+    if (-not $cache) { & $Context.Log 'no scan yet - phx scan'; return }
+    $records = @(Get-PhxScannedRecord -Cache $cache -Config $Context.Config)
+    $folders = Get-PhxRepoFolderMap $records
+    $manifest = [Collections.Generic.List[object]]::new()
+    $pending = [Collections.Generic.List[object]]::new()
+    $copied = 0
+    foreach ($record in $records) {
+        $key = Get-PhxRepoKey $record
+        $folder = $folders[$key]
+        $candidates = $null
+        if (-not $record.offline -and [IO.Directory]::Exists((Join-Path $key '.git'))) {
+            try { $candidates = Get-PhxRepoFileCandidate -Record $record -Config $Context.Config }
+            catch { & $Context.Log "could not list the gitignored files of ${key}: $(Hide-PhxSecret $_.Exception.Message)" 'Warn' }
+        }
+        if (-not $candidates) {
+            if ($Context.DryRun) { continue }
+            $kept = Copy-PhxPublishedRepoFile -Context $Context -Key $key
+            if ($kept) {
+                & $Context.Log "${key}: not readable now - kept the $(@($kept.files).Count) file(s) of the last backup" 'Warn'
+                $manifest.Add($kept)
+            }
+            continue
+        }
+        if ($candidates.Truncated) { & $Context.Log "${key}: more than $([PSPhoenix.Engine.IgnoredFiles]::MaxFiles) gitignored files outside the filtered folders - only the first are looked at; exclude the folder that holds them" 'Warn' }
+        $waiting = @($candidates.Files | Where-Object Decision -EQ 'Pending')
+        if ($waiting.Count) {
+            $pending.Add([ordered]@{
+                    identity = $record.identity
+                    path     = $key
+                    files    = @($waiting | ForEach-Object { [ordered]@{ path = $_.Path; size = $_.Size; secret = $_.SecretName } })
+                })
+        }
+        $stored = [Collections.Generic.List[object]]::new()
+        foreach ($file in @($candidates.Files | Where-Object Decision -In 'Include', 'Secret')) {
+            $target = "$folder/$($file.Path)"
+            if ($Context.DryRun) { & $Context.Log "would back up $target" 'Action'; continue }
+            # A file can go while the run looks at it: the next run sees it gone.
+            try { Copy-PhxStagedFile -Context $Context -Source ([IO.Path]::GetFullPath((Join-Path $key $file.Path))) -Path $target -Secret:($file.Decision -eq 'Secret') }
+            catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { continue }
+            # Encrypted, plain, or held back for lack of a key.
+            $name = if ($Context.Sealed.Contains("$target.age")) { "$($file.Path).age" }
+            elseif ([IO.File]::Exists((Join-Path $Context.Staging $target))) { $file.Path }
+            if (-not $name) { continue }
+            $stored.Add([ordered]@{ path = $file.Path; stored = $name })
+            $copied++
+        }
+        if ($stored.Count) { $manifest.Add([ordered]@{ identity = $record.identity; root = $record.root; path = $record.path; folder = $folder; files = @($stored) }) }
+    }
+    $waitingCount = [int]($pending | ForEach-Object { $_.files.Count } | Measure-Object -Sum).Sum
+    $note = if ($waitingCount) { ", $waitingCount pending in $($pending.Count) repositories - not backed up until decided" } else { '' }
+    if ($Context.DryRun) { & $Context.Log "would back up the decided files$note" 'Action'; return }
+    if ($manifest.Count) {
+        $document = [ordered]@{ format = $script:PhxRepoFilesFormat; repositories = @($manifest) }
+        Write-PhxStagedText -Context $Context -Path 'files.json' -Value ($document | ConvertTo-Json -Depth 6) -FailOnSecret
+    }
+    Write-PhxTextFile -Path (Get-PhxRepoFilesStatePath) -Value ([ordered]@{ at = [DateTime]::UtcNow.ToString('o'); repositories = @($pending) } | ConvertTo-Json -Depth 6)
+    & $Context.Log "$copied file(s) from $($manifest.Count) repositories$note"
+}
+
+function Resolve-PhxRestoreRepoPath {
+    # Where a recorded repository lives on this machine: under its root, or the new root the
+    # restore maps it to. Nothing when the root is no path here (C:\Repos on Linux, unmapped).
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Entry, [Parameter(Mandatory)]$Context)
+    $root = if ($Context.RootMap.Contains("$($Entry.root)")) { $Context.RootMap["$($Entry.root)"] } else { "$($Entry.root)" }
+    if (-not [IO.Path]::IsPathFullyQualified($root)) { return }
+    if ([IO.Path]::IsPathRooted("$($Entry.path)")) { throw "its path $($Entry.path) is not relative to its root - refused" }
+    $path = Get-PhxRepoPath -Root $root -RelativePath $Entry.path
+    if (-not (Test-PhxPathWithin $path $root)) { throw "its path $($Entry.path) leads out of the root $root - refused" }
+    $path
+}
+
+function Restore-PhxRepoFile {
+    # One file back into a repository: written when it is not there, left alone when it is the
+    # same, and when it differs too - with a warning. A secret is decrypted with the age key the
+    # restore was given. Returns restored, present, differs or skipped.
+    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Target, [switch]$Encrypted, [Parameter(Mandatory)]$Context)
+    $bytes = [IO.File]::ReadAllBytes($Source)
+    if ($Encrypted) {
+        if (-not $Context.Identity) { & $Context.Log "$Target is encrypted and this restore has no age key - skipped" 'Warn'; return 'skipped' }
+        try { $bytes = [PSPhoenix.Engine.Age]::Decrypt($bytes, $Context.Identity) }
+        catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
+    }
+    if ([IO.File]::Exists($Target)) {
+        if ([Linq.Enumerable]::SequenceEqual([byte[]]$bytes, [byte[]][IO.File]::ReadAllBytes($Target))) { return 'present' }
+        & $Context.Log "$Target differs from the backup - left as it is" 'Warn'
+        return 'differs'
+    }
+    if ($Context.DryRun) { & $Context.Log "would restore $Target" 'Action'; return 'restored' }
+    try { [PSPhoenix.Engine.AtomicFile]::WriteAllBytes($Target, $bytes) }
+    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
+    'restored'
+}
+
+function Restore-PhxRepoFiles {
+    # The backed-up gitignored files back into each repository's place on this machine - after the
+    # repos provider has cloned it. Idempotent: a second run finds every file in place.
+    param([Parameter(Mandatory)]$Context)
+    $manifest = Read-PhxRepoFilesManifest $Context.Staging
+    if (-not $manifest) { & $Context.Log 'no gitignored files in this snapshot'; return }
+    $counts = [ordered]@{ restored = 0; present = 0; differs = 0; skipped = 0; failed = 0 }
+    foreach ($entry in @($manifest.repositories | Where-Object { $_ })) {
+        if ($Context.Select.Count -and $Context.Select -notcontains $entry.identity) { continue }
+        $files = @($entry.files | Where-Object { $_ })
+        try { $repo = Resolve-PhxRestoreRepoPath -Entry $entry -Context $Context }
+        catch { & $Context.Log "$($entry.identity): $($_.Exception.Message)" 'Warn'; $counts.failed += $files.Count; continue }
+        if (-not $repo -or -not [IO.Directory]::Exists($repo)) {
+            $where = if ($repo) { "$repo not found" } else { "its root $($entry.root) is not a path on this machine - map it to one" }
+            & $Context.Log "$($entry.identity): $where - its $($files.Count) file(s) skipped; restore the repository first" 'Warn'
+            $counts.skipped += $files.Count
+            continue
+        }
+        $folder = [IO.Path]::GetFullPath((Join-Path $Context.Staging "$($entry.folder)"))
+        if (-not (Test-PhxPathWithin $folder $Context.Staging)) {
+            & $Context.Log "$($entry.identity): its folder $($entry.folder) leads out of the snapshot - refused" 'Warn'
+            $counts.failed += $files.Count
+            continue
+        }
+        foreach ($file in $files) {
+            $target = [IO.Path]::GetFullPath((Join-Path $repo "$($file.path)"))
+            $source = [IO.Path]::GetFullPath((Join-Path $folder "$($file.stored)"))
+            # The manifest names places inside the repository and the snapshot, nothing else.
+            if ([string]::Equals($target, $repo, (Get-PhxPathComparison)) -or -not (Test-PhxPathWithin $target $repo) -or -not (Test-PhxPathWithin $source $folder)) {
+                & $Context.Log "$($entry.identity): $($file.path) leads out of the repository - refused" 'Warn'
+                $counts.failed++
+                continue
+            }
+            if (-not [IO.File]::Exists($source)) { & $Context.Log "$($entry.identity): $($file.stored) is missing from the snapshot" 'Warn'; $counts.failed++; continue }
+            $encrypted = "$($file.stored)" -cne "$($file.path)"
+            try { $result = Restore-PhxRepoFile -Source $source -Target $target -Encrypted:$encrypted -Context $Context }
+            catch { & $Context.Log "${target}: $(Hide-PhxSecret $_.Exception.Message)" 'Warn'; $result = 'failed' }
+            $counts[$result]++
+        }
+    }
+    $verb = if ($Context.DryRun) { 'would be ' } else { '' }
+    & $Context.Log ('{0} {1}restored, {2} already in place, {3} differ (left as they are), {4} skipped, {5} failed' -f $counts.restored, $verb, $counts.present, $counts.differs, $counts.skipped, $counts.failed)
+    if ($counts.failed) { throw "$($counts.failed) gitignored file(s) could not be restored - see above" }
+}
+
+function Get-PhxRepoFilesPending {
+    # What the last backup left pending, per repository: { identity, path, files }. Nothing before
+    # a first backup.
+    $path = Get-PhxRepoFilesStatePath
+    if (-not [IO.File]::Exists($path)) { return }
+    try { ConvertTo-PhxCaseInsensitive (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop) }
+    catch { $null = $_ }
+}
+
+function Get-PhxRepoFilesStatus {
+    # phx status lines: how many gitignored files wait for a decision.
+    param([Parameter(Mandatory)]$Context)
+    $null = $Context
+    $state = Get-PhxRepoFilesPending
+    if (-not $state) { return 'not looked at yet - the next phx run lists the gitignored files' }
+    $repos = @($state.repositories | Where-Object { $_ })
+    $count = [int]($repos | ForEach-Object { @($_.files).Count } | Measure-Object -Sum).Sum
+    if (-not $count) { return 'every gitignored file is decided on' }
+    "$count gitignored file(s) in $($repos.Count) repositories wait for a decision - not backed up until then"
+}
+
+Register-PhxProvider @{
+    Name        = 'repo-files'
+    Description = 'Gitignored files that matter - local config, secrets (encrypted) - as the review decided'
+    Backup      = { param($Context) Backup-PhxRepoFiles -Context $Context }
+    Restore     = { param($Context) Restore-PhxRepoFiles -Context $Context }
+    Status      = { param($Context) Get-PhxRepoFilesStatus -Context $Context }
+}

@@ -138,7 +138,6 @@ function Show-PhxStatus {
         & $line 'secrets' "$($held.Count) file(s) held back, not in the snapshot - ${why}: $shown$rest" -Warn
     }
     elseif (-not $recipient) { & $line 'secrets' 'no age key yet - phx init sets one up; until then a file with a secret is held back' }
-    & $line 'review' 'gitignored files to decide on - arrives with M3 (phx review)'
     & $line 'wip' 'local-only work - arrives with M4'
     if ($warnings.Count) { Write-Host "$($warnings.Count) thing(s) need attention" -ForegroundColor Yellow }
     else { Write-Host 'nothing needs attention' -ForegroundColor Green }
