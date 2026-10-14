@@ -152,7 +152,8 @@ public sealed class IgnoredFilesTests : IDisposable
     [Fact]
     public void Classifies_secrets_by_name_and_by_the_repository_s_own_patterns()
     {
-        foreach (string name in new[] { ".env", ".env.local", "secrets.json", "cert.pfx", "server.pem", "api.key", "id_ed25519", "deploy.conf", "plain.txt" })
+        foreach (string name in new[] { ".env", ".env.local", "secrets.json", "cert.pfx", "server.pem", "api.key", "id_ed25519", "deploy.conf", "plain.txt",
+            "release.jks", "upload.keystore", "server.ppk", ".netrc", "_netrc", ".pgpass", "vault.kdbx" })
         {
             temp.Write("keys/" + name, "x");
         }

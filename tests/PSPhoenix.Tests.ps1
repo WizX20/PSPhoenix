@@ -2074,6 +2074,32 @@ Describe 'claude provider' {
         Test-Path -LiteralPath (Join-Path $script:ClaudeHome 'outside.txt') | Should -BeFalse
     }
 
+    It 'keeps the last backup when Claude Code''s folder is gone, and is quiet where there never was one (#69)' {
+        $target = Join-Path $script:ClaudeHome 'Target'
+        New-Item -ItemType Directory -Path $target | Out-Null
+        InModuleScope PSPhoenix -Parameters @{ Target = $target } {
+            param($Target)
+            $c = Read-PhxConfig
+            $c.target = [ordered]@{ type = 'folder'; path = $Target }
+            $c.machine = [ordered]@{ name = 'Box'; id = 'id-box' }
+            Save-PhxConfig $c
+        }
+        Get-PhxOutput { phx run -Provider claude } | Out-Null
+        $published = Join-Path $target 'Box/claude/home/settings.json'
+        Test-Path -LiteralPath $published | Should -BeTrue
+        # The run does not see the folder: CLAUDE_CONFIG_DIR set only in a profile, say.
+        $env:CLAUDE_CONFIG_DIR = Join-Path $script:ClaudeHome 'elsewhere'
+        $output = Get-PhxOutput { phx run -Provider claude -ErrorAction SilentlyContinue -ErrorVariable failure; $script:ClaudeFailure = $failure }
+        $script:ClaudeFailure | Should -Not -BeNullOrEmpty
+        $output | Should -Match 'no Claude Code folder .* - the last backup in the snapshot stays as it is'
+        Test-Path -LiteralPath $published | Should -BeTrue
+        # A machine that never had Claude Code: nothing to keep, nothing to fail.
+        Remove-Item -LiteralPath (Join-Path $target 'Box/claude') -Recurse -Force
+        $quiet = Get-PhxOutput { phx run -Provider claude -ErrorAction SilentlyContinue -ErrorVariable failure2; $script:ClaudeFailure = $failure2 }
+        $script:ClaudeFailure | Should -BeNullOrEmpty
+        $quiet | Should -Match 'no Claude Code folder .* - nothing to back up'
+    }
+
     It 'says in phx status how much memory there is' {
         Get-PhxOutput { phx status } | Should -Match 'claude\s+memory of 2 project\(s\), 1 by repository; session transcripts not'
     }

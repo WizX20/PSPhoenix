@@ -1,0 +1,2 @@
+- fix: secrets - keystores (`*.jks`, `*.keystore`), PuTTY keys (`*.ppk`), `.netrc`, `.pgpass` and KeePass databases are secret by their name, and UTF-16 text without a byte order mark is scanned instead of passed over as binary (#69)
+- fix: a provider whose source is gone - no Claude Code folder for the run, no scan - fails and keeps its last backup in the snapshot instead of publishing an empty folder over it (#69)

@@ -88,6 +88,28 @@ public sealed class StagerTests : IDisposable
         File.ReadAllBytes(temp["staging", "kept", "published.age"]).Should().Equal(encrypted);
     }
 
+    [Fact]
+    public void Scans_utf16_text_without_a_byte_order_mark()
+    {
+        string text = "token " + Fake.GitHubToken();
+        string little = temp["utf16le.txt"];
+        string big = temp["utf16be.txt"];
+        File.WriteAllBytes(little, Encoding.Unicode.GetBytes(text));
+        File.WriteAllBytes(big, Encoding.BigEndianUnicode.GetBytes(text));
+
+        SecretScanner.ScanFile(little).Should().Match<FileScan>(s => !s.IsBinary && s.HasSecret);
+        SecretScanner.ScanFile(big).Should().Match<FileScan>(s => !s.IsBinary && s.HasSecret);
+    }
+
+    [Fact]
+    public void Binary_with_nul_bytes_stays_binary()
+    {
+        string path = temp["data.bin"];
+        File.WriteAllBytes(path, [0x00, 0x01, 0x02, 0x00, 0x7F, 0x00, 0xFF, 0x10, 0x00, 0x00]);
+
+        SecretScanner.ScanFile(path).IsBinary.Should().BeTrue();
+    }
+
     [Theory]
     [InlineData("out.txt")]
     [InlineData("staging")]

@@ -96,6 +96,18 @@ function Get-PhxStoredName {
     $Entry.Stored.Substring($Folder.TrimEnd('/').Length + 1)
 }
 
+function Assert-PhxSourceGone {
+    # A provider whose source is not there - no Claude Code folder, no scan - stages nothing, and
+    # publishing that would empty its folder in the snapshot. When the snapshot holds a last backup
+    # of it, the provider fails instead, so that backup stays; on a machine that never had the
+    # source it is quiet: there is nothing to keep.
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Why)
+    $published = try { Join-PhxPath (Get-PhxSnapshotPath $Context.Config) $Context.Provider } catch { $null }
+    $hasBackup = $published -and [IO.Directory]::Exists($published) -and [IO.Directory]::EnumerateFiles($published, '*', [IO.SearchOption]::AllDirectories).GetEnumerator().MoveNext()
+    if ($hasBackup -and -not $Context.DryRun) { throw "$Why - the last backup in the snapshot stays as it is" }
+    & $Context.Log "$Why - nothing to back up"
+}
+
 function Remove-PhxStagedSecret {
     # The last check before publishing: a staged file the stager did not write itself - one a
     # provider put there around it - is scanned, and with a secret in it replaced by its encrypted

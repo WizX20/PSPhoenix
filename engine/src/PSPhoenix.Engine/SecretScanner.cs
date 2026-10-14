@@ -412,7 +412,42 @@ public static partial class SecretScanner
         {
             return Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
         }
-        return bytes.AsSpan(0, Math.Min(bytes.Length, 8000)).Contains((byte)0) ? null : Encoding.UTF8.GetString(bytes);
+        ReadOnlySpan<byte> head = bytes.AsSpan(0, Math.Min(bytes.Length, 8000));
+        if (!head.Contains((byte)0))
+        {
+            return Encoding.UTF8.GetString(bytes);
+        }
+        // UTF-16 without a byte order mark (PowerShell's Out-File of old, some Windows tools): ASCII
+        // text has a NUL in every other byte and none in between. Read as such, it is scanned - not
+        // waved through as binary.
+        return LooksLikeUtf16(head, littleEndian: true) ? Encoding.Unicode.GetString(bytes)
+            : LooksLikeUtf16(head, littleEndian: false) ? Encoding.BigEndianUnicode.GetString(bytes)
+            : null;
+    }
+
+    // Most characters of the text in the ASCII range: the high bytes NUL, the low bytes not.
+    private static bool LooksLikeUtf16(ReadOnlySpan<byte> head, bool littleEndian)
+    {
+        int pairs = head.Length / 2;
+        if (pairs < 2)
+        {
+            return false;
+        }
+        int ascii = 0;
+        for (int i = 0; i < pairs; i++)
+        {
+            byte low = head[(2 * i) + (littleEndian ? 0 : 1)];
+            byte high = head[(2 * i) + (littleEndian ? 1 : 0)];
+            if (low == 0)
+            {
+                return false;
+            }
+            if (high == 0)
+            {
+                ascii++;
+            }
+        }
+        return ascii * 10 >= pairs * 9;
     }
 
     /// <summary>The spans as findings: overlaps go to the most specific rule, then in text order with line and column.</summary>

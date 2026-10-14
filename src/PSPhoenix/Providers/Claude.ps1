@@ -113,7 +113,7 @@ function Backup-PhxClaude {
     # when asked for), the MCP servers, and claude-files.json saying what is where.
     param([Parameter(Mandatory)]$Context)
     $claude = Get-PhxClaudeDir
-    if (-not [IO.Directory]::Exists($claude)) { & $Context.Log "no Claude Code folder ($claude) - nothing to back up"; return }
+    if (-not [IO.Directory]::Exists($claude)) { Assert-PhxSourceGone -Context $Context -Why "no Claude Code folder ($claude; CLAUDE_CONFIG_DIR is read from the environment of the run)"; return }
     $settings = $Context.Config.providers['claude']
     $transcripts = $settings -is [System.Collections.IDictionary] -and $settings.transcripts -eq $true
     $cache = Read-PhxRepoCache -Quiet

@@ -109,7 +109,9 @@ minutes, hours or days (`30m`, `1h`, `1d`).
 - on restore, also the root map (an old root to its new path), the repositories selected, and the
   age key that opens the snapshot's secrets (none: they are skipped, with a warning).
 
-A provider never writes outside its staging folder during backup, and stages every file through
+A provider whose source is not there - no Claude Code folder, no scan - fails when the snapshot
+holds a last backup of it, so publishing an empty folder does not remove that backup; where there
+never was one it is quiet. A provider never writes outside its staging folder during backup, and stages every file through
 `Write-PhxStagedText` or `Copy-PhxStagedFile`. They refuse a path that leads out of staging, and
 scan the file for secrets first (see [Secrets](#secrets)). Every `Restore` is idempotent: a second
 run skips what exists.
@@ -163,7 +165,8 @@ Including everything is not an option; a pure allowlist misses files nobody thou
 4. **Binary extensions and a size cap** (`files.maxKB`, default 1 MB). Filtered files from steps
    3 and 4 are left out unless the review includes them by name or pattern.
 5. **Secret classification** by name: `.env`, `.env.*`, `secrets.*`, `*.pfx`, `*.p12`, `*.pem`,
-   `*.key`, `id_*` (the file name, not a folder), plus per-repository `secret` patterns - and by
+   `*.key`, `id_*`, keystores (`*.jks`, `*.keystore`), PuTTY keys (`*.ppk`), `.netrc`/`_netrc`,
+   `.pgpass`, KeePass databases (`*.kdbx`) (the file name, not a folder), plus per-repository `secret` patterns - and by
    content: a text file the [detector](#secrets) finds a secret in is secret as a whole. Secret
    files are only ever stored as `.age`; a binary one too.
 6. **Review**: a candidate nobody decided on yet is `pending` and is **not** backed up. The wizard
@@ -341,6 +344,9 @@ or by its content. One detector in the engine, `SecretScanner`, reads content. I
     counts when it looks random: 12 or more characters, no whitespace, at least 3 bits of entropy
     per character.
   - The key's last word decides. `accessToken` names a token, `tokenType` a type.
+
+Text is read as UTF-8, or as UTF-16 when a byte order mark says so or when the bytes look like it
+(a NUL in every other byte): a file is only passed over as binary when it is neither.
 
 These are not secrets:
 
