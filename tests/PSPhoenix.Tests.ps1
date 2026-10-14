@@ -2075,8 +2075,8 @@ Describe 'a drive that is not there' -Skip:(-not $IsWindows) {
         phx roots add $script:DriveRoot 6>$null
         phx scan 6>$null
         # The last scan saw a repository on the drive that is gone now.
-        InModuleScope PSPhoenix -Parameters @{ Gone = $script:GoneRoot; Real = $script:DriveRoot } {
-            param($Gone, $Real)
+        InModuleScope PSPhoenix -Parameters @{ Gone = $script:GoneRoot } {
+            param($Gone)
             $c = Read-PhxConfig
             $c.roots = @($c.roots) + @([ordered]@{ path = $Gone; depth = 3 })
             Save-PhxConfig $c
