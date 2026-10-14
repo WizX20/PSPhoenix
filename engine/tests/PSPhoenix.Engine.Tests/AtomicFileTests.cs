@@ -79,21 +79,24 @@ public sealed class AtomicFileTests : IDisposable
     }
 
     [Fact]
-    public async Task A_reader_holding_the_file_open_only_delays_the_replace()
+    public void A_reader_holding_the_file_open_only_delays_the_replace()
     {
         // On Windows an open file blocks the rename onto it; MoveIntoPlace waits for the reader. On
         // other platforms the rename never waits - the test then only shows it is not in the way.
+        // The reader lets go on a thread of its own: a thread-pool task can start too late on a busy
+        // runner, while this thread blocks in the retries.
         string path = temp.Write("held.txt", "one");
         FileStream reader = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        Task release = Task.Run(async () =>
+        Thread release = new(() =>
         {
-            await Task.Delay(200, TestContext.Current.CancellationToken);
-            await reader.DisposeAsync();
-        }, TestContext.Current.CancellationToken);
+            Thread.Sleep(200);
+            reader.Dispose();
+        });
+        release.Start();
 
         AtomicFile.WriteAllText(path, "two");
 
-        await release;
+        release.Join();
         File.ReadAllText(path).Should().Be("two");
     }
 
