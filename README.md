@@ -14,10 +14,10 @@ Your machine dies; your code does not - it lives in remotes. What dies with the 
 - **Which repositories you had** — every remote, the folder it lived in, and which GitHub account it talks to (a personal and a work account side by side included). Tracked files are not copied: a restore clones them.
 - **Local-only git work** — unpushed commits, branches without an upstream, stashes, worktrees.
 - **Gitignored files that matter** — local config, secrets (encrypted), IDE user files. Never `bin/`, `obj/`, `node_modules/` or NuGet packages, and never anything big or unknown without asking first.
-- **Claude Code** — per-project memory, settings, skills and commands.
+- **Claude Code** — per-project memory (found again after a restore to another folder), settings, skills, commands, agents and MCP servers. Never its credentials.
 - **The machine setup** — winget and Scoop packages, your PowerShell profile and modules, Windows Terminal settings, WSL distros, user environment variables, git and SSH config.
 
-> **Status: early development.** Released and installable. It backs up the repository inventory (M1) on a schedule (M2, `phx run`), and gitignored files with their secrets encrypted (M3, as the review decides); Claude Code memory follows in M3, local-only git work in M4, the machine setup in M5 and `phx restore` in M6. Commands marked `(Mx)` below arrive with that milestone; the [roadmap](docs/design.md#roadmap) and the [milestones](https://github.com/WizX20/PSPhoenix/milestones) show what comes when. See the [Changelog](CHANGELOG.md) for updates.
+> **Status: early development.** Released and installable. It backs up the repository inventory (M1) on a schedule (M2, `phx run`), gitignored files with their secrets encrypted (M3, as the review decides) and Claude Code's memory and settings (M3); local-only git work follows in M4, the machine setup in M5 and `phx restore` in M6. Commands marked `(Mx)` below arrive with that milestone; the [roadmap](docs/design.md#roadmap) and the [milestones](https://github.com/WizX20/PSPhoenix/milestones) show what comes when. See the [Changelog](CHANGELOG.md) for updates.
 
 ## License
 

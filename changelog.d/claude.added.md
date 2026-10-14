@@ -1,0 +1,6 @@
+- feat: the `claude` provider backs up Claude Code (#28):
+  - Per-project memory, keyed by the repository it belongs to. A restore puts it in the folder Claude Code derives from the repository's new path, so a clone to `D:\src` instead of `C:\Repos` still finds its memory.
+  - `settings.json`, `CLAUDE.md`, `keybindings.json`, `statusline*`, `skills/`, `commands/`, `agents/`.
+  - The MCP servers from `~/.claude.json`: the user's own and each project's. Encrypted when one holds a secret, such as an API key in `env`.
+  - Never `.credentials.json`, history or caches. Session transcripts only with `providers.claude.transcripts`.
+  - Restore adds what is missing and leaves what is there, with a warning when it differs.

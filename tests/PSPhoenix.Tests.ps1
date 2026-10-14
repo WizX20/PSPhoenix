@@ -24,8 +24,10 @@ BeforeAll {
         $env:LOCALAPPDATA = Join-Path $root 'Local'
         $env:XDG_CONFIG_HOME = Join-Path $root 'config'
         $env:XDG_STATE_HOME = Join-Path $root 'state'
-        # No OneDrive either: phx init would offer the real one.
+        # No OneDrive either: phx init would offer the real one. Nor the real ~/.claude: the claude
+        # provider reads Claude Code's folder - and ~/.claude.json - from here.
         $env:OneDriveCommercial = $env:OneDriveConsumer = $env:OneDrive = $null
+        $env:CLAUDE_CONFIG_DIR = Join-Path $root 'claude'
         $root
     }
 
@@ -43,7 +45,7 @@ BeforeAll {
     }
 
     $script:SavedEnv = @{}
-    foreach ($name in 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'OneDriveCommercial', 'OneDriveConsumer', 'OneDrive',
+    foreach ($name in 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'OneDriveCommercial', 'OneDriveConsumer', 'OneDrive', 'CLAUDE_CONFIG_DIR',
         'GH_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0') {
         $script:SavedEnv[$name] = [Environment]::GetEnvironmentVariable($name)
     }
@@ -1847,6 +1849,213 @@ Describe 'review' {
     It 'needs phx init first' {
         Use-TestHome | Out-Null
         { phx review -ErrorAction Stop } | Should -Throw '*not set up yet*'
+    }
+}
+
+Describe 'claude provider' {
+    BeforeAll {
+        $script:ClaudeKey = [PSPhoenix.Engine.Age]::NewKey()
+        $script:McpToken = 'gh' + 'p_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+
+        function script:Invoke-ClaudeBackup {
+            param([string]$Staging, [switch]$DryRun)
+            InModuleScope PSPhoenix -Parameters @{ Staging = $Staging; DryRun = [bool]$DryRun } {
+                param($Staging, $DryRun)
+                $context = New-PhxContext -Provider 'claude' -Staging $Staging -DryRun:$DryRun
+                Backup-PhxClaude -Context $context
+                Remove-PhxStagedSecret -Context $context
+            } 6>&1 | Out-String
+        }
+
+        function script:Invoke-ClaudeRestore {
+            param([string]$Staging, [hashtable]$RootMap = @{}, [string]$Identity)
+            $lines = [Collections.Generic.List[string]]::new()
+            try {
+                InModuleScope PSPhoenix -Parameters @{ Staging = $Staging; RootMap = $RootMap; Identity = $Identity } {
+                    param($Staging, $RootMap, $Identity)
+                    Restore-PhxClaude -Context (New-PhxContext -Provider 'claude' -Staging $Staging -RootMap $RootMap -Identity $Identity)
+                } 6>&1 | ForEach-Object { $lines.Add("$_") }
+            }
+            catch { throw "$($_.Exception.Message)`n$($lines -join "`n")" }
+            $lines -join "`n"
+        }
+
+        function script:Get-TestStaged {
+            param([string]$Staging)
+            @(Get-ChildItem -LiteralPath $Staging -Recurse -File -Force | ForEach-Object { [IO.Path]::GetRelativePath($Staging, $_.FullName) -replace '\\', '/' } | Sort-Object)
+        }
+
+        function script:New-TestFile {
+            param([string]$Path, [string]$Value)
+            New-Item -ItemType Directory -Force -Path (Split-Path $Path) | Out-Null
+            [IO.File]::WriteAllText($Path, $Value)
+        }
+
+        function script:Get-TestProjectName {
+            param([string]$Path)
+            InModuleScope PSPhoenix -Parameters @{ Path = $Path } { param($Path) ConvertTo-PhxClaudeProjectName $Path }
+        }
+    }
+
+    BeforeEach {
+        $script:ClaudeHome = Use-TestHome
+        $script:ClaudeDir = $env:CLAUDE_CONFIG_DIR
+        $script:ClaudeRoot = Join-Path $script:ClaudeHome 'Repos'
+        $script:ClaudeRepo = New-TestRepository (Join-Path $script:ClaudeRoot 'App') -Remote 'origin=https://github.com/WizX20/app.git'
+        phx roots add $script:ClaudeRoot 6>$null
+        phx scan 6>$null
+        InModuleScope PSPhoenix -Parameters @{ Recipient = $script:ClaudeKey.Recipient } {
+            param($Recipient)
+            $c = Read-PhxConfig
+            $c.secrets.recipient = $Recipient
+            Save-PhxConfig $c
+        }
+        $d = $script:ClaudeDir
+        New-TestFile (Join-Path $d 'settings.json') '{ "theme": "dark" }'
+        New-TestFile (Join-Path $d 'CLAUDE.md') '# my rules'
+        New-TestFile (Join-Path $d 'keybindings.json') '[]'
+        New-TestFile (Join-Path $d 'statusline.ps1') 'Write-Output "ok"'
+        New-TestFile (Join-Path $d 'skills/pr/SKILL.md') '# pr'
+        New-TestFile (Join-Path $d 'skills/pr/node_modules/x/index.js') 'x'
+        New-TestFile (Join-Path $d 'commands/ship.md') '# ship'
+        New-TestFile (Join-Path $d 'agents/review.md') '# review'
+        New-TestFile (Join-Path $d '.credentials.json') "{ `"accessToken`": `"$script:McpToken`" }"
+        New-TestFile (Join-Path $d 'history.jsonl') '{}'
+        New-TestFile (Join-Path $d 'plugins/cache/x.json') '{}'
+        $script:ProjectName = Get-TestProjectName $script:ClaudeRepo
+        $project = Join-Path $d "projects/$script:ProjectName"
+        New-TestFile (Join-Path $project 'memory/MEMORY.md') '- [note](note.md)'
+        New-TestFile (Join-Path $project 'memory/note.md') 'remember this'
+        New-TestFile (Join-Path $project 'session-1.jsonl') '{"type":"user"}'
+        New-TestFile (Join-Path $d 'projects/C--Elsewhere-Notes/memory/MEMORY.md') 'loose notes'
+        New-TestFile (Join-Path $d 'projects/C--Empty/session-2.jsonl') '{}'
+        $claudeJson = [ordered]@{
+            oauthAccount = @{ emailAddress = 'someone@example.invalid' }
+            mcpServers   = [ordered]@{ github = [ordered]@{ command = 'gh-mcp'; env = [ordered]@{ GITHUB_TOKEN = $script:McpToken } } }
+            projects     = [ordered]@{
+                ($script:ClaudeRepo.Replace('\', '/')) = [ordered]@{ allowedTools = @(); mcpServers = [ordered]@{ local = [ordered]@{ command = 'local-mcp' } } }
+                'C:/Other'                             = [ordered]@{ allowedTools = @() }
+            }
+        }
+        New-TestFile (Join-Path $d '.claude.json') ($claudeJson | ConvertTo-Json -Depth 10)
+        $script:ClaudeStaging = Join-Path $script:ClaudeHome 'staging'
+        New-Item -ItemType Directory -Path $script:ClaudeStaging | Out-Null
+    }
+
+    It 'reads Claude Code''s folder of the test home, never the real one' {
+        InModuleScope PSPhoenix { Get-PhxClaudeDir } | Should -BeLike "$TestDrive*"
+        InModuleScope PSPhoenix { Get-PhxClaudeJsonPath } | Should -BeLike "$TestDrive*"
+    }
+
+    It 'backs up the home selection, memory by repository and the MCP servers - never credentials or history' {
+        $output = Invoke-ClaudeBackup $script:ClaudeStaging
+        $output | Should -Match '7 file\(s\) of ~/.claude, memory of 2 project\(s\) \(1 by repository\), 2 MCP server\(s\)'
+        Get-TestStaged $script:ClaudeStaging | Should -Be @(
+            'claude-files.json'
+            'claude.json.age'
+            'home/agents/review.md'
+            'home/CLAUDE.md'
+            'home/commands/ship.md'
+            'home/keybindings.json'
+            'home/settings.json'
+            'home/skills/pr/SKILL.md'
+            'home/statusline.ps1'
+            'projects/github.com/WizX20/app/memory/MEMORY.md'
+            'projects/github.com/WizX20/app/memory/note.md'
+            'projects/path/C--Elsewhere-Notes/memory/MEMORY.md'
+        )
+        $output | Should -Not -Match ([regex]::Escape($script:McpToken))
+        $json = [Text.Encoding]::UTF8.GetString([PSPhoenix.Engine.Age]::Decrypt([IO.File]::ReadAllBytes((Join-Path $script:ClaudeStaging 'claude.json.age')), $script:ClaudeKey.Identity)) | ConvertFrom-Json -AsHashtable
+        $json.mcpServers.github.env.GITHUB_TOKEN | Should -Be $script:McpToken
+        $json.Contains('oauthAccount') | Should -BeFalse
+        $json.projects[$script:ClaudeRepo.Replace('\', '/')].identity | Should -Be 'github.com/WizX20/app'
+        $json.projects.Contains('C:/Other') | Should -BeFalse
+    }
+
+    It 'takes the session transcripts only when the config asks' {
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.providers['claude'] = [ordered]@{ transcripts = $true }; Save-PhxConfig $c }
+        Invoke-ClaudeBackup $script:ClaudeStaging | Should -Match 'transcripts included'
+        $staged = Get-TestStaged $script:ClaudeStaging
+        $staged | Should -Contain 'projects/github.com/WizX20/app/session-1.jsonl'
+        $staged | Should -Contain 'projects/path/C--Empty/session-2.jsonl'
+    }
+
+    It 'round-trips memory into the folder Claude Code derives from the repository''s new path' {
+        Invoke-ClaudeBackup $script:ClaudeStaging | Out-Null
+        $machineB = Use-TestHome
+        $rootB = Join-Path $machineB 'src'
+        $newRepo = Join-Path $rootB 'App'
+        $output = Invoke-ClaudeRestore $script:ClaudeStaging -RootMap @{ $script:ClaudeRoot = $rootB } -Identity $script:ClaudeKey.Identity
+        $output | Should -Match '12 restored, 0 already in place, 0 differ \(left as they are\), 0 skipped, 0 failed'
+        $claudeB = $env:CLAUDE_CONFIG_DIR
+        $newProject = Join-Path $claudeB "projects/$(Get-TestProjectName $newRepo)"
+        $newProject | Should -Not -Be (Join-Path $claudeB "projects/$script:ProjectName")
+        Get-Content -LiteralPath (Join-Path $newProject 'memory/note.md') -Raw | Should -Be 'remember this'
+        Get-Content -LiteralPath (Join-Path $claudeB 'projects/C--Elsewhere-Notes/memory/MEMORY.md') -Raw | Should -Be 'loose notes'
+        Get-Content -LiteralPath (Join-Path $claudeB 'skills/pr/SKILL.md') -Raw | Should -Be '# pr'
+        Test-Path -LiteralPath (Join-Path $claudeB '.credentials.json') | Should -BeFalse
+        $json = Get-Content -LiteralPath (Join-Path $claudeB '.claude.json') -Raw | ConvertFrom-Json -AsHashtable
+        $json.mcpServers.github.env.GITHUB_TOKEN | Should -Be $script:McpToken
+        $json.projects[$newRepo.Replace('\', '/')].mcpServers.local.command | Should -Be 'local-mcp'
+        Invoke-ClaudeRestore $script:ClaudeStaging -RootMap @{ $script:ClaudeRoot = $rootB } -Identity $script:ClaudeKey.Identity |
+            Should -Match '0 restored, 12 already in place'
+    }
+
+    It 'leaves what is there alone - a settings file and an MCP server that differ - and keeps the rest of ~/.claude.json' {
+        Invoke-ClaudeBackup $script:ClaudeStaging | Out-Null
+        $d = $script:ClaudeDir
+        [IO.File]::WriteAllText((Join-Path $d 'settings.json'), '{ "theme": "light" }')
+        Remove-Item -LiteralPath (Join-Path $d 'CLAUDE.md')
+        $json = Get-Content -LiteralPath (Join-Path $d '.claude.json') -Raw | ConvertFrom-Json -AsHashtable
+        $json.mcpServers.github.command = 'other'
+        $json.mcpServers.Remove('github') | Out-Null
+        $json.mcpServers.github = @{ command = 'mine' }
+        [IO.File]::WriteAllText((Join-Path $d '.claude.json'), ($json | ConvertTo-Json -Depth 10))
+        $output = Invoke-ClaudeRestore $script:ClaudeStaging -Identity $script:ClaudeKey.Identity
+        $output | Should -Match 'settings.json differs from the backup - left as it is'
+        $output | Should -Match 'MCP server github \(user\) differs from the backup - left as it is'
+        Get-Content -LiteralPath (Join-Path $d 'settings.json') -Raw | Should -Be '{ "theme": "light" }'
+        Get-Content -LiteralPath (Join-Path $d 'CLAUDE.md') -Raw | Should -Be '# my rules'
+        (Get-Content -LiteralPath (Join-Path $d '.claude.json') -Raw | ConvertFrom-Json -AsHashtable).oauthAccount.emailAddress | Should -Be 'someone@example.invalid'
+    }
+
+    It 'skips the encrypted MCP servers without the age key' {
+        Invoke-ClaudeBackup $script:ClaudeStaging | Out-Null
+        Use-TestHome | Out-Null
+        $output = Invoke-ClaudeRestore $script:ClaudeStaging -RootMap @{ $script:ClaudeRoot = (Join-Path $TestDrive 'nowhere') }
+        $output | Should -Match 'the MCP servers are encrypted and this restore has no age key - skipped'
+        Test-Path -LiteralPath (Join-Path $env:CLAUDE_CONFIG_DIR '.claude.json') | Should -BeFalse
+    }
+
+    It 'encrypts a memory file with a token in it' {
+        New-TestFile (Join-Path $script:ClaudeDir "projects/$script:ProjectName/memory/token.md") "use $script:McpToken"
+        $output = Invoke-ClaudeBackup $script:ClaudeStaging
+        Get-TestStaged $script:ClaudeStaging | Should -Contain 'projects/github.com/WizX20/app/memory/token.md.age'
+        $output | Should -Not -Match ([regex]::Escape($script:McpToken))
+    }
+
+    It 'stages nothing on a dry run' {
+        Invoke-ClaudeBackup $script:ClaudeStaging -DryRun | Should -Match 'would back up'
+        @(Get-ChildItem -LiteralPath $script:ClaudeStaging -Force).Count | Should -Be 0
+    }
+
+    It 'refuses a manifest that leads out of Claude Code''s folder' {
+        $staging = Join-Path $script:ClaudeHome 'evil'
+        New-TestFile (Join-Path $staging 'home/x') 'x'
+        @{ format = 1; home = @(@{ path = '../../outside.txt'; stored = 'x' }); projects = @() } | ConvertTo-Json -Depth 5 |
+            Set-Content -LiteralPath (Join-Path $staging 'claude-files.json')
+        { Invoke-ClaudeRestore $staging } | Should -Throw '*leads out of where it belongs*'
+        Test-Path -LiteralPath (Join-Path $script:ClaudeHome 'outside.txt') | Should -BeFalse
+    }
+
+    It 'says in phx status how much memory there is' {
+        Get-PhxOutput { phx status } | Should -Match 'claude\s+memory of 2 project\(s\), 1 by repository; session transcripts not'
+    }
+
+    It 'refuses a transcripts setting that is not true or false' {
+        InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.providers['claude'] = [ordered]@{ transcripts = 'yes' }; Save-PhxConfig $c }
+        { InModuleScope PSPhoenix { Read-PhxConfig } } | Should -Throw '*providers.claude.transcripts must be true or false*'
+        Remove-Item -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath })
     }
 }
 
