@@ -1,9 +1,6 @@
 <p align="center">
-  <a href="https://github.com/WizX20">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/wizx20.png">
-      <img src="docs/wizx20-transparent.png" alt="WizX20" height="140">
-    </picture>
+  <a href="https://github.com/WizX20/PSPhoenix">
+    <img src="docs/psphoenix-logo.png" alt="PSPhoenix" width="420">
   </a>
 </p>
 
