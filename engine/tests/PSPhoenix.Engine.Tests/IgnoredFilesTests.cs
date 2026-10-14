@@ -88,6 +88,7 @@ public sealed class IgnoredFilesTests : IDisposable
         temp.Write("leftover/web/node_modules/x/index.js", "x");
         temp.Write("leftover/.claude/worktrees/feature/notes.md", "x");
         temp.Write("leftover/.claude/settings.local.json", "{}");
+        temp.Write("leftover/.pytest_cache/v/cache/lastfailed", "{}");
 
         IgnoredFileList list = List("leftover/", "bin/", "obj/Debug/x.txt");
 
@@ -126,11 +127,13 @@ public sealed class IgnoredFilesTests : IDisposable
         temp.Write("lib/model.g.dart", "x");
         temp.Write("package-lock.json", "{}");
         temp.Write("debug.log", "x");
+        temp.Write(".claude/scheduled_tasks.lock", "x");
+        temp.Write(".flutter-plugins-dependencies", "{}");
         temp.Write("logo.PNG", "x");
         temp.Write("dump.json", new string('x', 2000));
         temp.Write("ok.json", "{}");
 
-        Dictionary<string, CandidateFilter> filters = List("lib/model.g.dart", "package-lock.json", "debug.log", "logo.PNG", "dump.json", "ok.json")
+        Dictionary<string, CandidateFilter> filters = List("lib/model.g.dart", "package-lock.json", "debug.log", ".claude/scheduled_tasks.lock", ".flutter-plugins-dependencies", "logo.PNG", "dump.json", "ok.json")
             .Files.ToDictionary(f => f.Path, f => f.Filter);
 
         filters.Should().BeEquivalentTo(new Dictionary<string, CandidateFilter>
@@ -138,6 +141,8 @@ public sealed class IgnoredFilesTests : IDisposable
             ["lib/model.g.dart"] = CandidateFilter.Generated,
             ["package-lock.json"] = CandidateFilter.Generated,
             ["debug.log"] = CandidateFilter.Noise,
+            [".claude/scheduled_tasks.lock"] = CandidateFilter.Noise,
+            [".flutter-plugins-dependencies"] = CandidateFilter.Generated,
             ["logo.PNG"] = CandidateFilter.Binary,
             ["dump.json"] = CandidateFilter.Large,
             ["ok.json"] = CandidateFilter.None,

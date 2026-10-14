@@ -57,6 +57,7 @@ public static class IgnoredFiles
         "bin", "obj", "node_modules", "packages", ".packages", ".nuget", "dist", "out", "build", "artifacts",
         "publish", ".vs", ".idea", ".dart_tool", ".gradle", ".venv", "venv", "__pycache__", ".terraform",
         ".next", ".nuxt", ".angular", ".cache", "coverage", "TestResults", ".git",
+        ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".eggs",
     ];
 
     /// <summary>Folder paths never entered at any depth: Claude Code's worktrees.</summary>
@@ -69,13 +70,14 @@ public static class IgnoredFiles
         "gradle-wrapper.jar", "gradle-wrapper.properties", "gradlew", "gradlew.bat",
         "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "packages.lock.json", "pubspec.lock", "Podfile.lock",
         "poetry.lock", "Pipfile.lock", "Cargo.lock", "composer.lock", "Gemfile.lock", "go.sum",
+        ".flutter-plugins", ".flutter-plugins-dependencies", "Generated.xcconfig", "flutter_export_environment.sh",
     ];
 
     /// <summary>Logs, temporary and swap files, folder view files.</summary>
     public static IReadOnlyList<string> NoiseNames { get; } =
     [
         "*.log", "*.tmp", "*.temp", "*.swp", "*.swo", "*~", "*.bak", ".DS_Store", "Thumbs.db", "desktop.ini",
-        "*.suo", "*.cache",
+        "*.suo", "*.cache", "*.lock", "*.pid",
     ];
 
     /// <summary>Extensions of binary files.</summary>
