@@ -14,8 +14,8 @@ namespace PSPhoenix.Engine;
 /// <item><c>*</c> is any run of characters within a segment, <c>?</c> one character, <c>**</c> any
 /// number of whole segments.</item>
 /// <item>A pattern without a <c>/</c> (<c>*.local.json</c>, <c>.env</c>) matches a file or a folder
-/// of that name at any depth, as in a <c>.gitignore</c>; one with a <c>/</c> matches from the
-/// repository's top.</item>
+/// of that name at any depth, as in a <c>.gitignore</c>; one with a <c>/</c> - a leading one
+/// included, <c>/notes.md</c> - matches from the repository's top.</item>
 /// <item>A pattern ending in <c>/</c> names a folder: it matches everything below it.</item>
 /// <item>A pattern that matches a folder matches every file below it.</item>
 /// </list>
@@ -52,6 +52,7 @@ public sealed class PathPattern
         {
             body = body[2..];
         }
+        bool rooted = body.StartsWith('/');
         body = body.TrimStart('/');
         if (body.Trim('/').Length == 0)
         {
@@ -65,7 +66,7 @@ public sealed class PathPattern
             return false;
         }
         bool folder = body.EndsWith('/');
-        bool anchored = segments.Length > 1;
+        bool anchored = rooted || segments.Length > 1;
         StringBuilder regex = new("^");
         if (!anchored)
         {

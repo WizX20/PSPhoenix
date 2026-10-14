@@ -1,0 +1,5 @@
+- feat: `phx review` decides which gitignored files to back up (#27):
+  - Per repository, the pending files, grouped by folder (`o` opens one), with why a file is secret: by its name, or by what is in it - never the value.
+  - `i` include, `s` secret, `x` exclude: by number, range, `*`, or a pattern (`x *.log`). Each answer is saved at once; a second review shows only what is left.
+  - `n` "not a secret" overrules the secret scan for one file (#45): the findings it showed are accepted, and any other secret in the file still gets it encrypted.
+  - `phx init` ends with the review, and `phx status` warns about files that wait for a decision.

@@ -27,6 +27,9 @@ public sealed class PathPatternTests
     [InlineData("*.TXT", "Notes.txt", true)]
     [InlineData("./config.env", "config.env", true)]
     [InlineData("/config.env", "config.env", true)]
+    [InlineData("/config.env", "sub/config.env", false)]
+    [InlineData("/leftover/", "leftover/a.txt", true)]
+    [InlineData("/leftover/", "src/leftover/a.txt", false)]
     [InlineData("a+b(1).txt", "a+b(1).txt", true)]
     public void Matches_like_a_gitignore_pattern(string pattern, string path, bool expected)
     {
@@ -279,6 +282,27 @@ public sealed class SecretCopyTests : IDisposable
         env.Scan.Findings.Should().ContainSingle().Which.Kind.Should().Be(SecretKind.SecretFile);
         Directory.GetFiles(temp["staging"]).Select(Path.GetFileName).Should().BeEquivalentTo("cert.pfx.age", ".env.age");
         Age.Decrypt(System.IO.File.ReadAllBytes(temp["staging", ".env.age"]), Key.Identity).Should().Equal(Encoding.UTF8.GetBytes("LOG_LEVEL=debug"));
+    }
+
+    [Fact]
+    public void A_finding_the_review_overruled_does_not_make_a_file_secret_but_another_one_does()
+    {
+        string source = temp.Write("appsettings.json", "{ \"ClientSecret\": \"Zx9Qw3Er7Ty1Ui5Op2As8Df4\" }");
+        Sealer sealer = new(Key.Recipient, temp["sealed"]);
+        SecretFinding finding = SecretScanner.ScanFile(source).Findings.Single();
+        finding.Signature.Should().Be("SecretValue:ClientSecret");
+
+        StagedFile plain = StagingWriter.CopyFile(source, temp["staging", "appsettings.json"], sealer, false, [finding.Signature]);
+
+        plain.Sealed.Should().BeFalse();
+        plain.Scan.HasSecret.Should().BeFalse();
+        System.IO.File.Exists(temp["staging", "appsettings.json"]).Should().BeTrue();
+
+        System.IO.File.WriteAllText(source, "{ \"ClientSecret\": \"Zx9Qw3Er7Ty1Ui5Op2As8Df4\", \"token\": \"" + Fake.GitHubToken() + "\" }");
+        StagedFile again = StagingWriter.CopyFile(source, temp["staging2", "appsettings.json"], sealer, false, [finding.Signature]);
+
+        again.Sealed.Should().BeTrue();
+        again.Scan.Findings.Should().ContainSingle().Which.Kind.Should().Be(SecretKind.GitHubToken);
     }
 
     [Fact]

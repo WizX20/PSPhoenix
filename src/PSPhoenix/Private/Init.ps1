@@ -1,9 +1,10 @@
 # phx init (docs/design.md -> Commands): the wizard that decides what to back up and where. It asks
 # for the roots, the GitHub account per owner, the target folder, this machine's name in it, the age
-# key secrets are encrypted to and the interval, and turns the background run on; the review of
-# gitignored files (M3) joins with its milestone. Nothing is saved before the last question - not the config, not the
-# scan of the chosen roots; `q` at any prompt, Ctrl+C or the end of input stops without saving. A
-# second run starts from the current values, so Enter all the way changes nothing.
+# key secrets are encrypted to and the interval, and turns the background run on. Nothing is saved
+# before the last question - not the config, not the scan of the chosen roots; `q` at any prompt,
+# Ctrl+C or the end of input stops without saving. A second run starts from the current values, so
+# Enter all the way changes nothing. Once saved, it offers the review of the gitignored files (phx
+# review), which saves each answer itself.
 
 function Get-PhxRootCandidate {
     # Folders that commonly hold repositories; the wizard offers the ones that exist and hold any.
@@ -251,6 +252,15 @@ function Select-PhxInitInterval {
     }
 }
 
+function Invoke-PhxInitReview {
+    # The step after saving: the gitignored files to decide on (phx review), when there are any.
+    # A failure here leaves the saved set-up as it is: phx review tries again.
+    Write-PhxInitStep 'Gitignored files - which local files to back up' 'a file nobody decided on is not backed up; Enter skips, phx review does it later'
+    try { Invoke-PhxReview -Ask }
+    catch [OperationCanceledException] { Write-Host '  review stopped - phx review goes on later' -ForegroundColor Yellow }
+    catch { Write-Host "  review: $($_.Exception.Message) - phx review tries again" -ForegroundColor Yellow }
+}
+
 function Invoke-PhxInit {
     $configPath = Get-PhxConfigPath
     $config = Read-PhxConfig
@@ -275,7 +285,6 @@ function Invoke-PhxInit {
             Write-PhxInitStep 'Schedule - back up in the background' "a task in your Task Scheduler runs phx every $interval and after logon; phx schedule off removes it"
             $schedule = Read-PhxInitYesNo -Prompt '  Run it in the background?' -Default $default
         }
-        Write-PhxInitStep 'Later milestones' 'the review of gitignored files (M3) is asked here once it exists'
 
         Write-PhxInitStep 'Summary'
         foreach ($root in $roots) { Write-Host "  root      $($root.path)   depth $($root.depth)" }
@@ -325,5 +334,6 @@ function Invoke-PhxInit {
             Write-Host "  $restore" -ForegroundColor DarkGray
         }
     }
+    Invoke-PhxInitReview
     Write-Host 'next: phx run for a first backup now, then phx status' -ForegroundColor Green
 }

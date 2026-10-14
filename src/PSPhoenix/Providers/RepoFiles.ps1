@@ -19,7 +19,9 @@ function Get-PhxRepoFileRule {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [Parameter(Mandatory)][string]$Identity)
     $files = $Config.files
     $own = if ($files.repos -is [System.Collections.IDictionary]) { $files.repos[$Identity] }
-    $include = [string[]]@($own.include | Where-Object { $_ })
+    # A file the review called no secret ("plain") is backed up as it is: included.
+    $plain = if ($own.plain -is [System.Collections.IDictionary]) { @($own.plain.Keys) } else { @() }
+    $include = [string[]]@(@($own.include) + $plain | Where-Object { $_ })
     $secret = [string[]]@($own.secret | Where-Object { $_ })
     $exclude = [string[]]@(@($own.exclude) + @($files.exclude) | Where-Object { $_ })
     try { [PSPhoenix.Engine.FileRules]::new($include, $secret, $exclude) }
@@ -47,16 +49,22 @@ function Get-PhxMaxFileBytes {
 
 function Get-PhxRepoFileCandidate {
     # One repository's gitignored files with the decision on each: { Path, Size, SecretName,
-    # Filter, Decision }, and whether the walk was cut short. Throws when git cannot list them.
-    param([Parameter(Mandatory)][System.Collections.IDictionary]$Record, [Parameter(Mandatory)][System.Collections.IDictionary]$Config)
+    # Filter, Decision, Accepted }, and whether the walk was cut short. Accepted: the findings the
+    # review called no secret. -List reuses a listing (the review decides again after each answer);
+    # without it git lists them, and throws when it cannot.
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Record, [Parameter(Mandatory)][System.Collections.IDictionary]$Config, $List)
     $own = if ($Config.files.repos -is [System.Collections.IDictionary]) { $Config.files.repos[$Record.identity] }
-    $list = Get-PhxIgnoredFile -Path (Get-PhxRepoKey $Record) -MaxBytes (Get-PhxMaxFileBytes $Config) -SecretPatterns ([string[]]@($own.secret | Where-Object { $_ }))
+    if (-not $List) { $List = Get-PhxIgnoredFile -Path (Get-PhxRepoKey $Record) -MaxBytes (Get-PhxMaxFileBytes $Config) -SecretPatterns ([string[]]@($own.secret | Where-Object { $_ })) }
     $rules = Get-PhxRepoFileRule -Config $Config -Identity $Record.identity
+    $plain = @(if ($own.plain -is [System.Collections.IDictionary]) {
+            foreach ($key in $own.plain.Keys) { [pscustomobject]@{ Pattern = [PSPhoenix.Engine.PathPattern]::Parse($key); Signatures = @($own.plain[$key]) } }
+        })
     [pscustomobject]@{
-        Files     = @(foreach ($file in $list.Files) {
-                [pscustomobject]@{ Path = $file.Path; Size = $file.Size; SecretName = $file.SecretName; Filter = "$($file.Filter)"; Decision = "$($rules.Decide($file))" }
+        Files     = @(foreach ($file in $List.Files) {
+                $accepted = [string[]]@($plain | Where-Object { $_.Pattern.IsMatch($file.Path) } | ForEach-Object { $_.Signatures } | Where-Object { $_ })
+                [pscustomobject]@{ Path = $file.Path; Size = $file.Size; SecretName = $file.SecretName; Filter = "$($file.Filter)"; Decision = "$($rules.Decide($file))"; Accepted = $accepted }
             })
-        Truncated = $list.Truncated
+        Truncated = $List.Truncated
     }
 }
 
@@ -157,7 +165,7 @@ function Backup-PhxRepoFiles {
             $target = "$folder/$($file.Path)"
             if ($Context.DryRun) { & $Context.Log "would back up $target" 'Action'; continue }
             # A file can go while the run looks at it: the next run sees it gone.
-            try { Copy-PhxStagedFile -Context $Context -Source ([IO.Path]::GetFullPath((Join-Path $key $file.Path))) -Path $target -Secret:($file.Decision -eq 'Secret') }
+            try { Copy-PhxStagedFile -Context $Context -Source ([IO.Path]::GetFullPath((Join-Path $key $file.Path))) -Path $target -Secret:($file.Decision -eq 'Secret') -Accept $file.Accepted }
             catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { continue }
             # Encrypted, plain, or held back for lack of a key.
             $name = if ($Context.Sealed.Contains("$target.age")) { "$($file.Path).age" }
@@ -175,7 +183,7 @@ function Backup-PhxRepoFiles {
         $document = [ordered]@{ format = $script:PhxRepoFilesFormat; repositories = @($manifest) }
         Write-PhxStagedText -Context $Context -Path 'files.json' -Value ($document | ConvertTo-Json -Depth 6) -FailOnSecret
     }
-    Write-PhxTextFile -Path (Get-PhxRepoFilesStatePath) -Value ([ordered]@{ at = [DateTime]::UtcNow.ToString('o'); repositories = @($pending) } | ConvertTo-Json -Depth 6)
+    Save-PhxRepoFilesPending -Pending @($pending) -Stored $copied -StoredRepositories $manifest.Count
     & $Context.Log "$copied file(s) from $($manifest.Count) repositories$note"
 }
 
@@ -258,6 +266,20 @@ function Restore-PhxRepoFiles {
     if ($counts.failed) { throw "$($counts.failed) gitignored file(s) could not be restored - see above" }
 }
 
+function Save-PhxRepoFilesPending {
+    # The pending list in the state folder, for phx status and the review: per repository
+    # { identity, path, files }. A backup also records how many files it stored; the review keeps
+    # those numbers.
+    param([object[]]$Pending = @(), [int]$Stored = -1, [int]$StoredRepositories = 0)
+    $document = [ordered]@{ at = [DateTime]::UtcNow.ToString('o'); repositories = @($Pending) }
+    if ($Stored -ge 0) { $document.stored = $Stored; $document.storedRepositories = $StoredRepositories }
+    else {
+        $last = Get-PhxRepoFilesPending
+        if ($last -and $null -ne $last.stored) { $document.stored = $last.stored; $document.storedRepositories = $last.storedRepositories }
+    }
+    Write-PhxTextFile -Path (Get-PhxRepoFilesStatePath) -Value ($document | ConvertTo-Json -Depth 6)
+}
+
 function Get-PhxRepoFilesPending {
     # What the last backup left pending, per repository: { identity, path, files }. Nothing before
     # a first backup.
@@ -268,15 +290,13 @@ function Get-PhxRepoFilesPending {
 }
 
 function Get-PhxRepoFilesStatus {
-    # phx status lines: how many gitignored files wait for a decision.
+    # phx status lines: what the last backup stored. The pending count is phx status's own review
+    # line - a warning.
     param([Parameter(Mandatory)]$Context)
     $null = $Context
     $state = Get-PhxRepoFilesPending
-    if (-not $state) { return 'not looked at yet - the next phx run lists the gitignored files' }
-    $repos = @($state.repositories | Where-Object { $_ })
-    $count = [int]($repos | ForEach-Object { @($_.files).Count } | Measure-Object -Sum).Sum
-    if (-not $count) { return 'every gitignored file is decided on' }
-    "$count gitignored file(s) in $($repos.Count) repositories wait for a decision - not backed up until then"
+    if (-not $state -or $null -eq $state.stored) { return 'not backed up yet - phx run' }
+    "$($state.stored) file(s) from $($state.storedRepositories) repositories in the last backup"
 }
 
 Register-PhxProvider @{

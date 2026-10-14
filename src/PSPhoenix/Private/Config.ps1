@@ -82,8 +82,14 @@ function Assert-PhxFilesConfig {
         $decisions = $Files.repos[$identity]
         if ($decisions -isnot [System.Collections.IDictionary]) { throw "config ${ConfigPath}: files.repos.$identity must be an object" }
         foreach ($key in $decisions.Keys) {
-            if ($key -notin 'include', 'secret', 'exclude') { throw "config ${ConfigPath}: files.repos.$identity.$key - expected include, secret or exclude" }
-            $lists["files.repos.$identity.$key"] = $decisions[$key]
+            if ($key -notin 'include', 'secret', 'exclude', 'plain') { throw "config ${ConfigPath}: files.repos.$identity.$key - expected include, secret, exclude or plain" }
+            if ($key -ne 'plain') { $lists["files.repos.$identity.$key"] = $decisions[$key]; continue }
+            # plain: a file the review called no secret - its pattern, and the findings accepted.
+            if ($decisions.plain -isnot [System.Collections.IDictionary]) { throw "config ${ConfigPath}: files.repos.$identity.plain must be an object: a pattern to the findings that are no secret" }
+            $lists["files.repos.$identity.plain"] = @($decisions.plain.Keys)
+            foreach ($pattern in $decisions.plain.Keys) {
+                if (@($decisions.plain[$pattern] | Where-Object { $_ -isnot [string] -or -not $_ }).Count) { throw "config ${ConfigPath}: files.repos.$identity.plain.$pattern must list findings, like SecretValue:ClientSecret" }
+            }
         }
     }
     foreach ($name in $lists.Keys) {
