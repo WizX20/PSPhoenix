@@ -1,7 +1,7 @@
 # phx init (docs/design.md -> Commands): the wizard that decides what to back up and where. It asks
-# for the roots, the GitHub account per owner, the target folder, this machine's name in it and the
-# interval, and turns the background run on; secrets (M3) and the review of gitignored files (M3)
-# join with their milestone. Nothing is saved before the last question - not the config, not the
+# for the roots, the GitHub account per owner, the target folder, this machine's name in it, the age
+# key secrets are encrypted to and the interval, and turns the background run on; the review of
+# gitignored files (M3) joins with its milestone. Nothing is saved before the last question - not the config, not the
 # scan of the chosen roots; `q` at any prompt, Ctrl+C or the end of input stops without saving. A
 # second run starts from the current values, so Enter all the way changes nothing.
 
@@ -197,8 +197,50 @@ function Select-PhxInitMachine {
     }
 }
 
+function Test-PhxPassphrase {
+    # Long enough to guard a key copy in a synced folder: four words or more, or 20 characters.
+    param([string]$Text)
+    $words = @($Text -split '[\s\-_.,;:]+' | Where-Object { $_.Length -ge 2 })
+    $words.Count -ge 4 -or $Text.Length -ge 20
+}
+
+function Select-PhxInitSecret {
+    # Step 6: the age key secrets are encrypted to (docs/design.md -> Secrets). The current one is
+    # kept on Enter. A new one gets a passphrase-protected copy in the target, unless declined, and
+    # its secret half is shown once after saving. Or the recipient of a key the user already has.
+    param([string]$Current)
+    Write-PhxInitStep 'Secrets - the key that files with a password or token in them are encrypted to' 'an age key: the public half goes into the config, so the background run needs no secret; the secret half stays with you'
+    if ($Current) {
+        Write-Host "  current key: $Current"
+        if (Read-PhxInitYesNo -Prompt '  Keep it?') { return [pscustomobject]@{ Recipient = $Current; Identity = $null; Passphrase = $null; Source = 'current' } }
+        Write-Host '  note: the next run encrypts every secret to the new key; older versions in the target stay encrypted to the current one - keep it as well' -ForegroundColor DarkYellow
+    }
+    while ($true) {
+        $answer = Read-PhxInitAnswer -Prompt '  Enter for a new key, or the age1... recipient of a key you have'
+        if (-not $answer) { break }
+        if ([PSPhoenix.Engine.Age]::IsRecipient($answer)) { return [pscustomobject]@{ Recipient = $answer; Identity = $null; Passphrase = $null; Source = 'yours' } }
+        if ($answer -match '^AGE-SECRET-KEY-') { Write-Host '  that is the secret half of the key - keep it to yourself; its public half starts with age1 (age-keygen -y <key file> prints it)' -ForegroundColor Yellow; continue }
+        Write-Host '  an age recipient starts with age1 - or Enter for a new key' -ForegroundColor Yellow
+    }
+    $key = [PSPhoenix.Engine.Age]::NewKey()
+    Write-Host '  a passphrase protects a copy of the new key in the target: a restore then needs only the passphrase - four words or more, or 20 characters' -ForegroundColor DarkGray
+    while ($true) {
+        $passphrase = Read-PhxSecretAnswer -Prompt '  Passphrase (Enter for none)'
+        if (-not $passphrase) {
+            if (Read-PhxInitYesNo -Prompt '  No copy of the key in the target: only the key shown at the end restores your secrets. Sure?' -Default $false) { break }
+            continue
+        }
+        # The target may be a shared or synced folder: whoever can read the copy can try passphrases
+        # at leisure, so a short one with a few substitutions will not do.
+        if (-not (Test-PhxPassphrase $passphrase)) { Write-Host '  four words or more, or at least 20 characters, please - whoever can read the target can try passphrases at leisure' -ForegroundColor Yellow; continue }
+        if ((Read-PhxSecretAnswer -Prompt '  The same passphrase again') -cne $passphrase) { Write-Host '  not the same - once more' -ForegroundColor Yellow; continue }
+        break
+    }
+    [pscustomobject]@{ Recipient = $key.Recipient; Identity = $key.Identity; Passphrase = $passphrase; Source = 'new' }
+}
+
 function Select-PhxInitInterval {
-    # Step 6: how often the background run goes.
+    # Step 7: how often the background run goes.
     param([string]$Current)
     Write-PhxInitStep 'Interval - how often the background run backs up' 'minutes, hours or days: 30m, 1h, 4h, 1d'
     $default = if ($Current) { $Current } else { '1h' }
@@ -221,8 +263,9 @@ function Invoke-PhxInit {
         $accounts = Select-PhxInitAccount -Records $records -Current $config.accounts
         $target = Select-PhxInitTarget -Current $config.target
         $machine = Select-PhxInitMachine -TargetPath $target.path -Current $config.machine
+        $secret = Select-PhxInitSecret -Current $config.secrets.recipient
         $interval = Select-PhxInitInterval -Current $config.interval
-        # Step 7: the background run. Asked only where phx schedule works (Windows, for now). The
+        # Step 8: the background run. Asked only where phx schedule works (Windows, for now). The
         # default is what is so now - on for a first init - so Enter all the way changes nothing.
         $schedule = $false
         $registered = $null
@@ -232,13 +275,19 @@ function Invoke-PhxInit {
             Write-PhxInitStep 'Schedule - back up in the background' "a task in your Task Scheduler runs phx every $interval and after logon; phx schedule off removes it"
             $schedule = Read-PhxInitYesNo -Prompt '  Run it in the background?' -Default $default
         }
-        Write-PhxInitStep 'Later milestones' 'secrets (an age key, M3) and the review of gitignored files (M3) are asked here once they exist'
+        Write-PhxInitStep 'Later milestones' 'the review of gitignored files (M3) is asked here once it exists'
 
         Write-PhxInitStep 'Summary'
         foreach ($root in $roots) { Write-Host "  root      $($root.path)   depth $($root.depth)" }
         foreach ($owner in $accounts.Keys) { Write-Host "  account   $owner -> $($accounts[$owner])" }
         Write-Host "  target    $($target.path)"
         Write-Host "  machine   $($machine.name)   snapshot in $(Join-Path $target.path $machine.name)"
+        $keyNote = switch ($secret.Source) {
+            'current' { 'the current key' }
+            'yours' { 'your key' }
+            default { if ($secret.Passphrase) { "a new key, its passphrase copy $(Split-Path -Leaf (Get-PhxKeyCopyPath -Config @{ target = $target; machine = $machine } -Recipient $secret.Recipient)) in the snapshot" } else { 'a new key, no copy in the snapshot' } }
+        }
+        Write-Host "  secrets   $(Format-PhxRecipient $secret.Recipient)   $keyNote"
         Write-Host "  interval  $interval"
         if (Test-PhxCanSchedule) { Write-Host "  schedule  $(if ($schedule) { 'on' } else { 'off - phx schedule on later' })" }
         if (-not (Read-PhxInitYesNo -Prompt "Save to ${configPath}?")) { throw [OperationCanceledException]::new('not confirmed') }
@@ -252,14 +301,29 @@ function Invoke-PhxInit {
     $config.accounts = $accounts
     $config.target = $target
     $config.machine = $machine
+    $config.secrets.recipient = $secret.Recipient
     $config.interval = $interval
+    # The key's copy before the config: if the target cannot take it, nothing changed.
+    if ($secret.Passphrase) { Save-PhxKeyCopy -Config $config -Identity $secret.Identity -Passphrase $secret.Passphrase }
     Save-PhxConfig $config
-    Save-PhxRepoCache -Roots $roots -Records $records
     Write-Host "saved $configPath" -ForegroundColor Green
-    if ($schedule) {
-        # Registered already, as it should be (the same interval, this module): left alone.
-        if (-not $registered -or @(Get-PhxScheduleProblem -Task $registered -Config $config).Count) { Enable-PhxSchedule }
+    # From here on the config names the new key: it is shown whatever else goes wrong.
+    try {
+        Save-PhxRepoCache -Roots $roots -Records $records
+        if ($schedule) {
+            # Registered already, as it should be (the same interval, this module): left alone.
+            if (-not $registered -or @(Get-PhxScheduleProblem -Task $registered -Config $config).Count) { Enable-PhxSchedule }
+        }
+        elseif ($registered) { Disable-PhxSchedule }
     }
-    elseif ($registered) { Disable-PhxSchedule }
+    finally {
+        if ($secret.Identity) {
+            Write-Host
+            Write-Host 'Your new age key - put it in your password manager now, it is not shown again:' -ForegroundColor Yellow
+            Show-PhxSecretLine "  $($secret.Identity)"
+            $restore = if ($secret.Passphrase) { "it, or the passphrase for $(Split-Path -Leaf (Get-PhxKeyCopyPath $config)) in the snapshot, opens your secrets on a new machine" } else { 'it is the only way to open your secrets on a new machine' }
+            Write-Host "  $restore" -ForegroundColor DarkGray
+        }
+    }
     Write-Host 'next: phx run for a first backup now, then phx status' -ForegroundColor Green
 }

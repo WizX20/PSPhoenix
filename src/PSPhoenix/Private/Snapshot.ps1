@@ -10,6 +10,9 @@
 # restored from.
 
 $script:PhxSnapshotFormat = 1
+# The scrypt work factor of a key copy: 2^18, as age -p. Tests lower it - a test needs no brute-force
+# resistance, and 2^18 takes a second and 256 MB.
+$script:PhxKeyWorkFactor = 18
 
 function Get-PhxMachineName {
     # This machine's folder in the target: the configured name, else the computer name.
@@ -102,6 +105,50 @@ function Publish-PhxFolder {
     catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
 }
 
+function Initialize-PhxSnapshot {
+    # This machine's snapshot folder, claimed for this installation, and its phoenix.json. A new
+    # folder is claimed before anything else goes in: a run that dies half-way must not leave files
+    # without the phoenix.json that says whose they are. Throws when this installation may not
+    # write the folder (Get-PhxSnapshotProblem).
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config)
+    if (-not $Config.machine -or -not $Config.machine.id) { throw 'this machine has no id yet - run phx init' }
+    $snapshot = Get-PhxSnapshotPath $Config
+    $info = Assert-PhxSnapshotWritable -Path $snapshot -Config $Config
+    if ($info) { return $info }
+    Write-PhxTextFile -Path (Join-Path $snapshot 'phoenix.json') -Value ([ordered]@{
+            format = $script:PhxSnapshotFormat; machine = [ordered]@{ name = Get-PhxMachineName $Config; id = $Config.machine.id }; createdAt = [DateTime]::UtcNow.ToString('o')
+        } | ConvertTo-Json -Depth 5)
+    Read-PhxSnapshotInfo $snapshot
+}
+
+function Get-PhxKeyCopyPath {
+    # The passphrase-protected copy of an age key in this machine's snapshot: an age identity file,
+    # so `age -d -i key-<id>.age <file>.age` opens a secret without PSPhoenix. Named after the key
+    # (12 characters of its recipient): a new key gets a copy of its own, and the copies of older
+    # keys stay for the older versions of the snapshot a sync client keeps.
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [string]$Recipient = $Config.secrets.recipient)
+    Join-Path (Get-PhxSnapshotPath $Config) "key-$($Recipient.Substring(4, 12)).age"
+}
+
+function Save-PhxKeyCopy {
+    # Writes the key copy: the identity, as age-keygen writes an identity file, encrypted with the
+    # passphrase (scrypt, as age -p). Claims the snapshot folder first.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', 'Passphrase',
+        Justification = 'scrypt in the engine takes the passphrase as text; it is held in memory only for this call, never stored')]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Config,
+        [Parameter(Mandatory)][string]$Identity,
+        [Parameter(Mandatory)][string]$Passphrase
+    )
+    Initialize-PhxSnapshot -Config $Config | Out-Null
+    $text = "# created: $([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))`n# public key: $([PSPhoenix.Engine.Age]::RecipientOf($Identity))`n$Identity`n"
+    try {
+        $encrypted = [PSPhoenix.Engine.Age]::EncryptWithPassphrase([Text.Encoding]::UTF8.GetBytes($text), $Passphrase, $script:PhxKeyWorkFactor)
+        [PSPhoenix.Engine.AtomicFile]::WriteAllBytes((Get-PhxKeyCopyPath $Config -Recipient ([PSPhoenix.Engine.Age]::RecipientOf($Identity))), $encrypted)
+    }
+    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
+}
+
 function Publish-PhxSnapshot {
     # Publishes the staged files of these providers, and the config, into this machine's snapshot
     # folder. phoenix.json records when each provider's files last changed; it is rewritten only
@@ -112,20 +159,11 @@ function Publish-PhxSnapshot {
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Provider,
         [PSPhoenix.Engine.PhxState]$State
     )
-    if (-not $Config.machine -or -not $Config.machine.id) { throw 'this machine has no id yet - run phx init' }
     $snapshot = Get-PhxSnapshotPath $Config
-    $info = Assert-PhxSnapshotWritable -Path $snapshot -Config $Config
+    $info = Initialize-PhxSnapshot -Config $Config
     $now = [DateTime]::UtcNow.ToString('o')
-    if (-not $info) {
-        # A new folder is claimed before anything else goes in: a run that dies half-way must not
-        # leave files without the phoenix.json that says whose they are.
-        Write-PhxTextFile -Path (Join-Path $snapshot 'phoenix.json') -Value ([ordered]@{
-                format = $script:PhxSnapshotFormat; machine = [ordered]@{ name = Get-PhxMachineName $Config; id = $Config.machine.id }; createdAt = $now
-            } | ConvertTo-Json -Depth 5)
-        $info = Read-PhxSnapshotInfo $snapshot
-    }
-    # Temporary files of a write to phoenix.json or config.json that died half-way.
-    foreach ($stale in @([IO.Directory]::EnumerateFiles($snapshot, '.*.tmp') | Where-Object { [IO.Path]::GetFileName($_) -match '^\.(phoenix|config)\.json\.[0-9a-f]{8}\.tmp$' })) {
+    # Temporary files of a write to phoenix.json, config.json or a key copy that died half-way.
+    foreach ($stale in @([IO.Directory]::EnumerateFiles($snapshot, '.*.tmp') | Where-Object { [IO.Path]::GetFileName($_) -match '^\.(phoenix\.json|config\.json|key-[a-z0-9]{12}\.age)\.[0-9a-f]{8}\.tmp$' })) {
         [IO.File]::Delete($stale)
     }
     $providers = [ordered]@{}

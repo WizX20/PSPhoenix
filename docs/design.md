@@ -219,11 +219,29 @@ the helpers, SSH commands and include paths it is about to apply before it appli
 
 Encryption uses [age](https://age-encryption.org):
 
-- `phx init` generates an X25519 identity or takes an existing recipient. The **public recipient**
-  goes into the config; backups encrypt to it, so the scheduled run needs no secret at all.
-- The **private identity** is shown once and kept where the user chooses (a password manager). It
-  can additionally be stored in the target passphrase-encrypted (`age -p`), so a restore needs only
-  that passphrase.
+- **One key per installation, made by `phx init`**: an X25519 key pair, or the recipient of a key
+  the user already has.
+  - The **public recipient** goes into the config (`secrets.recipient`). Backups encrypt to it, so
+    the scheduled run needs no secret at all.
+  - The **private identity** is shown once, after saving, for a password manager. It is never in
+    the config, the state or a log.
+  - **`key-<id>.age`** in the snapshot folder holds the identity file, encrypted with a passphrase
+    the user chooses, so a restore needs only that passphrase.
+    - The name carries 12 characters of the key's recipient, so `phx status` checks the copy that
+      belongs to the current key.
+    - The encryption is scrypt, as `age -p` uses. The passphrase needs four words or 20
+      characters, typed twice: whoever can read the target can try passphrases at leisure.
+    - Without PSPhoenix it opens the same way: `age -d -i key-<id>.age file.age` asks for the
+      passphrase.
+    - A key without that copy is possible, but `phx init` asks twice: the shown key is then the
+      only way back.
+  - **The key is shown once**, after saving, even when a later step fails. It goes straight to the
+    console, past PowerShell's streams, so a transcript does not record it.
+  - Run again, `phx init` keeps the current key on Enter.
+  - **A new key:**
+    - The next run encrypts every secret to it.
+    - Older versions of the snapshot that a sync client keeps stay encrypted to the old key.
+    - The old key's copy stays next to the new one.
 - **Not DPAPI**: it is bound to the machine and the Windows account, so after a crash the data
   would be unreadable - exactly the case this tool exists for.
 - **Built in, nothing to install.** The engine implements the age format itself (`Age`):
@@ -239,7 +257,7 @@ Encryption uses [age](https://age-encryption.org):
   So a snapshot stays readable without PSPhoenix: `age -d -i key.txt file.age` opens it. The ASCII
   armor, plugins and the post-quantum hybrid keys are not built, because PSPhoenix writes none of
   them.
-- **Until a key is set up** (`phx init`, #25), secret-classified items are held back and `phx status`
+- **Until a key is set up** (`phx init`), secret-classified items are held back and `phx status`
   says so.
 
 **Detection.** A file is secret by its name (see [Gitignored files](#gitignored-files-filters-and-review))
@@ -277,15 +295,20 @@ or `phx status` can name it as it is: `appsettings.json line 12: a secret value 
 **Staging.** Every file a provider stages goes through the writer, which scans it before
 anything is written:
 
-- A text with a secret in it is secret as a whole. It is stored only as `.age` (#25), and until
-  age is there it is **held back**: never written to staging, not published, so a file already in
-  the snapshot is removed there.
+- A text with a secret in it is secret as a whole. It is staged and published only as
+  `<name>.age`, encrypted to the recipient. The plaintext never reaches the disk.
+- **Same plaintext, same file.** age output differs every time, so encrypting an unchanged secret
+  again would give a new file every run, and the sync client would upload every secret every hour.
+  The writer keeps the last ciphertext of each staged file in the state folder (`sealed/`). As long
+  as the plaintext and the recipient are the same, it stages that file again.
+- **Without a key** the file is **held back**: never written to staging and not published, so a
+  file already in the snapshot is removed there.
 - The warning, the run log and `phx status` name the file, the line and the kind, never the value:
-  `held back appsettings.json line 12: a secret value (ClientSecret)`.
-- Before publishing, the run scans the staging folder once more and holds back whatever reached it
-  another way.
+  `encrypted appsettings.json line 12: a secret value (ClientSecret)`.
+- Before publishing, the run scans the staging folder once more. Whatever reached it another way is
+  encrypted, or held back.
 - The state records per provider what its last successful run held back. `phx status` shows them
-  as a warning, and `phx run` adds the count to the provider's line.
+  as a warning, and `phx run` adds both counts to the provider's line (`3 encrypted`, `2 held back`).
 - A file the snapshot cannot do without fails its provider instead, so the last published copy
   stays. This is the repository inventory, which is kept free of secrets value by value.
 
@@ -316,11 +339,15 @@ One folder per provider, which that provider alone fills:
 <target>/<machine>/
   phoenix.json                      format, machine name and id, user, platform, PSPhoenix version,
                                     created/updated, per provider when its files last changed
-  config.json                       the PSPhoenix config (roots, accounts, review decisions)
+  config.json                       the PSPhoenix config (roots, accounts, review decisions, the
+                                    age recipient)
+  key-<id>.age                      the age key, passphrase-encrypted (phx init; optional; one per
+                                    key, named after its recipient)
   repos/repos.json                  the repository inventory
   repo-files/<host>/<owner>/<name>/
     <relative path>                 gitignored files
-    <relative path>.age             secret-classified ones
+    <relative path>.age             secret-classified ones - in any provider's folder, a file with
+                                    a secret is <name>.age
   wip/<host>/<owner>/<name>.bundle  local-only work
   claude/home/                      selection from ~/.claude
   claude/projects/<repo id>/memory/ memory keyed by repository identity, not by encoded path
@@ -446,9 +473,9 @@ owner on a host `gh` is logged in to, which account its repositories use - defau
 set before (kept, with a warning, when `gh` is not logged in with it), else what their credential
 helpers say, else the active account; suggests the OneDrive for Business folder as target, with a
 note on where company data belongs when another folder is chosen; names the machine (the computer
-name, not a folder another installation wrote); takes an interval from 15 minutes to 31 days (Task
-Scheduler's longest repetition); and, on Windows, asks to turn the schedule on. Each later milestone
-adds its step.
+name, not a folder another installation wrote); sets up the age key secrets are encrypted to (see
+[Secrets](#secrets)); takes an interval from 15 minutes to 31 days (Task Scheduler's longest
+repetition); and, on Windows, asks to turn the schedule on. Each later milestone adds its step.
 
 `phx run` is one backup run, and what the scheduled task calls (through `phx-task.ps1` next to the
 module, headless and at below-normal priority). It needs the set-up from `phx init` and the target

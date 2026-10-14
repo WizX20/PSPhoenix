@@ -41,7 +41,11 @@ function New-PhxContext {
         RootMap  = $RootMap
         Select   = @($Select)
         Log      = { param([string]$Message, [string]$Level = 'Info') Write-PhxLog -Message $Message -Level $Level }
-        # The files the secret check held back in this run, each as '<file> line <n>: <kind>'.
+        # The files the secret check held back in this run, each as '<file> line <n>: <kind>', and
+        # those it staged encrypted, as '<file>.age'.
         Withheld = [Collections.Generic.List[string]]::new()
+        Sealed   = [Collections.Generic.List[string]]::new()
+        # What encrypts its secrets, to the age recipient in the config; nothing without a key.
+        Sealer   = $(if ($Staging) { New-PhxSealer -Config $Config -Provider $Provider })
     }
 }
