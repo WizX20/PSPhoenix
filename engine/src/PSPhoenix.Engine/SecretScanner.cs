@@ -33,6 +33,9 @@ public enum SecretKind
     /// <summary>A JSON web token: <c>eyJ….eyJ….…</c>.</summary>
     JsonWebToken,
 
+    /// <summary>An age secret key: <c>AGE-SECRET-KEY-1…</c> - what opens a snapshot's secrets.</summary>
+    AgeSecretKey,
+
     /// <summary>A password in a URL (<c>user:password@</c>), or a token as its user name.</summary>
     UrlCredential,
 
@@ -107,6 +110,7 @@ public static partial class SecretScanner
     private static readonly Rule[] Formats =
     [
         new(SecretKind.PrivateKey, PrivateKeyPattern()),
+        new(SecretKind.AgeSecretKey, AgeSecretKeyPattern()),
         new(SecretKind.GitHubToken, GitHubPattern()),
         new(SecretKind.GitLabToken, GitLabPattern()),
         new(SecretKind.SlackToken, SlackPattern()),
@@ -245,6 +249,7 @@ public static partial class SecretScanner
         SecretKind.AzureDevOpsToken => "an Azure DevOps token",
         SecretKind.NpmToken => "an npm token",
         SecretKind.JsonWebToken => "a JSON web token",
+        SecretKind.AgeSecretKey => "an age secret key",
         SecretKind.UrlCredential => "credentials in a URL",
         SecretKind.AuthorizationHeader => "an authorization header",
         SecretKind.Password => "a password",
@@ -428,6 +433,9 @@ public static partial class SecretScanner
 
     [GeneratedRegex(@"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|\z)", Options, Timeout)]
     private static partial Regex PrivateKeyPattern();
+
+    [GeneratedRegex(@"(?i)(?<![A-Za-z0-9_-])AGE-SECRET-KEY-(?:PQ-)?1[0-9A-Z]{40,}", Options, Timeout)]
+    private static partial Regex AgeSecretKeyPattern();
 
     [GeneratedRegex(@"(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})", Options, Timeout)]
     private static partial Regex GitHubPattern();

@@ -10,8 +10,8 @@ src/PSPhoenix/PSPhoenix.psd1        module manifest (ModuleVersion is the releas
 src/PSPhoenix/Private/*.ps1         helpers, one file per concern (paths, config, provider registry, ...)
 src/PSPhoenix/Providers/*.ps1       one file per backup unit; each calls Register-PhxProvider at import
 src/PSPhoenix/lib/                  PSPhoenix.Engine.dll - build output of engine/ (task build), not in git, in the zip
-engine/src/PSPhoenix.Engine/        the engine: C# (.NET 8) - atomic writes, hashing, publishing, state, change detection, the secret scan
-engine/tests/PSPhoenix.Engine.Tests/ its xUnit v3 tests, with FluentAssertions 7
+engine/src/PSPhoenix.Engine/        the engine: C# (.NET 8) - atomic writes, hashing, publishing, state, change detection, the secret scan, age (Crypto/: X25519, scrypt, bech32)
+engine/tests/PSPhoenix.Engine.Tests/ its xUnit v3 tests, with FluentAssertions 7; testkit/ holds the official age test vectors
 tests/PSPhoenix.Tests.ps1           Pester 5+ suite; never touches the real home, registry or Task Scheduler
 tests/Scripts.Tests.ps1             the dev scripts in scripts/ (dev-link, cut-changelog), each pointed at $TestDrive
 docs/design.md                      the design and the roadmap - the contract the code builds towards
@@ -45,6 +45,7 @@ Requires **PowerShell 7.4+**, git, the **.NET SDK 10+** for the engine (`winget 
 - **One engine per session.** .NET never unloads an assembly: after a C# change, start a new PowerShell session before `Import-Module PSPhoenix -Force`. The module refuses to import with another engine than the one the session loaded (it compares the DLL's SHA-256), so a stale engine never runs under new scripts; the same engine from another folder is fine.
 - **No held DLL.** The module loads the engine from its bytes (`[Reflection.Assembly]::Load`), so no session holds `lib/PSPhoenix.Engine.dll` open: a build, an update or an uninstall replaces it while sessions run.
 - **Errors.** The PowerShell wrappers rethrow the engine's exception itself, so a message reads `<path> is not a full path`, not `Exception calling "WriteAllText" with "2" argument(s): ...`. Do the same for a new call into the engine.
+- **age** is built into the engine (`Age.cs`, `Crypto/`): no age tool for users. Its tests run the official age test vectors (`testkit/`, see its README for updating them) and, where the age tool is on PATH (CI's Linux job installs it), an interop test both ways. Change anything in `Age.cs` or `Crypto/` only with those green - crypto that passes its own round trip can still be wrong.
 - The engine depends on nothing but .NET: a NuGet package there would have to match the one PowerShell loaded already. Paths into it are always full paths - .NET resolves a relative one against the process's folder, not PowerShell's location, so the engine refuses them.
 
 ## Tests and lint

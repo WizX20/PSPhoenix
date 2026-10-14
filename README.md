@@ -40,7 +40,6 @@ The full design, including what is not built yet: [docs/design.md](docs/design.m
 
 - PowerShell 7.4 or later (Windows first; Linux and macOS follow)
 - git; `gh` for repositories behind GitHub accounts
-- [age](https://age-encryption.org) to back up secrets (`scoop install age` or `winget install FiloSottile.age`)
 
 ## Install
 
