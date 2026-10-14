@@ -1698,9 +1698,13 @@ Describe 'repo-files provider' {
 
     It 'shows the pending count in phx status' {
         Set-TestFilesConfig -Decisions @{ include = @('config.local.env') }
-        Get-PhxOutput { phx status } | Should -Match 'repo-files\s+not looked at yet'
+        $before = Get-PhxOutput { phx status }
+        $before | Should -Match 'repo-files\s+not backed up yet'
+        $before | Should -Match 'review\s+gitignored files not looked at yet'
         Invoke-FilesBackup $script:FilesStaging | Out-Null
-        Get-PhxOutput { phx status } | Should -Match 'repo-files\s+5 gitignored file\(s\) in 1 repositories wait for a decision'
+        $after = Get-PhxOutput { phx status }
+        $after | Should -Match 'repo-files\s+1 file\(s\) from 1 repositories in the last backup'
+        $after | Should -Match 'review\s+5 gitignored file\(s\) in 1 repositories wait for a decision'
     }
 
     It 'refuses a config with a pattern that is not one' {
@@ -1708,6 +1712,141 @@ Describe 'repo-files provider' {
         Set-TestFilesConfig -Decisions @{ exclude = @('../outside') }
         { InModuleScope PSPhoenix { Read-PhxConfig } } | Should -Throw "*files.repos.github.com/WizX20/app.exclude: '../outside' is not a path pattern*"
         Remove-Item -LiteralPath $path
+    }
+}
+
+Describe 'review' {
+    BeforeAll {
+        function script:Invoke-TestReview {
+            # phx review with these answers, in order ('' is Enter); its output. Every answer must be
+            # used.
+            param([switch]$Ask, [Parameter(ValueFromRemainingArguments)][string[]]$Answer = @())
+            foreach ($a in $Answer) { $script:Answers.Enqueue($a) }
+            $output = if ($Ask) { InModuleScope PSPhoenix { Invoke-PhxReview -Ask } 6>&1 | Out-String } else { Get-PhxOutput { phx review } }
+            $script:Answers.Count | Should -Be 0 -Because "every scripted answer is used; output:`n$output"
+            $output
+        }
+        function script:Get-TestDecision {
+            (InModuleScope PSPhoenix { Read-PhxConfig }).files.repos['github.com/WizX20/app']
+        }
+        function script:Get-TestPendingPath {
+            @((InModuleScope PSPhoenix { Get-PhxRepoFilesPending }).repositories | ForEach-Object { $_.files.path })
+        }
+    }
+
+    BeforeEach {
+        $script:ReviewHome = Use-TestHome
+        $root = Join-Path $script:ReviewHome 'Repos'
+        $script:ReviewRepo = New-TestRepository (Join-Path $root 'App') -Remote 'origin=https://github.com/WizX20/app.git'
+        Set-Content -LiteralPath (Join-Path $script:ReviewRepo '.gitignore') -Value @('.env', 'config.local.env', 'notes.md', 'leftover/', 'big.json', 'cert.pfx')
+        Set-Content -LiteralPath (Join-Path $script:ReviewRepo '.env') -Value 'LOG_LEVEL=debug'
+        Set-Content -LiteralPath (Join-Path $script:ReviewRepo 'config.local.env') -Value 'API_URL=http://localhost:5000'
+        Set-Content -LiteralPath (Join-Path $script:ReviewRepo 'notes.md') -Value 'my notes'
+        Set-Content -LiteralPath (Join-Path $script:ReviewRepo 'big.json') -Value '{}'
+        [IO.File]::WriteAllBytes((Join-Path $script:ReviewRepo 'cert.pfx'), [byte[]](0x30, 0x82, 0x00, 0x01))
+        New-Item -ItemType Directory -Path (Join-Path $script:ReviewRepo 'leftover') | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:ReviewRepo 'leftover/keep.txt') -Value 'keep'
+        Set-Content -LiteralPath (Join-Path $script:ReviewRepo 'leftover/more.txt') -Value 'more'
+        phx roots add $root 6>$null
+        phx scan 6>$null
+        $script:Answers = [Collections.Generic.Queue[string]]::new()
+        Mock Read-PhxAnswer -ModuleName PSPhoenix { $next = $script:Answers.Dequeue(); if ($next) { $next } else { $Default } }
+    }
+
+    It 'decides file by file and a folder at once, saves each answer, and leaves the rest pending' {
+        # 1 .env  2 big.json  3 cert.pfx  4 config.local.env  5 leftover/  6 notes.md
+        $output = Invoke-TestReview 'i 4,1' 's 2' 'x 1' 'o 1' 'x 2' ''
+        $output | Should -Match '7 gitignored file\(s\) in 1 repositories wait for a decision'
+        $output | Should -Match '5\. leftover/\s+2 files, '
+        $output | Should -Match '1\. \.env\s+.*secret by its name'
+        $output | Should -Match 'include: /config.local.env, /.env'
+        $decision = Get-TestDecision
+        @($decision.include) | Should -Be @('/config.local.env', '/.env')
+        @($decision.secret) | Should -Be @('/cert.pfx')
+        @($decision.exclude) | Should -Be @('/big.json', '/leftover/more.txt')
+        Get-TestPendingPath | Should -Be @('leftover/keep.txt', 'notes.md')
+        $output | Should -Match '2 file\(s\) still pending'
+    }
+
+    It 'shows only what is still pending the second time, and nothing once all is decided' {
+        Invoke-TestReview 'x 5' '' | Out-Null
+        $second = Invoke-TestReview 'i *'
+        $second | Should -Match '5 gitignored file\(s\) in 1 repositories wait'
+        $second | Should -Not -Match 'leftover'
+        $second | Should -Match 'all decided'
+        @((Get-TestDecision).include) | Should -Be @('/.env', '/big.json', '/cert.pfx', '/config.local.env', '/notes.md')
+        Invoke-TestReview | Should -Match 'every gitignored file is decided on - nothing to review'
+        Get-TestPendingPath | Should -BeNullOrEmpty
+    }
+
+    It 'takes a pattern, refuses one that is none, and a number not in the list' {
+        $output = Invoke-TestReview 'x *.json' 'i ../x' 'i 9' 'z 1' 'q'
+        $output | Should -Match 'exclude: \*\.json'
+        $output | Should -Match "'\.\./x' is not a path pattern"
+        $output | Should -Match 'there is no 9 in the list'
+        $output | Should -Match 'an answer is a letter'
+        @((Get-TestDecision).exclude) | Should -Be @('*.json')
+    }
+
+    It 'replaces an earlier answer for the same file' {
+        Invoke-TestReview 'x 1' 'q' | Out-Null
+        @((Get-TestDecision).exclude) | Should -Be @('/.env')
+        # Excluded files are no longer pending; a pattern brings it back as include.
+        Invoke-TestReview 'i /.env' 'q' | Out-Null
+        $decision = Get-TestDecision
+        @($decision.include) | Should -Be @('/.env')
+        $decision.Contains('exclude') | Should -BeFalse
+    }
+
+    It 'stops on q, keeping what was decided' {
+        Invoke-TestReview 's 1' 'q' | Should -Match '6 file\(s\) still pending'
+        @((Get-TestDecision).secret) | Should -Be @('/.env')
+    }
+
+    It 'calls a false positive no secret: backed up as it is - until another secret turns up in it' {
+        $value = 'Zx9Qw3Er7Ty1Ui5Op2As8Df4'
+        Set-Content -LiteralPath (Join-Path $script:ReviewRepo 'notes.md') -Value "{ `"ClientSecret`": `"$value`" }"
+        $output = Invoke-TestReview 'n 1' 'n 6' 'q'
+        $output | Should -Match 'notes\.md\s+.*holds a secret value \(ClientSecret\) on line 1'
+        $output | Should -Match 'n is for a file whose content looks like a secret'
+        $output | Should -Match 'not a secret, backed up as it is: /notes.md'
+        $output | Should -Not -Match $value
+        (Get-TestDecision).plain['/notes.md'] | Should -Be @('SecretValue:ClientSecret')
+        InModuleScope PSPhoenix {
+            $c = Read-PhxConfig
+            $c.secrets.recipient = [PSPhoenix.Engine.Age]::NewKey().Recipient
+            Save-PhxConfig $c
+        }
+        $staging = Join-Path $script:ReviewHome 'staging'
+        $backup = {
+            param($Staging)
+            InModuleScope PSPhoenix -Parameters @{ Staging = $Staging } { param($Staging) Backup-PhxRepoFiles -Context (New-PhxContext -Provider 'repo-files' -Staging $Staging) } 6>&1 | Out-String
+        }
+        & $backup $staging | Out-Null
+        Test-Path -LiteralPath (Join-Path $staging 'github.com/WizX20/app/notes.md') | Should -BeTrue
+        $token = 'gh' + 'p_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+        Add-Content -LiteralPath (Join-Path $script:ReviewRepo 'notes.md') -Value "token: $token"
+        $staging2 = Join-Path $script:ReviewHome 'staging2'
+        & $backup $staging2 | Should -Match 'encrypted github.com/WizX20/app/notes.md line 2: a GitHub token'
+        Test-Path -LiteralPath (Join-Path $staging2 'github.com/WizX20/app/notes.md') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $staging2 'github.com/WizX20/app/notes.md.age') | Should -BeTrue
+    }
+
+    It 'asks first from phx init, and leaves it on no' {
+        Invoke-TestReview 'n' -Ask | Should -Match '7 gitignored file\(s\) in 1 repositories wait'
+        Get-TestDecision | Should -BeNullOrEmpty
+    }
+
+    It 'warns in phx status about pending files' {
+        Invoke-TestReview 'x 1-3' '' | Out-Null
+        $status = Get-PhxOutput { phx status }
+        $status | Should -Match 'review\s+4 gitignored file\(s\) in 1 repositories wait for a decision, not backed up until then - phx review'
+        $status | Should -Match 'thing\(s\) need attention'
+    }
+
+    It 'needs phx init first' {
+        Use-TestHome | Out-Null
+        { phx review -ErrorAction Stop } | Should -Throw '*not set up yet*'
     }
 }
 
@@ -1755,6 +1894,18 @@ Describe 'init' {
         Mock Test-PhxCanSchedule -ModuleName PSPhoenix { $true }
         $script:Registered = [Collections.Generic.List[object]]::new()
         Mock Register-PhxScheduledTask -ModuleName PSPhoenix { $script:Registered.Add($Definition) }
+    }
+
+    It 'ends with the review of the gitignored files, once saved' {
+        $personal = Join-Path $script:InitWork 'Personal'
+        Set-Content -LiteralPath (Join-Path $personal '.gitignore') -Value 'local.env'
+        Set-Content -LiteralPath (Join-Path $personal 'local.env') -Value 'A=1'
+        # roots, two accounts, target, create it?, machine, interval, schedule?, save?, review now?, include it
+        Set-TestAnswer '' '' '' '' '' '' '1h' '' '' 'y' 'i 1'
+        $output = Get-PhxOutput { phx init }
+        $script:Answers.Count | Should -Be 0
+        $output | Should -Match '(?s)saved .*1 gitignored file\(s\) in 1 repositories wait for a decision'
+        @((InModuleScope PSPhoenix { Read-PhxConfig }).files.repos['github.com/WizX20/personal'].include) | Should -Be @('/local.env')
     }
 
     It 'sets up roots, accounts, target, machine and interval from the defaults and a few answers' {

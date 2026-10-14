@@ -73,6 +73,13 @@ public sealed record SecretFinding(SecretKind Kind, int Line, int Column, string
 
     /// <summary>The kind in words, with the key when there is one: <c>a GitHub token</c>, <c>a password (Password)</c>.</summary>
     public string Description => Key is null ? SecretScanner.Describe(Kind) : $"{SecretScanner.Describe(Kind)} ({Key})";
+
+    /// <summary>
+    /// The kind and the key, without the place: <c>GitHubToken</c>, <c>SecretValue:ClientSecret</c>.
+    /// What the review records when it accepts a finding as no secret - a new kind of secret in
+    /// the file, or one under another key, is caught again.
+    /// </summary>
+    public string Signature => Key is null ? Kind.ToString() : $"{Kind}:{Key}";
 }
 
 /// <summary>What <see cref="SecretScanner.ScanFile"/> found in a file.</summary>

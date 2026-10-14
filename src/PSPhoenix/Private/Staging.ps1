@@ -74,10 +74,11 @@ function Write-PhxStagedText {
 function Copy-PhxStagedFile {
     # Stages a copy of $Source at $Path, relative to the provider's staging folder. A binary file
     # is copied unscanned: whether it is secret goes by its name, which the provider decides on -
-    # -Secret stages it only encrypted, whatever its content (a .env, a .pfx).
-    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Path, [switch]$Secret)
+    # -Secret stages it only encrypted, whatever its content (a .env, a .pfx). -Accept: findings
+    # (their Signature) the review called no secret.
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Path, [switch]$Secret, [string[]]$Accept = @())
     $target = Resolve-PhxStagedPath -Context $Context -Path $Path
-    try { $staged = [PSPhoenix.Engine.StagingWriter]::CopyFile($Source, $target, $Context.Sealer, [bool]$Secret) }
+    try { $staged = [PSPhoenix.Engine.StagingWriter]::CopyFile($Source, $target, $Context.Sealer, [bool]$Secret, [string[]]@($Accept | Where-Object { $_ })) }
     catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
     Add-PhxStagedResult -Context $Context -Path $Path -Staged $staged
 }

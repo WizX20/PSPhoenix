@@ -45,10 +45,9 @@ foreach ($folder in 'Private', 'Providers') {
 
 # Commands that exist in the help but arrive with a later milestone (docs/design.md -> Roadmap).
 $script:PhxPlanned = [ordered]@{
-    review   = 'M3'
     restore  = 'M6'
 }
-$script:PhxCommands = @($script:PhxPlanned.Keys) + @('init', 'status', 'run', 'schedule', 'roots', 'scan', 'providers', 'version', 'help')
+$script:PhxCommands = @($script:PhxPlanned.Keys) + @('init', 'status', 'run', 'review', 'schedule', 'roots', 'scan', 'providers', 'version', 'help')
 
 function Get-PhxVersion { (Get-Module PSPhoenix).Version }
 
@@ -68,7 +67,7 @@ USAGE:
   phx roots add|rm|list [<path>]  the folders that hold your repositories; add: -Depth <n>
   phx run [-Provider <name>]      one backup run now (the scheduled task calls this)
   phx schedule on|off|status      the background task; -Every 30m|1h|1d sets the interval
-  phx review                      decide on new gitignored files                       (M3)
+  phx review                      decide which gitignored files to back up
   phx restore [-From <target>]    rebuild this machine from a snapshot                 (M6)
   phx providers                   what gets backed up on this platform
   phx version                     module version
@@ -136,6 +135,7 @@ function phx {
             'init' { Invoke-PhxInit }
             'status' { Show-PhxStatus }
             'run' { Invoke-PhxRun -Provider $Provider }
+            'review' { Invoke-PhxReview }
             'schedule' { Invoke-PhxScheduleCommand -Action $Arg -Every $Every }
             'providers' { Show-PhxProviders }
             'version' { Write-Host "PSPhoenix $(Get-PhxVersion)" }

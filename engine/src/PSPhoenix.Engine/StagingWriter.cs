@@ -98,13 +98,26 @@ public static class StagingWriter
     /// <paramref name="secret"/> - a file secret by its name, such as <c>.env</c> or a <c>.pfx</c> - it
     /// is only ever encrypted, whatever the scan finds, binary or not.
     /// </summary>
-    public static StagedFile CopyFile(string source, string path, Sealer? sealer, bool secret)
+    public static StagedFile CopyFile(string source, string path, Sealer? sealer, bool secret) => CopyFile(source, path, sealer, secret, null);
+
+    /// <summary>
+    /// Stages a copy of <paramref name="source"/> at <paramref name="path"/>, as the review decided:
+    /// with <paramref name="secret"/> only ever encrypted; findings whose
+    /// <see cref="SecretFinding.Signature"/> is in <paramref name="accepted"/> - false positives the
+    /// review overruled - do not make it secret. Any other finding still does.
+    /// </summary>
+    public static StagedFile CopyFile(string source, string path, Sealer? sealer, bool secret, IReadOnlyCollection<string>? accepted)
     {
         AtomicFile.RequireFullPath(source);
         AtomicFile.RequireFullPath(path);
         byte[] bytes = SecretScanner.ReadShared(source);
         string? text = SecretScanner.Decode(bytes);
         FileScan scan = text is null ? new FileScan(true, []) : new FileScan(false, SecretScanner.Scan(text));
+        if (accepted is { Count: > 0 } && !secret)
+        {
+            HashSet<string> overruled = new(accepted, StringComparer.Ordinal);
+            scan = scan with { Findings = [.. scan.Findings.Where(f => !overruled.Contains(f.Signature))] };
+        }
         if (secret && !scan.HasSecret)
         {
             scan = scan with { Findings = [new SecretFinding(SecretKind.SecretFile, 1, 1)] };

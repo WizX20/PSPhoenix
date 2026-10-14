@@ -138,6 +138,13 @@ function Show-PhxStatus {
         & $line 'secrets' "$($held.Count) file(s) held back, not in the snapshot - ${why}: $shown$rest" -Warn
     }
     elseif (-not $recipient) { & $line 'secrets' 'no age key yet - phx init sets one up; until then a file with a secret is held back' }
+    # Gitignored files nobody decided on are not backed up: worth a warning.
+    $files = Get-PhxRepoFilesPending
+    $waiting = @($files.repositories | Where-Object { $_ })
+    $count = [int]($waiting | ForEach-Object { @($_.files).Count } | Measure-Object -Sum).Sum
+    if (-not $files) { & $line 'review' 'gitignored files not looked at yet - phx review, or the next phx run lists them' }
+    elseif ($count) { & $line 'review' "$count gitignored file(s) in $($waiting.Count) repositories wait for a decision, not backed up until then - phx review" -Warn }
+    else { & $line 'review' 'every gitignored file is decided on' }
     & $line 'wip' 'local-only work - arrives with M4'
     if ($warnings.Count) { Write-Host "$($warnings.Count) thing(s) need attention" -ForegroundColor Yellow }
     else { Write-Host 'nothing needs attention' -ForegroundColor Green }

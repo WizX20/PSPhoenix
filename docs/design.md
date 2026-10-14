@@ -1,8 +1,8 @@
 # PSPhoenix design
 
 Status: **draft**. M1 and M2 are built - `phx init`, `phx roots`, `phx scan`, `phx status`, the
-`repos` provider, the snapshot, `phx run` and `phx schedule` - and of M3 the age secrets and the
-`repo-files` provider; the rest is not yet (see [Roadmap](#roadmap)). This document is the contract the milestones
+`repos` provider, the snapshot, `phx run` and `phx schedule` - and of M3 the age secrets, the
+`repo-files` provider and `phx review`; the rest is not yet (see [Roadmap](#roadmap)). This document is the contract the milestones
 build towards; change it in the same PR as the code that deviates from it.
 
 ## Problem
@@ -161,15 +161,39 @@ Including everything is not an option; a pure allowlist misses files nobody thou
    files are only ever stored as `.age`; a binary one too.
 6. **Review**: a candidate nobody decided on yet is `pending` and is **not** backed up. The wizard
    and `phx review` show pending files per repository; the answer (include, exclude, exclude
-   pattern, secret) is stored in the config. `phx status` reports the number of pending files,
-   which each backup records in the state folder (`repo-files.json`).
+   pattern, secret, not a secret) is stored in the config. `phx status` warns about the number of
+   pending files, which each backup and each review record in the state folder
+   (`repo-files.json`).
 
-**Decisions** are patterns in `files.repos[<identity>]` (`include`, `secret`, `exclude`) and in
-`files.exclude` for every repository. A pattern is a path relative to the repository, with `/`:
+**`phx review`** lists, per repository, the pending files grouped by their first folder: a folder of
+several files is one line (`leftover/   12 files, 40 KB, 1 secret`) and `o <n>` opens it. Each
+line says why a file is secret - by its name, or by what the [detector](#secrets) finds in it
+(the kind and the line, never the value). An answer is a letter and what it is for:
+
+- `i` include, `s` secret (always encrypted), `x` exclude - with numbers (`1,3-5`, `*` for all),
+  or with a pattern (`x *.log`, `i src/**/local.json`);
+- `n` "not a secret": the detector's findings in that file are accepted, and it is backed up as it
+  is (see below);
+- Enter moves on to the next repository, the rest staying pending; `q` stops.
+
+A number becomes a pattern from the repository's top (`/notes.md`, `/leftover/`), so it does not
+also catch a file of that name deeper down. Every answer is saved in the config at once, a new one
+for the same pattern replacing the old; a second review shows only what is still pending.
+
+**Not a secret.** `n` stores the file's pattern with the
+[signature](#secrets) of each finding the review showed - its kind and key, not its place:
+`"plain": { "/appsettings.json": [ "SecretValue:ClientSecret" ] }`. Those findings no longer make
+the file secret; any other - a new kind of secret, or one under another key - still does, and the
+file is encrypted again. A file secret by its name cannot be called no secret: it is included as a
+secret, or excluded.
+
+**Decisions** are patterns in `files.repos[<identity>]` (`include`, `secret`, `exclude`, and
+`plain` for "not a secret") and in `files.exclude` for every repository. A pattern is a path
+relative to the repository, with `/`:
 
 - `*` matches within a segment, `?` one character, `**` any number of segments;
-- a pattern without a `/` matches that name at any depth, as in a `.gitignore`; one with a `/`
-  matches from the repository's top;
+- a pattern without a `/` matches that name at any depth, as in a `.gitignore`; one with a `/` -
+  a leading one included, `/notes.md` - matches from the repository's top;
 - a pattern ending in `/` is a folder, and a pattern that matches a folder matches every file in
   it;
 - case is ignored, on every platform.
@@ -318,8 +342,10 @@ These are not secrets:
 - paths and URLs;
 - GUIDs, hashes and base64 data under keys that name no secret.
 
-When in doubt the detector says "secret": the cost is a file stored encrypted, and the review
-(#27) can overrule it per file.
+When in doubt the detector says "secret": the cost is a file stored encrypted, and the review can
+overrule it per file ("not a secret", see [Gitignored files](#gitignored-files-filters-and-review)).
+A finding's **signature** - its kind and its key, `SecretValue:ClientSecret` - is what such an
+overrule records.
 
 A finding carries the kind, the line, the column and the key, never the value. A log, a warning
 or `phx status` can name it as it is: `appsettings.json line 12: a secret value (ClientSecret)`.
@@ -481,11 +507,11 @@ macOS and Linux (later): a launchd agent with `StartInterval`, a systemd `--user
 ## Commands
 
 ```
-phx init                          wizard: roots, discovery, accounts, target, machine, interval,
-                                  secrets, review of gitignored candidates, schedule on
+phx init                          wizard: roots, discovery, accounts, target, machine, secrets,
+                                  interval, schedule on; then the review of gitignored candidates
 phx run [-Provider <name>]        one backup run now (what the scheduled task calls)
 phx status                        last run, changes, pending review items, local-only work, warnings
-phx review                        decide on pending gitignored candidates
+phx review                        decide on pending gitignored candidates (see Gitignored files)
 phx scan                          re-discover repositories under the roots
 phx roots add|rm|list             manage roots; add takes -Depth <n> (1-10, default 3); roots
                                   may not overlap - discovery would see repositories twice
@@ -509,7 +535,9 @@ helpers say, else the active account; suggests the OneDrive for Business folder 
 note on where company data belongs when another folder is chosen; names the machine (the computer
 name, not a folder another installation wrote); sets up the age key secrets are encrypted to (see
 [Secrets](#secrets)); takes an interval from 15 minutes to 31 days (Task Scheduler's longest
-repetition); and, on Windows, asks to turn the schedule on. Each later milestone adds its step.
+repetition); and, on Windows, asks to turn the schedule on. Once saved, it shows how many
+gitignored files wait for a decision and offers the review (`phx review`), which saves each
+answer itself - `q` there leaves the saved set-up as it is. Each later milestone adds its step.
 
 `phx run` is one backup run, and what the scheduled task calls (through `phx-task.ps1` next to the
 module, headless and at below-normal priority). It needs the set-up from `phx init` and the target
@@ -568,9 +596,10 @@ itself is part of every snapshot.
     "exclude": [],
     "repos": {
       "github.com/summitnl/HippoCampus": {
-        "include": [ "config.local.env", ".claude/settings.local.json" ],
-        "secret":  [ "secrets.local.env" ],
-        "exclude": [ "docker/services.local.env", "**/appsettings*.local.json" ]
+        "include": [ "/config.local.env", ".claude/settings.local.json" ],
+        "secret":  [ "/secrets.local.env" ],
+        "exclude": [ "docker/services.local.env", "**/appsettings*.local.json", "/tmp/" ],
+        "plain":   { "/appsettings.json": [ "SecretValue:ClientSecret" ] }
       }
     }
   }
