@@ -47,6 +47,7 @@ function Read-PhxConfig {
         if ($settings -isnot [System.Collections.IDictionary]) { throw "config ${path}: providers.$name must be an object" }
         if ($settings.Contains('enabled') -and $settings.enabled -isnot [bool]) { throw "config ${path}: providers.$name.enabled must be true or false" }
         if ($settings.Contains('cadence') -and -not (ConvertTo-PhxTimeSpan "$($settings.cadence)")) { throw "config ${path}: providers.$name.cadence '$($settings.cadence)' must look like 30m, 1h or 1d" }
+        if ($settings.Contains('transcripts') -and $settings.transcripts -isnot [bool]) { throw "config ${path}: providers.$name.transcripts must be true or false" }
     }
     # The target is written to: a relative path would mean wherever the process happens to run.
     if ($null -ne $merged.target) {

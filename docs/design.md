@@ -1,8 +1,9 @@
 # PSPhoenix design
 
 Status: **draft**. M1 and M2 are built - `phx init`, `phx roots`, `phx scan`, `phx status`, the
-`repos` provider, the snapshot, `phx run` and `phx schedule` - and of M3 the age secrets, the
-`repo-files` provider and `phx review`; the rest is not yet (see [Roadmap](#roadmap)). This document is the contract the milestones
+`repos` provider, the snapshot, `phx run` and `phx schedule` - and M3: the age secrets, the
+`repo-files` and `claude` providers and `phx review`; the rest is not yet (see
+[Roadmap](#roadmap)). This document is the contract the milestones
 build towards; change it in the same PR as the code that deviates from it.
 
 ## Problem
@@ -119,7 +120,7 @@ into a second `$TestDrive` home, compare). A backup nobody has restored is a hop
 | `repos` | inventory per repository: path relative to its root, **all** remotes, default and current branch, repo-local identity (`user.*`, `include.path`, `credential.*`), worktrees, LFS and submodule flags, the GitHub account | clone (one at a time in M1; parallel and throttled once `phx restore` runs it, M6), remotes, repo-local config | see [GitHub accounts](#github-accounts) |
 | `wip` | `git bundle` of local-only work: branches without upstream or ahead of it, stashes; a full bundle for repositories without a remote | `git fetch <bundle>`, stashes re-applied as branches | squash-merged branches are not WIP: reuse the merge detection of PSWorktree's `wt clean` |
 | `repo-files` | gitignored files that pass the filters and the review | copy back | secret-classified files only as `.age` |
-| `claude` | `~/.claude/projects/*/memory`, `settings.json`, `CLAUDE.md`, `skills/`, `commands/`, `agents/`, `statusline*`, `keybindings.json`; selected keys of `~/.claude.json` (`mcpServers`, with `env` values that look secret encrypted) | copy; memory lands in the folder name Claude Code derives from the **new** path | never `.credentials.json`; session transcripts opt-in |
+| `claude` | `~/.claude/projects/*/memory`, `settings.json`, `CLAUDE.md`, `skills/`, `commands/`, `agents/`, `statusline*`, `keybindings.json`; from `~/.claude.json` only the MCP servers - the user's (`mcpServers`) and each project's (`projects.<path>.mcpServers`) - encrypted as a whole when one holds a secret | copy; memory lands in the folder name Claude Code derives from the **new** path, a project's MCP servers under its new path | never `.credentials.json`; session transcripts opt-in (`providers.claude.transcripts`) |
 | `git` | `~/.gitconfig` and the files it includes, files that repositories include from outside their work tree, `~/.ssh/config`, `known_hosts`; private keys as `.age` | copy | |
 | `pwsh` | profile files of PowerShell 7 and Windows PowerShell (all four scopes), installed modules (name, version, repository) | copy profiles, `Install-PSResource` the list | PSReadLine history opt-in: it holds whatever was typed, secrets included |
 | `terminal` | Windows Terminal `settings.json` (stable, preview, unpackaged) | copy | |
@@ -409,8 +410,12 @@ One folder per provider, which that provider alone fills:
     <relative path>.age             secret-classified ones - in any provider's folder, a file with
                                     a secret is <name>.age
   wip/<host>/<owner>/<name>.bundle  local-only work
+  claude/claude-files.json          what is where: the home files, each project's repository
+                                    (identity, root, path) or folder name, and its files
   claude/home/                      selection from ~/.claude
   claude/projects/<repo id>/memory/ memory keyed by repository identity, not by encoded path
+  claude/projects/path/<folder>/    a project without a repository, under Claude Code's name
+  claude/claude.json                the MCP servers of ~/.claude.json (.age with a secret in it)
   git/  pwsh/  terminal/  wsl/  env/  winget/  scoop/
 ```
 
@@ -440,6 +445,14 @@ Claude Code names a project's folder after its path (`C:\Repos\Org\App` becomes
 a separator). The snapshot therefore keys memory by repository identity and records the mapping;
 restore derives the folder name from the repository's **new** path. Projects without a repository
 are keyed by their path.
+
+The `claude` provider reads Claude Code's folder where Claude Code does: `CLAUDE_CONFIG_DIR` when
+set (with `.claude.json` inside it), else `~/.claude` and `~/.claude.json`. A project's folder is
+matched to a scanned repository by the name Claude Code derives from the repository's path - every
+character but a letter or digit made a dash - ignoring case, since the drive letter comes either
+way. Restore adds what is missing and leaves what is there, also when it differs (with a
+warning): a settings file, a memory file, an MCP server. Of `~/.claude.json` it only adds MCP
+servers; the rest of the file stays as Claude Code wrote it.
 
 One target can hold several machines side by side; restore picks one.
 
@@ -588,7 +601,7 @@ itself is part of every snapshot.
   "target": { "type": "folder", "path": "C:\\Users\\me\\OneDrive - Company\\PSPhoenix" },
   "machine": { "name": "WOUTER-LT", "id": "6f0e8c1a-..." },
   "interval": "1h",
-  "providers": { "winget": { "enabled": true, "cadence": "1d" } },
+  "providers": { "winget": { "enabled": true, "cadence": "1d" }, "claude": { "transcripts": false } },
   "accounts": { "github.com/WizX20": "WizX20", "github.com/summitnl": "wpaap" },
   "secrets": { "recipient": "age1..." },
   "files": {
