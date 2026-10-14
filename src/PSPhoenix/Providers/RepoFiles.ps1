@@ -11,7 +11,7 @@
 
 $script:PhxRepoFilesFormat = 1
 
-function Get-PhxRepoFilesStatePath { Join-Path (Get-PhxStateDir) 'repo-files.json' }
+function Get-PhxRepoFilesStatePath { Join-PhxPath (Get-PhxStateDir) 'repo-files.json' }
 
 function Get-PhxRepoFileRule {
     # The review's decisions for one repository as the engine's FileRules: its own include, secret
@@ -97,7 +97,7 @@ function Get-PhxRepoFolderMap {
 function Read-PhxRepoFilesManifest {
     # files.json of a repo-files folder - staging or snapshot - or nothing.
     param([Parameter(Mandatory)][string]$Folder)
-    $file = Join-Path $Folder 'files.json'
+    $file = Join-PhxPath $Folder 'files.json'
     if (-not [IO.File]::Exists($file)) { return }
     $document = ConvertTo-PhxCaseInsensitive (Get-Content -LiteralPath $file -Raw | ConvertFrom-Json -AsHashtable)
     if ($document.format -gt $script:PhxRepoFilesFormat) { throw "$file was written by a newer PSPhoenix (format $($document.format)) - update PSPhoenix first" }
@@ -109,12 +109,12 @@ function Copy-PhxPublishedRepoFile {
     # holds of it goes into staging again, so publishing does not remove it from the snapshot.
     # Returns its manifest entry, or nothing when the last backup has none.
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Key)
-    $snapshot = try { Join-Path (Get-PhxSnapshotPath $Context.Config) $Context.Provider } catch { return }
+    $snapshot = try { Join-PhxPath (Get-PhxSnapshotPath $Context.Config) $Context.Provider } catch { return }
     $manifest = try { Read-PhxRepoFilesManifest $snapshot } catch { return }
     $entry = @($manifest.repositories | Where-Object { $_ -and [string]::Equals((Get-PhxRepoPath -Root $_.root -RelativePath $_.path), $Key, (Get-PhxPathComparison)) })[0]
     if (-not $entry) { return }
     foreach ($file in @($entry.files)) {
-        $source = Join-Path (Join-Path $snapshot $entry.folder) $file.stored
+        $source = Join-PhxPath (Join-PhxPath $snapshot $entry.folder) $file.stored
         if (-not [IO.File]::Exists($source)) { continue }
         # Already as the snapshot needs it: plain, or encrypted.
         Copy-PhxStagedFile -Context $Context -Source $source -Path "$($entry.folder)/$($file.stored)"
@@ -138,7 +138,7 @@ function Backup-PhxRepoFiles {
         $key = Get-PhxRepoKey $record
         $folder = $folders[$key]
         $candidates = $null
-        if (-not $record.offline -and [IO.Directory]::Exists((Join-Path $key '.git'))) {
+        if (-not $record.offline -and [IO.Directory]::Exists((Join-PhxPath $key '.git'))) {
             try { $candidates = Get-PhxRepoFileCandidate -Record $record -Config $Context.Config }
             catch { & $Context.Log "could not list the gitignored files of ${key}: $(Hide-PhxSecret $_.Exception.Message)" 'Warn' }
         }
@@ -165,11 +165,11 @@ function Backup-PhxRepoFiles {
             $target = "$folder/$($file.Path)"
             if ($Context.DryRun) { & $Context.Log "would back up $target" 'Action'; continue }
             # A file can go while the run looks at it: the next run sees it gone.
-            try { Copy-PhxStagedFile -Context $Context -Source ([IO.Path]::GetFullPath((Join-Path $key $file.Path))) -Path $target -Secret:($file.Decision -eq 'Secret') -Accept $file.Accepted }
+            try { Copy-PhxStagedFile -Context $Context -Source ([IO.Path]::GetFullPath((Join-PhxPath $key $file.Path))) -Path $target -Secret:($file.Decision -eq 'Secret') -Accept $file.Accepted }
             catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { continue }
             # Encrypted, plain, or held back for lack of a key.
             $name = if ($Context.Sealed.Contains("$target.age")) { "$($file.Path).age" }
-            elseif ([IO.File]::Exists((Join-Path $Context.Staging $target))) { $file.Path }
+            elseif ([IO.File]::Exists((Join-PhxPath $Context.Staging $target))) { $file.Path }
             if (-not $name) { continue }
             $stored.Add([ordered]@{ path = $file.Path; stored = $name })
             $copied++
@@ -239,15 +239,15 @@ function Restore-PhxRepoFiles {
             $counts.skipped += $files.Count
             continue
         }
-        $folder = [IO.Path]::GetFullPath((Join-Path $Context.Staging "$($entry.folder)"))
+        $folder = [IO.Path]::GetFullPath((Join-PhxPath $Context.Staging "$($entry.folder)"))
         if (-not (Test-PhxPathWithin $folder $Context.Staging)) {
             & $Context.Log "$($entry.identity): its folder $($entry.folder) leads out of the snapshot - refused" 'Warn'
             $counts.failed += $files.Count
             continue
         }
         foreach ($file in $files) {
-            $target = [IO.Path]::GetFullPath((Join-Path $repo "$($file.path)"))
-            $source = [IO.Path]::GetFullPath((Join-Path $folder "$($file.stored)"))
+            $target = [IO.Path]::GetFullPath((Join-PhxPath $repo "$($file.path)"))
+            $source = [IO.Path]::GetFullPath((Join-PhxPath $folder "$($file.stored)"))
             # The manifest names places inside the repository and the snapshot, nothing else.
             if ([string]::Equals($target, $repo, (Get-PhxPathComparison)) -or -not (Test-PhxPathWithin $target $repo) -or -not (Test-PhxPathWithin $source $folder)) {
                 & $Context.Log "$($entry.identity): $($file.path) leads out of the repository - refused" 'Warn'

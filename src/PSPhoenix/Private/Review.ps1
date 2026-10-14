@@ -183,7 +183,7 @@ function Get-PhxReviewRepository {
     if (-not $cache) { throw 'no scan yet - phx scan' }
     foreach ($record in @(Get-PhxScannedRecord -Cache $cache -Config $Config | Sort-Object { Get-PhxRepoKey $_ })) {
         $key = Get-PhxRepoKey $record
-        if ($record.offline -or -not [IO.Directory]::Exists((Join-Path $key '.git'))) { continue }
+        if ($record.offline -or -not [IO.Directory]::Exists((Join-PhxPath $key '.git'))) { continue }
         $own = if ($Config.files.repos -is [System.Collections.IDictionary]) { $Config.files.repos[$record.identity] }
         try { $list = Get-PhxIgnoredFile -Path $key -MaxBytes (Get-PhxMaxFileBytes $Config) -SecretPatterns ([string[]]@($own.secret | Where-Object { $_ })) }
         catch { Write-Host "  could not list the gitignored files of ${key}: $(Hide-PhxSecret $_.Exception.Message)" -ForegroundColor Yellow; continue }
@@ -201,7 +201,7 @@ function Get-PhxReviewPending {
             # Assigned, never output: an empty list must stay one, not become nothing.
             $found = [object[]]@()
             if (-not $file.SecretName) {
-                try { $found = [object[]]@([PSPhoenix.Engine.SecretScanner]::ScanFile([IO.Path]::GetFullPath((Join-Path $Repository.Key $file.Path))).Findings) }
+                try { $found = [object[]]@([PSPhoenix.Engine.SecretScanner]::ScanFile([IO.Path]::GetFullPath((Join-PhxPath $Repository.Key $file.Path))).Findings) }
                 catch { $null = $_ }
             }
             $Scans[$file.Path] = $found

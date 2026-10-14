@@ -25,7 +25,7 @@ function Find-PhxRepository {
     # repository, a submodule comes back with its parent. Links are not followed; folders that
     # cannot be read, or vanish while the walk looks at them, are passed over.
     param([Parameter(Mandatory)][string]$Root, [int]$Depth = 3)
-    if ([IO.Directory]::Exists((Join-Path $Root '.git'))) { return $Root }
+    if ([IO.Directory]::Exists((Join-PhxPath $Root '.git'))) { return $Root }
     $queue = [Collections.Generic.Queue[object]]::new()
     $queue.Enqueue(@($Root, 0))
     while ($queue.Count) {
@@ -36,7 +36,7 @@ function Find-PhxRepository {
             try {
                 if ($script:PhxScanSkip -contains [IO.Path]::GetFileName($child)) { continue }
                 if (Test-PhxLinkFolder $child) { continue }
-                $git = Join-Path $child '.git'
+                $git = Join-PhxPath $child '.git'
                 if ([IO.Directory]::Exists($git)) { $child; continue }
                 if ([IO.File]::Exists($git)) { continue }
                 $queue.Enqueue(@($child, ($level + 1)))
@@ -57,7 +57,7 @@ function Get-PhxRepoPath {
     # Where a recorded repository lives under a root (`.` is the root itself), with this platform's
     # separators - the relative path is stored with `/`.
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$RelativePath)
-    if ($RelativePath -eq '.') { $Root } else { [IO.Path]::GetFullPath((Join-Path $Root $RelativePath)) }
+    if ($RelativePath -eq '.') { $Root } else { [IO.Path]::GetFullPath((Join-PhxPath $Root $RelativePath)) }
 }
 
 function Format-PhxRepoCount {
@@ -135,7 +135,7 @@ function Read-PhxRepoConfig {
         if ($origin -ne 'file:.git/config' -and $origin -like 'file:*') {
             # git names an included file relative to the repository (file:.git/../.gitconfig) or in full.
             $file = [IO.Path]::GetFullPath($origin.Substring(5), $Path)
-            if ((-not (Test-PhxPathWithin $file $Path) -or (Test-PhxPathWithin $file (Join-Path $Path '.git'))) -and $external -notcontains $file) { $external.Add($file) }
+            if ((-not (Test-PhxPathWithin $file $Path) -or (Test-PhxPathWithin $file (Join-PhxPath $Path '.git'))) -and $external -notcontains $file) { $external.Add($file) }
         }
         if ($key -notmatch $script:PhxRepoSettingPattern -and $key -notmatch '^remote\..+\.(url|pushurl)$') { continue }
         if ($key -like 'credential.*' -and ($reason = Get-PhxCredentialSecret -Key $key -Value $value)) {
@@ -190,7 +190,7 @@ function Get-PhxWorktree {
     # lies under it. Only a repository with .git/worktrees has any - most have none, and every git
     # call costs ~0.1 s on Windows. The first block of the porcelain list is the repository itself.
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Path)
-    if (-not [IO.Directory]::Exists((Join-Path $Path '.git/worktrees'))) { return }
+    if (-not [IO.Directory]::Exists((Join-PhxPath $Path '.git/worktrees'))) { return }
     $current = $null
     $blocks = foreach ($line in @(Invoke-PhxGit -Repository $Path -Arguments 'worktree', 'list', '--porcelain') + '') {
         if ($line -like 'worktree *') { $current = [ordered]@{ path = $line.Substring(9); branch = $null } }
@@ -210,12 +210,12 @@ function Get-PhxSymbolicRef {
     # call per repository; a repository on the reftable backend (git 3's default) keeps its refs in
     # no such files - its HEAD file only holds the stub `ref: refs/heads/.invalid` - so git is asked.
     param([Parameter(Mandatory)][string]$Repository, [Parameter(Mandatory)][string]$Ref, [Parameter(Mandatory)][string]$Prefix)
-    $gitDir = Join-Path $Repository '.git'
-    $target = if ([IO.Directory]::Exists((Join-Path $gitDir 'reftable'))) {
+    $gitDir = Join-PhxPath $Repository '.git'
+    $target = if ([IO.Directory]::Exists((Join-PhxPath $gitDir 'reftable'))) {
         "$(Invoke-PhxGit -Repository $Repository -Arguments 'symbolic-ref', '-q', $Ref -AllowFailure)"
     }
-    elseif ([IO.File]::Exists((Join-Path $gitDir $Ref))) {
-        $line = [IO.File]::ReadAllText((Join-Path $gitDir $Ref)).Trim()
+    elseif ([IO.File]::Exists((Join-PhxPath $gitDir $Ref))) {
+        $line = [IO.File]::ReadAllText((Join-PhxPath $gitDir $Ref)).Trim()
         if ($line.StartsWith('ref: ', [StringComparison]::Ordinal)) { $line.Substring(5) }
     }
     if ("$target".StartsWith($Prefix, [StringComparison]::Ordinal)) { "$target".Substring($Prefix.Length) }
@@ -238,12 +238,12 @@ function Get-PhxRepoRecord {
     # would quietly lose it.
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Path)
     $relative = [IO.Path]::GetRelativePath($Root, $Path) -replace '\\', '/'
-    $gitDir = Join-Path $Path '.git'
+    $gitDir = Join-PhxPath $Path '.git'
     $local = Read-PhxRepoConfig -Path $Path
     $primary = Get-PhxPrimaryRemote $local.Remotes
     $identity = if ($primary) { ConvertTo-PhxRepoIdentity -Url $local.Remotes[$primary].urls[0] -BasePath $Path }
     else { 'local/' + $(if ($relative -eq '.') { [IO.Path]::GetFileName($Root) } else { $relative }) }
-    $attributes = Join-Path $Path '.gitattributes'
+    $attributes = Join-PhxPath $Path '.gitattributes'
     [ordered]@{
         identity         = $identity
         root             = $Root
@@ -256,12 +256,12 @@ function Get-PhxRepoRecord {
         helperAccount    = Get-PhxCredentialAccount (@($local.Settings) + @($local.Included))
         externalIncludes = @($local.ExternalIncludes)
         worktrees        = @(Get-PhxWorktree -Root $Root -Path $Path)
-        lfs              = [IO.Directory]::Exists((Join-Path $gitDir 'lfs')) -or ([IO.File]::Exists($attributes) -and [IO.File]::ReadAllText($attributes) -match 'filter=lfs')
-        submodules       = [IO.File]::Exists((Join-Path $Path '.gitmodules'))
+        lfs              = [IO.Directory]::Exists((Join-PhxPath $gitDir 'lfs')) -or ([IO.File]::Exists($attributes) -and [IO.File]::ReadAllText($attributes) -match 'filter=lfs')
+        submodules       = [IO.File]::Exists((Join-PhxPath $Path '.gitmodules'))
     }
 }
 
-function Get-PhxRepoCachePath { Join-Path (Get-PhxStateDir) 'repos.json' }
+function Get-PhxRepoCachePath { Join-PhxPath (Get-PhxStateDir) 'repos.json' }
 
 function Read-PhxRepoCache {
     # The last scan, or nothing. The cache is regenerable, so a missing, unreadable or newer one

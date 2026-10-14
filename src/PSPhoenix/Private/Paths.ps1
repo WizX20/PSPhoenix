@@ -2,16 +2,26 @@
 # last-run times, the repository cache) is machine-local and never backed up.
 
 function Get-PhxConfigDir {
-    if ($script:OnWindows) { return Join-Path (Get-PhxWindowsFolder 'APPDATA' 'ApplicationData') 'PSPhoenix' }
-    Join-Path (Get-PhxXdgDir 'XDG_CONFIG_HOME' '.config') 'psphoenix'
+    if ($script:OnWindows) { return Join-PhxPath (Get-PhxWindowsFolder 'APPDATA' 'ApplicationData') 'PSPhoenix' }
+    Join-PhxPath (Get-PhxXdgDir 'XDG_CONFIG_HOME' '.config') 'psphoenix'
 }
 
 function Get-PhxStateDir {
-    if ($script:OnWindows) { return Join-Path (Get-PhxWindowsFolder 'LOCALAPPDATA' 'LocalApplicationData') 'PSPhoenix' }
-    Join-Path (Get-PhxXdgDir 'XDG_STATE_HOME' '.local/state') 'psphoenix'
+    if ($script:OnWindows) { return Join-PhxPath (Get-PhxWindowsFolder 'LOCALAPPDATA' 'LocalApplicationData') 'PSPhoenix' }
+    Join-PhxPath (Get-PhxXdgDir 'XDG_STATE_HOME' '.local/state') 'psphoenix'
 }
 
-function Get-PhxConfigPath { Join-Path (Get-PhxConfigDir) 'config.json' }
+function Join-PhxPath {
+    # Two paths joined as text, with this platform's separators - Join-Path without the drive
+    # lookup. Join-Path fails on a drive that is not there (an unplugged USB disk, a disconnected
+    # share), and a root or target on such a drive must stay a path PSPhoenix can name, report on
+    # and keep the last backup of.
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path, [Parameter(Mandatory)][AllowEmptyString()][string]$ChildPath)
+    $joined = [IO.Path]::Join($Path, $ChildPath)
+    if ($script:OnWindows) { $joined.Replace('/', '\') } else { $joined.Replace('\', '/') }
+}
+
+function Get-PhxConfigPath { Join-PhxPath (Get-PhxConfigDir) 'config.json' }
 
 function Get-PhxWindowsFolder {
     # The environment variable first - tests redirect it - else the known folder itself: a process
@@ -31,5 +41,5 @@ function Get-PhxXdgDir {
     param([string]$Variable, [string]$Default)
     $value = [Environment]::GetEnvironmentVariable($Variable)
     if ($value -and [IO.Path]::IsPathRooted($value)) { return $value }
-    Join-Path $HOME $Default
+    Join-PhxPath $HOME $Default
 }

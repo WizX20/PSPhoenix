@@ -25,7 +25,7 @@ function New-PhxSealer {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [Parameter(Mandatory)][string]$Provider)
     $recipient = if ($Config.secrets -is [System.Collections.IDictionary]) { $Config.secrets.recipient }
     if (-not $recipient) { return $null }
-    [PSPhoenix.Engine.Sealer]::new($recipient, (Join-Path (Join-Path (Get-PhxStateDir) 'sealed') $Provider))
+    [PSPhoenix.Engine.Sealer]::new($recipient, (Join-PhxPath (Join-PhxPath (Get-PhxStateDir) 'sealed') $Provider))
 }
 
 function Format-PhxWithheld {

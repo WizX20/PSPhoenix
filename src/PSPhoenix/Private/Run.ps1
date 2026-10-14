@@ -65,7 +65,7 @@ function Write-PhxRunLine {
 function Open-PhxRunLock {
     # The lock that keeps two runs apart: a file held open without sharing for the whole run - the
     # operating system lets it go even when the process dies. Throws when another run holds it.
-    $path = Join-Path (Get-PhxStateDir) 'run.lock'
+    $path = Join-PhxPath (Get-PhxStateDir) 'run.lock'
     [IO.Directory]::CreateDirectory((Split-Path $path)) | Out-Null
     try { [IO.FileStream]::new($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
     catch [System.IO.IOException] { throw 'another phx run is in progress - try again when it is done' }
@@ -73,9 +73,9 @@ function Open-PhxRunLock {
 
 function New-PhxRunLog {
     # A fresh log file for this run, and the oldest ones beyond the last $script:PhxRunLogKeep gone.
-    $dir = Join-Path (Get-PhxStateDir) 'logs'
+    $dir = Join-PhxPath (Get-PhxStateDir) 'logs'
     [IO.Directory]::CreateDirectory($dir) | Out-Null
-    $path = Join-Path $dir ('run-{0}.log' -f [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff'))
+    $path = Join-PhxPath $dir ('run-{0}.log' -f [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff'))
     [IO.File]::WriteAllText($path, '')
     @(Get-ChildItem -LiteralPath $dir -Filter 'run-*.log' | Sort-Object Name -Descending | Select-Object -Skip $script:PhxRunLogKeep) |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -ErrorAction SilentlyContinue }

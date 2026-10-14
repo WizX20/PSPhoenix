@@ -57,7 +57,11 @@ machine from it with `phx restore`.
   and so does a root that turns up empty where the last scan found repositories (Linux keeps an
   unmounted drive's mount point as an empty folder); a repository git cannot read keeps its last
   record, with a warning - in full, so a backup taken while a drive is out still records their
-  settings. `phx roots rm` forgets a root's repositories too. A backup scans first when there is
+  settings. A root that goes away between two scans counts as offline at once: a backup records its
+repositories from the last scan instead of dropping them. A root or target on a drive letter that
+is not there at all (an unplugged USB disk, a disconnected share) is the same case: PSPhoenix
+handles such paths as text and never asks the drive. `phx roots rm` forgets a root's repositories
+too. A backup scans first when there is
   no scan yet or a configured root is missing from it. Remote URLs are recorded without
   credentials (`user:password@`, or a token as user name).
 - **Worktree**: a linked worktree (including Claude Code's `.claude/worktrees/*`) belongs to its

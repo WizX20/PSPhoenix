@@ -29,7 +29,7 @@ function Get-PhxActualPath {
     $actual = if ($root -match '^[A-Za-z]:') { $root.Substring(0, 1).ToUpperInvariant() + $root.Substring(1) } else { $root }
     foreach ($segment in $Path.Substring($root.Length).Split([char[]]'\/', [StringSplitOptions]::RemoveEmptyEntries)) {
         $match = @([IO.Directory]::GetDirectories($actual, $segment))[0]
-        $actual = if ($match) { $match } else { Join-Path $actual $segment }
+        $actual = if ($match) { $match } else { Join-PhxPath $actual $segment }
     }
     $actual
 }

@@ -13,7 +13,7 @@ function Get-PhxRootCandidate {
     if ($script:OnWindows) {
         $bases += @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady } | ForEach-Object { $_.RootDirectory.FullName })
     }
-    foreach ($base in $bases) { foreach ($name in $names) { Join-Path $base $name } }
+    foreach ($base in $bases) { foreach ($name in $names) { Join-PhxPath $base $name } }
 }
 
 function Get-PhxTargetSuggestion {
@@ -22,7 +22,7 @@ function Get-PhxTargetSuggestion {
     foreach ($pair in @('OneDriveCommercial', 'OneDrive for Business'), @('OneDriveConsumer', 'OneDrive, personal'), @('OneDrive', 'OneDrive')) {
         $base = [Environment]::GetEnvironmentVariable($pair[0])
         if ($base -and [IO.Directory]::Exists($base) -and $seen.Add($base)) {
-            [pscustomobject]@{ Path = Join-Path $base 'PSPhoenix'; Label = $pair[1]; Business = $pair[0] -eq 'OneDriveCommercial' }
+            [pscustomobject]@{ Path = Join-PhxPath $base 'PSPhoenix'; Label = $pair[1]; Business = $pair[0] -eq 'OneDriveCommercial' }
         }
     }
 }
@@ -187,10 +187,10 @@ function Select-PhxInitMachine {
     while ($true) {
         $name = Read-PhxInitAnswer -Prompt '  Machine' -Default $default
         if (-not (Test-PhxMachineName $name)) { Write-Host '  letters, digits, dot, dash and underscore, please' -ForegroundColor Yellow; continue }
-        $problem = Get-PhxSnapshotProblem -Path (Join-Path $TargetPath $name) -Id $id
+        $problem = Get-PhxSnapshotProblem -Path (Join-PhxPath $TargetPath $name) -Id $id
         if ($problem) {
             Write-Host "  $problem" -ForegroundColor Yellow
-            for ($n = 2; [IO.Directory]::Exists((Join-Path $TargetPath "$name-$n")); $n++) { }
+            for ($n = 2; [IO.Directory]::Exists((Join-PhxPath $TargetPath "$name-$n")); $n++) { }
             $default = "$name-$n"
             continue
         }
@@ -290,7 +290,7 @@ function Invoke-PhxInit {
         foreach ($root in $roots) { Write-Host "  root      $($root.path)   depth $($root.depth)" }
         foreach ($owner in $accounts.Keys) { Write-Host "  account   $owner -> $($accounts[$owner])" }
         Write-Host "  target    $($target.path)"
-        Write-Host "  machine   $($machine.name)   snapshot in $(Join-Path $target.path $machine.name)"
+        Write-Host "  machine   $($machine.name)   snapshot in $(Join-PhxPath $target.path $machine.name)"
         $keyNote = switch ($secret.Source) {
             'current' { 'the current key' }
             'yours' { 'your key' }

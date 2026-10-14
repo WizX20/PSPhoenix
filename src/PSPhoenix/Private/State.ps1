@@ -3,7 +3,7 @@
 # never an error. The engine holds it (PhxState.cs, which lists what is in it) and does the change
 # detection (FileTracker.cs); these are their PowerShell face.
 
-function Get-PhxStatePath { Join-Path (Get-PhxStateDir) 'state.json' }
+function Get-PhxStatePath { Join-PhxPath (Get-PhxStateDir) 'state.json' }
 
 function New-PhxState { [PSPhoenix.Engine.PhxState]::new() }
 
