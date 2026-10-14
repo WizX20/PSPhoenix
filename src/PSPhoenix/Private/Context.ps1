@@ -1,6 +1,6 @@
 # What a provider gets to work with (docs/design.md -> Provider contract): the config, the staging
 # folder, the state store, DryRun, a logger, what the secret check held back, and - for restore -
-# the root mapping and the selection. Files go into staging through Write-PhxStagedText and
+# the root mapping, the selection and the age key. Files go into staging through Write-PhxStagedText and
 # Copy-PhxStagedFile (Staging.ps1).
 
 function Write-PhxLog {
@@ -27,7 +27,10 @@ function New-PhxContext {
         # Restore: old root -> new root (absent = unchanged).
         [System.Collections.IDictionary]$RootMap = @{},
         # Restore: the repository identities to restore (none = all).
-        [string[]]$Select = @()
+        [string[]]$Select = @(),
+        # Restore: the age identity (AGE-SECRET-KEY-1...) that opens the snapshot's secrets; none
+        # skips them. Never logged.
+        [string]$Identity
     )
     if (-not $Config) { $Config = Read-PhxConfig }
     if (-not $State) { $State = New-PhxState }
@@ -40,6 +43,7 @@ function New-PhxContext {
         DryRun   = [bool]$DryRun
         RootMap  = $RootMap
         Select   = @($Select)
+        Identity = $Identity
         Log      = { param([string]$Message, [string]$Level = 'Info') Write-PhxLog -Message $Message -Level $Level }
         # The files the secret check held back in this run, each as '<file> line <n>: <kind>', and
         # those it staged encrypted, as '<file>.age'.

@@ -1,8 +1,8 @@
 # PSPhoenix design
 
 Status: **draft**. M1 and M2 are built - `phx init`, `phx roots`, `phx scan`, `phx status`, the
-`repos` provider, the snapshot, `phx run` and `phx schedule`; the rest is not yet (see
-[Roadmap](#roadmap)). This document is the contract the milestones
+`repos` provider, the snapshot, `phx run` and `phx schedule` - and of M3 the age secrets and the
+`repo-files` provider; the rest is not yet (see [Roadmap](#roadmap)). This document is the contract the milestones
 build towards; change it in the same PR as the code that deviates from it.
 
 ## Problem
@@ -101,7 +101,8 @@ minutes, hours or days (`30m`, `1h`, `1d`).
 - a logger;
 - what the secret check held back;
 - a `DryRun` flag;
-- on restore, also the root map (an old root to its new path) and the repositories selected.
+- on restore, also the root map (an old root to its new path), the repositories selected, and the
+  age key that opens the snapshot's secrets (none: they are skipped, with a warning).
 
 A provider never writes outside its staging folder during backup, and stages every file through
 `Write-PhxStagedText` or `Copy-PhxStagedFile`. They refuse a path that leads out of staging, and
@@ -137,23 +138,54 @@ filters 717 candidates remained (12.5 MB); after one review about 60 files that 
 Including everything is not an option; a pure allowlist misses files nobody thought of. Hence:
 
 1. **List** with `git ls-files --others --ignored --exclude-standard --directory` in the main
-   worktree of each repository.
+   worktree of each repository. An ignored folder is one entry; the engine (`IgnoredFiles`) walks
+   it. It does not follow links, and stops at 20,000 files per repository with a warning: a
+   folder that big is excluded as a whole.
 2. **Path-segment denylist**, applied to *every* segment of every file path, not only to the top
    entry git reports (a leftover untracked folder can hide `bin/` and `obj/` deep inside):
    `bin`, `obj`, `node_modules`, `packages`, `.packages`, `.nuget`, `dist`, `out`, `build`,
    `artifacts`, `publish`, `.vs`, `.idea`, `.dart_tool`, `.gradle`, `.venv`, `venv`,
    `__pycache__`, `.terraform`, `.next`, `.nuxt`, `.angular`, `.cache`, `coverage`, `TestResults`,
-   `.claude/worktrees`.
-3. **Generated code**: `*.g.dart`, `*.freezed.dart`, `*.g.cs`, `GeneratedPluginRegistrant.*`,
-   Gradle wrappers, ignored lock files.
-4. **Binary extensions and a size cap** (default 1 MB). A larger file needs an explicit include.
-5. **Secret classification** by name: `.env`, `.env.*`, `secrets.*`, `*.pfx`, `*.pem`, `*.key`,
-   `id_*`, plus per-repository `secret` patterns - and by content: a text file the
-   [detector](#secrets) finds a secret in is secret as a whole. Secret files are only ever stored
-   as `.age`.
+   `.git`, `.claude/worktrees`, ignoring case. A folder that is a repository or a worktree of its
+   own (a `.git` in it), or a Python virtual environment (a `pyvenv.cfg` in it), is not entered
+   either. None of these is even listed.
+3. **Generated code**: `*.g.dart`, `*.freezed.dart`, `*.mocks.dart`, `*.g.cs`, `*.g.i.cs`,
+   `GeneratedPluginRegistrant.*`, Gradle wrappers, ignored lock files (`package-lock.json`,
+   `yarn.lock`, `pubspec.lock`, `go.sum`, ...). **Noise**: logs, temporary and swap files,
+   `.DS_Store`, `Thumbs.db`, `desktop.ini`, `*.suo`, `*.cache`.
+4. **Binary extensions and a size cap** (`files.maxKB`, default 1 MB). Filtered files from steps
+   3 and 4 are left out unless the review includes them by name or pattern.
+5. **Secret classification** by name: `.env`, `.env.*`, `secrets.*`, `*.pfx`, `*.p12`, `*.pem`,
+   `*.key`, `id_*` (the file name, not a folder), plus per-repository `secret` patterns - and by
+   content: a text file the [detector](#secrets) finds a secret in is secret as a whole. Secret
+   files are only ever stored as `.age`; a binary one too.
 6. **Review**: a candidate nobody decided on yet is `pending` and is **not** backed up. The wizard
    and `phx review` show pending files per repository; the answer (include, exclude, exclude
-   pattern, secret) is stored in the config. `phx status` reports the number of pending files.
+   pattern, secret) is stored in the config. `phx status` reports the number of pending files,
+   which each backup records in the state folder (`repo-files.json`).
+
+**Decisions** are patterns in `files.repos[<identity>]` (`include`, `secret`, `exclude`) and in
+`files.exclude` for every repository. A pattern is a path relative to the repository, with `/`:
+
+- `*` matches within a segment, `?` one character, `**` any number of segments;
+- a pattern without a `/` matches that name at any depth, as in a `.gitignore`; one with a `/`
+  matches from the repository's top;
+- a pattern ending in `/` is a folder, and a pattern that matches a folder matches every file in
+  it;
+- case is ignored, on every platform.
+
+`secret` wins over `include`, and `include` over `exclude`: a folder excluded as a whole can still
+have one file in it included by name. An included file with a secret name is a secret.
+
+**Backup and restore.** The decided files go to `repo-files/<identity>/<path>`, a secret as
+`<path>.age`; `repo-files/files.json` records per repository its identity, root, path, folder and
+files, so a restore needs nothing else. The same remote cloned twice gets a second folder,
+`<identity>~2`. A repository this run cannot read (an offline root) keeps the files of the last
+backup. Restore copies each file back into the repository's place on the new machine (root
+mapped), after the clone: it decrypts a secret with the age key it is given, skips one without a
+key, leaves a file that is the same alone, and never overwrites one that differs - it says so.
+The manifest is not trusted blindly: a path leading out of the repository or the snapshot is
+refused.
 
 Per repository, generated config is excluded once and stays excluded. Example: in a repository
 whose `task configure` writes `appsettings.*.local.json` and `.env.local` from `config.local.env`,
@@ -344,6 +376,8 @@ One folder per provider, which that provider alone fills:
   key-<id>.age                      the age key, passphrase-encrypted (phx init; optional; one per
                                     key, named after its recipient)
   repos/repos.json                  the repository inventory
+  repo-files/files.json             which repository each folder is (identity, root, path), and
+                                    its files
   repo-files/<host>/<owner>/<name>/
     <relative path>                 gitignored files
     <relative path>.age             secret-classified ones - in any provider's folder, a file with
@@ -558,7 +592,10 @@ with its own xUnit tests):
 - publishing the staged files into the snapshot;
 - the state (`state.json`) and change detection - a provider's `$Context.Files`;
 - the secret scan (`SecretScanner`, #45): what is a secret, by content - see [Secrets](#secrets);
-- age encryption (`Age`, #25), built in - see [Secrets](#secrets).
+- age encryption (`Age`, #25), built in - see [Secrets](#secrets);
+- the gitignored files of a repository through the built-in filters (`IgnoredFiles`), and the
+  review's patterns and decisions (`PathPattern`, `FileRules`) - see
+  [Gitignored files](#gitignored-files-filters-and-review).
 
 It targets .NET 8, what PowerShell 7.4 runs on, and depends on nothing but .NET: PowerShell calls
 its public classes, and an exception it throws reaches the user as its own message. The module

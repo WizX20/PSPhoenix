@@ -62,10 +62,40 @@ function Read-PhxConfig {
         $why = if ("$($merged.secrets.recipient)" -match '^AGE-SECRET-KEY-') { 'is the secret half of an age key - only its public half (age1...) belongs in the config' } else { 'is not an age recipient (age1...)' }
         throw "config ${path}: secrets.recipient $why"
     }
+    Assert-PhxFilesConfig -Files $merged.files -ConfigPath $path
     # The machine name becomes a folder in the target: ..\x must not lead out of it.
     if ($merged.machine -isnot [System.Collections.IDictionary]) { throw "config ${path}: machine must be an object" }
     if ($merged.machine.name -and -not (Test-PhxMachineName "$($merged.machine.name)")) { throw "config ${path}: machine name '$($merged.machine.name)' is not a folder name - letters, digits, dot, dash, underscore" }
     $merged
+}
+
+function Assert-PhxFilesConfig {
+    # config.files as the repo-files provider relies on it: a size cap in KB, and the review's
+    # decisions as lists of patterns the engine reads (PathPattern) - per repository under
+    # files.repos[<identity>], with include, secret and exclude. Throws on anything else.
+    param($Files, [Parameter(Mandatory)][string]$ConfigPath)
+    if ($Files -isnot [System.Collections.IDictionary]) { throw "config ${ConfigPath}: files must be an object" }
+    if (($Files.maxKB -isnot [int] -and $Files.maxKB -isnot [long]) -or $Files.maxKB -lt 1) { throw "config ${ConfigPath}: files.maxKB must be a whole number of KB, 1 or more" }
+    $lists = [ordered]@{ 'files.exclude' = $Files.exclude }
+    if ($null -ne $Files.repos -and $Files.repos -isnot [System.Collections.IDictionary]) { throw "config ${ConfigPath}: files.repos must be an object, keyed by repository" }
+    foreach ($identity in @($Files.repos.Keys)) {
+        $decisions = $Files.repos[$identity]
+        if ($decisions -isnot [System.Collections.IDictionary]) { throw "config ${ConfigPath}: files.repos.$identity must be an object" }
+        foreach ($key in $decisions.Keys) {
+            if ($key -notin 'include', 'secret', 'exclude') { throw "config ${ConfigPath}: files.repos.$identity.$key - expected include, secret or exclude" }
+            $lists["files.repos.$identity.$key"] = $decisions[$key]
+        }
+    }
+    foreach ($name in $lists.Keys) {
+        foreach ($pattern in @($lists[$name])) {
+            if ($null -eq $pattern) { continue }
+            $parsed = $null
+            $why = $null
+            if ($pattern -isnot [string] -or -not [PSPhoenix.Engine.PathPattern]::TryParse($pattern, [ref]$parsed, [ref]$why)) {
+                throw "config ${ConfigPath}: ${name}: '$pattern' is not a path pattern$(if ($why) { " ($why)" })"
+            }
+        }
+    }
 }
 
 function ConvertTo-PhxTimeSpan {

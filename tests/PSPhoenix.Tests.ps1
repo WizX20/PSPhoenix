@@ -1475,6 +1475,242 @@ Describe 'repos provider' {
     }
 }
 
+Describe 'repo-files provider' {
+    BeforeAll {
+        $script:FilesKey = [PSPhoenix.Engine.Age]::NewKey()
+
+        function script:Set-TestFilesConfig {
+            # The review's decisions for the test repository, and the age recipient (none: -NoKey).
+            param([hashtable]$Decisions = @{}, [int]$MaxKB = 1024, [switch]$NoKey, [string[]]$Exclude = @())
+            InModuleScope PSPhoenix -Parameters @{ Decisions = $Decisions; MaxKB = $MaxKB; Recipient = $(if ($NoKey) { $null } else { $script:FilesKey.Recipient }); Exclude = $Exclude } {
+                param($Decisions, $MaxKB, $Recipient, $Exclude)
+                $c = Read-PhxConfig
+                $c.files.maxKB = $MaxKB
+                $c.files.exclude = @($Exclude)
+                $c.files.repos = [ordered]@{ 'github.com/WizX20/app' = $Decisions }
+                $c.secrets.recipient = $Recipient
+                Save-PhxConfig $c
+            }
+        }
+
+        function script:Invoke-FilesBackup {
+            param([string]$Staging, [switch]$DryRun)
+            InModuleScope PSPhoenix -Parameters @{ Staging = $Staging; DryRun = [bool]$DryRun } {
+                param($Staging, $DryRun)
+                $context = New-PhxContext -Provider 'repo-files' -Staging $Staging -DryRun:$DryRun
+                Backup-PhxRepoFiles -Context $context
+                Remove-PhxStagedSecret -Context $context
+            } 6>&1 | Out-String
+        }
+
+        function script:Invoke-FilesRestore {
+            # The restore's output; when it fails, the output travels in the error message.
+            param([string]$Staging, [hashtable]$RootMap = @{}, [string]$Identity, [switch]$DryRun)
+            $lines = [Collections.Generic.List[string]]::new()
+            try {
+                InModuleScope PSPhoenix -Parameters @{ Staging = $Staging; RootMap = $RootMap; Identity = $Identity; DryRun = [bool]$DryRun } {
+                    param($Staging, $RootMap, $Identity, $DryRun)
+                    Restore-PhxRepoFiles -Context (New-PhxContext -Provider 'repo-files' -Staging $Staging -RootMap $RootMap -Identity $Identity -DryRun:$DryRun)
+                } 6>&1 | ForEach-Object { $lines.Add("$_") }
+            }
+            catch { throw "$($_.Exception.Message)`n$($lines -join "`n")" }
+            $lines -join "`n"
+        }
+
+        function script:Get-TestStaged {
+            param([string]$Staging)
+            @(Get-ChildItem -LiteralPath $Staging -Recurse -File -Force | ForEach-Object { [IO.Path]::GetRelativePath($Staging, $_.FullName) -replace '\\', '/' } | Sort-Object)
+        }
+    }
+
+    BeforeEach {
+        $script:FilesHome = Use-TestHome
+        $script:FilesRoot = Join-Path $script:FilesHome 'Repos'
+        $script:FilesRepo = New-TestRepository (Join-Path $script:FilesRoot 'App') -Remote 'origin=https://github.com/WizX20/app.git'
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo '.gitignore') -Value @('.env', 'config.local.env', 'notes.md', 'leftover/', 'big.json', '*.log', 'cert.pfx')
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo '.env') -Value 'LOG_LEVEL=debug' -NoNewline
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo 'config.local.env') -Value 'API_URL=http://localhost:5000' -NoNewline
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo 'notes.md') -Value 'my notes'
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo 'debug.log') -Value 'noise'
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo 'big.json') -Value ('x' * 3000)
+        [IO.File]::WriteAllBytes((Join-Path $script:FilesRepo 'cert.pfx'), [byte[]](0x30, 0x82, 0x00, 0x01))
+        # A leftover untracked folder hiding build output deep inside.
+        New-Item -ItemType Directory -Force -Path (Join-Path $script:FilesRepo 'leftover/src/App/bin/Debug') | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo 'leftover/src/App/bin/Debug/App.dll.config') -Value 'build output'
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo 'leftover/keep.txt') -Value 'keep me?'
+        phx roots add $script:FilesRoot 6>$null
+        phx scan 6>$null
+        $script:FilesStaging = Join-Path $script:FilesHome 'staging'
+        New-Item -ItemType Directory -Path $script:FilesStaging | Out-Null
+    }
+
+    It 'backs up what the review included, a secret only encrypted, and leaves the rest' {
+        Set-TestFilesConfig -Decisions @{ include = @('config.local.env', '.env'); secret = @('cert.pfx') }
+        $output = Invoke-FilesBackup $script:FilesStaging
+        $output | Should -Match '3 file\(s\) from 1 repositories, 3 pending in 1 repositories'
+        Get-TestStaged $script:FilesStaging | Should -Be @(
+            'files.json'
+            'github.com/WizX20/app/.env.age'
+            'github.com/WizX20/app/cert.pfx.age'
+            'github.com/WizX20/app/config.local.env'
+        )
+        $folder = Join-Path $script:FilesStaging 'github.com/WizX20/app'
+        [Text.Encoding]::UTF8.GetString([PSPhoenix.Engine.Age]::Decrypt([IO.File]::ReadAllBytes((Join-Path $folder '.env.age')), $script:FilesKey.Identity)) | Should -Be 'LOG_LEVEL=debug'
+        $output | Should -Match 'encrypted github.com/WizX20/app/.env: a secret file'
+        # Pending: listed in the state for the review and phx status, not backed up.
+        $pending = InModuleScope PSPhoenix { Get-PhxRepoFilesPending }
+        @($pending.repositories).Count | Should -Be 1
+        @($pending.repositories[0].files.path) | Should -Be @('big.json', 'leftover/keep.txt', 'notes.md')
+        $pending.repositories[0].identity | Should -Be 'github.com/WizX20/app'
+    }
+
+    It 'never lists a file under a denied folder, generated or noise' {
+        Set-TestFilesConfig
+        Invoke-FilesBackup $script:FilesStaging | Out-Null
+        $files = @((InModuleScope PSPhoenix { Get-PhxRepoFilesPending }).repositories[0].files.path)
+        $files | Should -Not -Contain 'leftover/src/App/bin/Debug/App.dll.config'
+        $files | Should -Not -Contain 'debug.log'
+        $files | Should -Contain 'cert.pfx'
+        $files | Should -Contain '.env'
+    }
+
+    It 'leaves a file over the size cap out unless it is included' {
+        Set-TestFilesConfig -MaxKB 2
+        Invoke-FilesBackup $script:FilesStaging | Out-Null
+        @((InModuleScope PSPhoenix { Get-PhxRepoFilesPending }).repositories[0].files.path) | Should -Not -Contain 'big.json'
+        Set-TestFilesConfig -MaxKB 2 -Decisions @{ include = @('big.json') }
+        $staging = Join-Path $script:FilesHome 'staging2'
+        Invoke-FilesBackup $staging | Out-Null
+        Get-TestStaged $staging | Should -Contain 'github.com/WizX20/app/big.json'
+    }
+
+    It 'excludes by pattern, for one repository or every one, and a folder at once' {
+        Set-TestFilesConfig -Decisions @{ exclude = @('leftover/') } -Exclude @('*.md')
+        Invoke-FilesBackup $script:FilesStaging | Out-Null
+        @((InModuleScope PSPhoenix { Get-PhxRepoFilesPending }).repositories[0].files.path) | Should -Be @('.env', 'big.json', 'cert.pfx', 'config.local.env')
+    }
+
+    It 'holds a secret back without a key, and stages a plain file as it is' {
+        Set-TestFilesConfig -Decisions @{ include = @('config.local.env', '.env') } -NoKey
+        $output = Invoke-FilesBackup $script:FilesStaging
+        Get-TestStaged $script:FilesStaging | Should -Be @('files.json', 'github.com/WizX20/app/config.local.env')
+        $output | Should -Match 'held back github.com/WizX20/app/.env: a secret file'
+        (Get-Content -LiteralPath (Join-Path $script:FilesStaging 'files.json') -Raw) | Should -Not -Match '"\.env'
+    }
+
+    It 'encrypts an included file whose content holds a secret' {
+        $token = 'gh' + 'p_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo 'notes.md') -Value "my token: $token"
+        Set-TestFilesConfig -Decisions @{ include = @('notes.md') }
+        $output = Invoke-FilesBackup $script:FilesStaging
+        Get-TestStaged $script:FilesStaging | Should -Contain 'github.com/WizX20/app/notes.md.age'
+        Get-TestStaged $script:FilesStaging | Should -Not -Contain 'github.com/WizX20/app/notes.md'
+        $output | Should -Not -Match ([regex]::Escape($token))
+    }
+
+    It 'stages nothing on a dry run' {
+        Set-TestFilesConfig -Decisions @{ include = @('config.local.env') }
+        Invoke-FilesBackup $script:FilesStaging -DryRun | Should -Match 'would back up github.com/WizX20/app/config.local.env'
+        @(Get-ChildItem -LiteralPath $script:FilesStaging -Force).Count | Should -Be 0
+        InModuleScope PSPhoenix { Get-PhxRepoFilesPending } | Should -BeNullOrEmpty
+    }
+
+    It 'round-trips into the repository''s new place, secrets decrypted, and a second restore changes nothing' {
+        Set-TestFilesConfig -Decisions @{ include = @('config.local.env', '.env', 'leftover/') }
+        Invoke-FilesBackup $script:FilesStaging | Out-Null
+        $machineB = Use-TestHome
+        $rootB = Join-Path $machineB 'src'
+        $repoB = New-TestRepository (Join-Path $rootB 'App') -Remote 'origin=https://github.com/WizX20/app.git'
+        $output = Invoke-FilesRestore $script:FilesStaging -RootMap @{ $script:FilesRoot = $rootB } -Identity $script:FilesKey.Identity
+        $output | Should -Match '3 restored, 0 already in place, 0 differ \(left as they are\), 0 skipped, 0 failed'
+        Get-Content -LiteralPath (Join-Path $repoB '.env') -Raw | Should -Be 'LOG_LEVEL=debug'
+        Get-Content -LiteralPath (Join-Path $repoB 'config.local.env') -Raw | Should -Be 'API_URL=http://localhost:5000'
+        Get-Content -LiteralPath (Join-Path $repoB 'leftover/keep.txt') -Raw | Should -Be "keep me?$([Environment]::NewLine)"
+        Test-Path -LiteralPath (Join-Path $repoB 'leftover/src/App/bin') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $repoB 'notes.md') | Should -BeFalse
+        Invoke-FilesRestore $script:FilesStaging -RootMap @{ $script:FilesRoot = $rootB } -Identity $script:FilesKey.Identity |
+            Should -Match '0 restored, 3 already in place'
+    }
+
+    It 'never overwrites a file that differs, and says so' {
+        Set-TestFilesConfig -Decisions @{ include = @('config.local.env') }
+        Invoke-FilesBackup $script:FilesStaging | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo 'config.local.env') -Value 'changed since'
+        $output = Invoke-FilesRestore $script:FilesStaging
+        $output | Should -Match 'config.local.env differs from the backup - left as it is'
+        $output | Should -Match '1 differ'
+        Get-Content -LiteralPath (Join-Path $script:FilesRepo 'config.local.env') -Raw | Should -Be "changed since$([Environment]::NewLine)"
+    }
+
+    It 'skips a secret without the age key, and a repository that is not in place' {
+        Set-TestFilesConfig -Decisions @{ include = @('config.local.env', '.env') }
+        Invoke-FilesBackup $script:FilesStaging | Out-Null
+        Remove-Item -LiteralPath (Join-Path $script:FilesRepo '.env'), (Join-Path $script:FilesRepo 'config.local.env')
+        $output = Invoke-FilesRestore $script:FilesStaging
+        $output | Should -Match '\.env is encrypted and this restore has no age key - skipped'
+        $output | Should -Match '1 restored, 0 already in place, 0 differ \(left as they are\), 1 skipped'
+        $elsewhere = Join-Path (Use-TestHome) 'none'
+        Invoke-FilesRestore $script:FilesStaging -RootMap @{ $script:FilesRoot = $elsewhere } | Should -Match 'not found - its 2 file\(s\) skipped; restore the repository first'
+    }
+
+    It 'refuses a manifest that leads out of the repository' {
+        $folder = Join-Path $script:FilesStaging 'evil'
+        New-Item -ItemType Directory -Path $folder | Out-Null
+        Set-Content -LiteralPath (Join-Path $folder 'x') -Value 'x'
+        @{ format = 1; repositories = @(@{ identity = 'github.com/WizX20/app'; root = $script:FilesRoot; path = 'App'; folder = 'evil'; files = @(@{ path = '../../outside.txt'; stored = 'x' }) }) } |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $script:FilesStaging 'files.json')
+        { Invoke-FilesRestore $script:FilesStaging } | Should -Throw '*leads out of the repository*'
+        Test-Path -LiteralPath (Join-Path $script:FilesHome 'outside.txt') | Should -BeFalse
+    }
+
+    It 'keeps the files of a repository it cannot read now in the snapshot' {
+        $target = Join-Path $script:FilesHome 'Target'
+        New-Item -ItemType Directory -Path $target | Out-Null
+        Set-TestFilesConfig -Decisions @{ include = @('config.local.env') }
+        InModuleScope PSPhoenix -Parameters @{ Target = $target } {
+            param($Target)
+            $c = Read-PhxConfig
+            $c.target = [ordered]@{ type = 'folder'; path = $Target }
+            $c.machine = [ordered]@{ name = 'Box'; id = 'id-box' }
+            Save-PhxConfig $c
+        }
+        Get-PhxOutput { phx run -Provider repo-files } | Should -Match '1 file\(s\) from 1 repositories'
+        $published = Join-Path $target 'Box/repo-files/github.com/WizX20/app/config.local.env'
+        Test-Path -LiteralPath $published | Should -BeTrue
+        # The drive goes away: the scan keeps the repository, marked offline.
+        Rename-Item -LiteralPath $script:FilesRoot -NewName 'Repos-away'
+        phx scan 6>$null
+        $output = Get-PhxOutput { phx run -Provider repo-files }
+        $output | Should -Match 'not readable now - kept the 1 file\(s\) of the last backup'
+        Test-Path -LiteralPath $published | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $target 'Box/repo-files/files.json') | Should -BeTrue
+    }
+
+    It 'gives the same remote cloned twice a folder each' {
+        New-TestRepository (Join-Path $script:FilesRoot 'App2') -Remote 'origin=https://github.com/WizX20/app.git' | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:FilesRoot 'App2/.gitignore') -Value 'config.local.env'
+        Set-Content -LiteralPath (Join-Path $script:FilesRoot 'App2/config.local.env') -Value 'second'
+        phx scan 6>$null
+        Set-TestFilesConfig -Decisions @{ include = @('config.local.env') }
+        Invoke-FilesBackup $script:FilesStaging | Out-Null
+        Get-TestStaged $script:FilesStaging | Should -Be @('files.json', 'github.com/WizX20/app/config.local.env', 'github.com/WizX20/app~2/config.local.env')
+    }
+
+    It 'shows the pending count in phx status' {
+        Set-TestFilesConfig -Decisions @{ include = @('config.local.env') }
+        Get-PhxOutput { phx status } | Should -Match 'repo-files\s+not looked at yet'
+        Invoke-FilesBackup $script:FilesStaging | Out-Null
+        Get-PhxOutput { phx status } | Should -Match 'repo-files\s+5 gitignored file\(s\) in 1 repositories wait for a decision'
+    }
+
+    It 'refuses a config with a pattern that is not one' {
+        $path = InModuleScope PSPhoenix { Get-PhxConfigPath }
+        Set-TestFilesConfig -Decisions @{ exclude = @('../outside') }
+        { InModuleScope PSPhoenix { Read-PhxConfig } } | Should -Throw "*files.repos.github.com/WizX20/app.exclude: '../outside' is not a path pattern*"
+        Remove-Item -LiteralPath $path
+    }
+}
+
 Describe 'init' {
     BeforeAll {
         function script:Set-TestAnswer {

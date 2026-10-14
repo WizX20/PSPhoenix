@@ -91,13 +91,24 @@ public static class StagingWriter
     /// unscanned (<see cref="FileScan.IsBinary"/>): its name decides whether it is secret, before it
     /// gets here.
     /// </summary>
-    public static StagedFile CopyFile(string source, string path, Sealer? sealer = null)
+    public static StagedFile CopyFile(string source, string path, Sealer? sealer = null) => CopyFile(source, path, sealer, secret: false);
+
+    /// <summary>
+    /// Stages a copy of <paramref name="source"/> at <paramref name="path"/>; with
+    /// <paramref name="secret"/> - a file secret by its name, such as <c>.env</c> or a <c>.pfx</c> - it
+    /// is only ever encrypted, whatever the scan finds, binary or not.
+    /// </summary>
+    public static StagedFile CopyFile(string source, string path, Sealer? sealer, bool secret)
     {
         AtomicFile.RequireFullPath(source);
         AtomicFile.RequireFullPath(path);
         byte[] bytes = SecretScanner.ReadShared(source);
         string? text = SecretScanner.Decode(bytes);
         FileScan scan = text is null ? new FileScan(true, []) : new FileScan(false, SecretScanner.Scan(text));
+        if (secret && !scan.HasSecret)
+        {
+            scan = scan with { Findings = [new SecretFinding(SecretKind.SecretFile, 1, 1)] };
+        }
         return Stage(path, bytes, scan, sealer);
     }
 
