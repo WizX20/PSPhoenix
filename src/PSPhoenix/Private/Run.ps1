@@ -136,6 +136,7 @@ function Invoke-PhxRun {
         $failed = [Collections.Generic.List[string]]::new()
         $trackers = @{}
         $withheld = @{}
+        $sealed = @{}
         foreach ($entry in $providers) {
             $name = $entry.Name
             Write-PhxRunLine "${name}:" Cyan
@@ -150,6 +151,7 @@ function Invoke-PhxRun {
                 Invoke-PhxLogged -Source $name -Action { & $entry.Backup $context; Remove-PhxStagedSecret -Context $context } | Out-Null
                 $trackers[$name] = $context.Files
                 $withheld[$name] = [string[]]@($context.Withheld)
+                $sealed[$name] = $context.Sealed.Count
                 $succeeded.Add($name)
             }
             catch {
@@ -171,7 +173,11 @@ function Invoke-PhxRun {
             }
             # Its last run is the start of this one; what it saw is what its next run compares with.
             $state.Succeeded($name, $started, $trackers[$name], $withheld[$name])
-            $held = if ($withheld[$name].Count) { ", $($withheld[$name].Count) held back (secrets)" } else { '' }
+            $held = @(
+                if ($sealed[$name]) { "$($sealed[$name]) encrypted" }
+                if ($withheld[$name].Count) { "$($withheld[$name].Count) held back (no age key yet)" }
+            ) | ForEach-Object { ", $_" }
+            $held = $held -join ''
             Write-PhxRunLine ('  {0}: {1} written, {2} unchanged, {3} removed{4}' -f $name, $result.Written, $result.Unchanged, $result.Removed, $held)
         }
         $state.LastRun = [PSPhoenix.Engine.RunRecord]::new($started, [string[]]@($providers | ForEach-Object Name), [string[]]@($failed), $script:PhxRunLog)

@@ -1,0 +1,6 @@
+- feat: secrets encrypted with age (#25):
+  - `phx init` makes an age key. The public half goes into the config. The secret half is shown once, to the console, past any transcript.
+  - A copy of the key, protected by a passphrase of four words or 20 characters, goes into the snapshot as `key-<id>.age`, so a restore needs only the passphrase.
+  - A file with a secret is staged and published as `<name>.age`. An unchanged secret keeps its ciphertext, so nothing is uploaded again.
+  - `phx run` counts the encrypted files, and `phx status` shows the key.
+  - Without a key, files with a secret are held back as before

@@ -55,6 +55,13 @@ function Read-PhxConfig {
             throw "config ${path}: target $($merged.target.path) is not a full path"
         }
     }
+    # The key secrets are encrypted to: an age recipient, or none yet.
+    if ($merged.secrets -isnot [System.Collections.IDictionary]) { throw "config ${path}: secrets must be an object" }
+    if ($merged.secrets.recipient -and ($merged.secrets.recipient -isnot [string] -or -not [PSPhoenix.Engine.Age]::IsRecipient($merged.secrets.recipient))) {
+        # Not echoed: it might be the secret half of a key.
+        $why = if ("$($merged.secrets.recipient)" -match '^AGE-SECRET-KEY-') { 'is the secret half of an age key - only its public half (age1...) belongs in the config' } else { 'is not an age recipient (age1...)' }
+        throw "config ${path}: secrets.recipient $why"
+    }
     # The machine name becomes a folder in the target: ..\x must not lead out of it.
     if ($merged.machine -isnot [System.Collections.IDictionary]) { throw "config ${path}: machine must be an object" }
     if ($merged.machine.name -and -not (Test-PhxMachineName "$($merged.machine.name)")) { throw "config ${path}: machine name '$($merged.machine.name)' is not a folder name - letters, digits, dot, dash, underscore" }

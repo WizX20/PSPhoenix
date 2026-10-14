@@ -109,6 +109,24 @@ public static class Age
     /// <summary>Whether <paramref name="text"/> is an X25519 identity: <c>AGE-SECRET-KEY-1…</c>, upper case.</summary>
     public static bool IsIdentity(string text) => TryParseKey(text, IdentityPrefix, KeyCase.Upper) is not null;
 
+    /// <summary>Whether <paramref name="file"/> is an age file: a header that parses, and a payload's nonce after it.</summary>
+    public static bool IsEncrypted(byte[] file)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        if (!file.AsSpan().StartsWith("age-encryption.org/v1\n"u8))
+        {
+            return false;
+        }
+        try
+        {
+            return file.Length - ParseHeader(file).PayloadStart >= NonceSize + TagSize;
+        }
+        catch (AgeException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Encrypts <paramref name="plaintext"/> to <paramref name="recipient"/>.</summary>
     public static byte[] Encrypt(byte[] plaintext, string recipient)
     {

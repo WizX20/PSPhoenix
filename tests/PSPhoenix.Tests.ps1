@@ -386,6 +386,8 @@ Describe 'config' {
         @{ Case = 'provider cadence is no duration'; Json = '{ "version": 1, "providers": { "winget": { "cadence": "daily" } } }'; Message = "*providers.winget.cadence 'daily' must look like 30m, 1h or 1d*" }
         @{ Case = 'target is a relative path'; Json = '{ "version": 1, "target": { "type": "folder", "path": "Backups" } }'; Message = '*target Backups is not a full path*' }
         @{ Case = 'target is no object'; Json = '{ "version": 1, "target": "D:/Backups" }'; Message = '*target must be an object*' }
+        @{ Case = 'secrets recipient is no age recipient'; Json = '{ "version": 1, "secrets": { "recipient": "ssh-ed25519 AAAA" } }'; Message = '*secrets.recipient is not an age recipient*' }
+        @{ Case = 'secrets recipient is a secret key'; Json = '{ "version": 1, "secrets": { "recipient": "AGE-SECRET-KEY-1QQQQ" } }'; Message = '*secrets.recipient is the secret half of an age key*' }
     ) {
         Use-TestHome | Out-Null
         InModuleScope PSPhoenix -Parameters @{ Json = $Json } {
@@ -1480,6 +1482,8 @@ Describe 'init' {
             foreach ($answer in $args) { $script:Answers.Enqueue([string]$answer) }
         }
         function script:Read-TestConfig { Get-Content -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) -Raw }
+        # The key step has a Describe of its own ('init secrets'); here it answers itself.
+        $script:TestRecipient = [PSPhoenix.Engine.Age]::NewKey().Recipient
     }
 
     BeforeEach {
@@ -1506,6 +1510,7 @@ Describe 'init' {
             if ($next) { $next } else { $Default }
         }
         Mock Get-PhxRootCandidate -ModuleName PSPhoenix { $script:InitWork; $script:InitOther; $script:InitEmpty; (Join-Path $script:InitEmpty 'Missing') }
+        Mock Select-PhxInitSecret -ModuleName PSPhoenix { [pscustomobject]@{ Recipient = $script:TestRecipient; Identity = $null; Passphrase = $null; Source = 'yours' } }
         Mock Get-PhxGhAccount -ModuleName PSPhoenix {
             [pscustomobject]@{ Host = 'github.com'; Login = 'wpaap'; Active = $true }
             [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $false }
@@ -1724,6 +1729,124 @@ Describe 'init' {
         Set-TestAnswer '' '' '' $usb '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'company storage'
         (InModuleScope PSPhoenix { Read-PhxConfig }).target.path | Should -Be $usb
+    }
+}
+
+Describe 'init secrets' {
+    # The key step of phx init (docs/design.md -> Secrets): a new age key with a passphrase-protected
+    # copy in the target, a recipient of the user's own, or the current one kept.
+    BeforeAll {
+        # key.age with the work factor of age -p takes a second and 256 MB; a test needs neither.
+        InModuleScope PSPhoenix { $script:SavedKeyWorkFactor = $script:PhxKeyWorkFactor; $script:PhxKeyWorkFactor = 10 }
+    }
+    AfterAll { InModuleScope PSPhoenix { $script:PhxKeyWorkFactor = $script:SavedKeyWorkFactor } }
+
+    BeforeEach {
+        $keyHome = Use-TestHome
+        $script:KeyRoot = Join-Path $keyHome 'Repos'
+        New-TestRepository (Join-Path $script:KeyRoot 'Lab') -Remote 'origin=https://dev.azure.com/org/proj/_git/lab' | Out-Null
+        $script:KeyTarget = Join-Path $keyHome 'Target'
+        New-Item -ItemType Directory -Path $script:KeyTarget | Out-Null
+        $script:KeySnapshot = Join-Path $script:KeyTarget ([Environment]::MachineName)
+        $script:Answers = [Collections.Generic.Queue[string]]::new()
+        $script:SecretAnswers = [Collections.Generic.Queue[string]]::new()
+        Mock Read-PhxAnswer -ModuleName PSPhoenix { $next = $script:Answers.Dequeue(); if ($next) { $next } else { $Default } }
+        Mock Read-PhxSecretAnswer -ModuleName PSPhoenix { $script:SecretAnswers.Dequeue() }
+        # The new key goes past PowerShell's streams, to the console: kept here instead.
+        $script:SecretLines = [Collections.Generic.List[string]]::new()
+        Mock Show-PhxSecretLine -ModuleName PSPhoenix { $script:SecretLines.Add($Text) }
+        Mock Get-PhxRootCandidate -ModuleName PSPhoenix { $script:KeyRoot }
+        Mock Get-PhxGhAccount -ModuleName PSPhoenix { }
+        Mock Test-PhxCanSchedule -ModuleName PSPhoenix { $false }
+        function Invoke-TestInit {
+            # phx init: roots, target, machine, the key step's answers, interval, save. -Secret are
+            # the passphrases typed, in order.
+            param([string[]]$Key = @(), [string[]]$Secret = @())
+            foreach ($answer in @('', $script:KeyTarget, '') + $Key + @('', '')) { $script:Answers.Enqueue($answer) }
+            foreach ($answer in $Secret) { $script:SecretAnswers.Enqueue($answer) }
+            $output = Get-PhxOutput { phx init }
+            $script:Answers.Count | Should -Be 0
+            $script:SecretAnswers.Count | Should -Be 0
+            $output
+        }
+        function Get-TestKeyCopy {
+            # The key copies in the snapshot folder.
+            @(Get-ChildItem -LiteralPath $script:KeySnapshot -Filter 'key-*.age' -ErrorAction SilentlyContinue).Name
+        }
+    }
+
+    It 'makes a new key, puts a passphrase-protected copy in the target and shows the key once' {
+        $output = Invoke-TestInit -Key '' -Secret 'correct horse battery staple', 'correct horse battery staple'
+        $recipient = (InModuleScope PSPhoenix { Read-PhxConfig }).secrets.recipient
+        [PSPhoenix.Engine.Age]::IsRecipient($recipient) | Should -BeTrue
+        $copyName = "key-$($recipient.Substring(4, 12)).age"
+        $output | Should -Match "secrets\s+age1\S+\s+a new key, its passphrase copy $copyName in the snapshot"
+        # The copy: an age identity file, encrypted with the passphrase, in a claimed snapshot folder.
+        Test-Path -LiteralPath (Join-Path $script:KeySnapshot 'phoenix.json') | Should -BeTrue
+        Get-TestKeyCopy | Should -Be @($copyName)
+        $copy = [Text.Encoding]::UTF8.GetString([PSPhoenix.Engine.Age]::DecryptWithPassphrase([IO.File]::ReadAllBytes((Join-Path $script:KeySnapshot $copyName)), 'correct horse battery staple'))
+        $copy | Should -Match "(?m)^# public key: $recipient$"
+        $identity = ($copy -split "`n" | Where-Object { $_ -like 'AGE-SECRET-KEY-1*' })
+        [PSPhoenix.Engine.Age]::RecipientOf($identity) | Should -Be $recipient
+        # Shown once, to the console only - not into a stream a transcript records - and never in the config.
+        @($script:SecretLines) | Should -Be @("  $identity")
+        $output | Should -Not -Match 'AGE-SECRET-KEY'
+        $output | Should -Match "put it in your password manager now.*\s+it, or the passphrase for $copyName in the snapshot"
+        Get-Content -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) -Raw | Should -Not -Match 'AGE-SECRET-KEY'
+        Get-PhxOutput { phx status } | Should -Match "secrets\s+encrypted to age1\S+ - a passphrase-protected copy of the key is $copyName in the snapshot"
+    }
+
+    It 'asks for a passphrase of four words or 20 characters, twice the same' {
+        $output = Invoke-TestInit -Key '' -Secret 'short', 'Summer2026!!', 'long enough passphrase', 'not the same at all', 'long enough passphrase', 'long enough passphrase'
+        ([regex]::Matches($output, 'four words or more, or at least 20 characters')).Count | Should -Be 2
+        $output | Should -Match 'not the same - once more'
+        Get-TestKeyCopy | Should -HaveCount 1
+    }
+
+    It 'shows a new key also when a step after saving fails' {
+        Mock Save-PhxRepoCache -ModuleName PSPhoenix { throw 'disk full' }
+        foreach ($answer in @('', $script:KeyTarget, '', '', '', '')) { $script:Answers.Enqueue($answer) }
+        foreach ($answer in 'correct horse battery staple', 'correct horse battery staple') { $script:SecretAnswers.Enqueue($answer) }
+        { phx init -ErrorAction Stop 6>$null } | Should -Throw '*disk full*'
+        # The config names the new key now: without it shown, its secrets could never be opened.
+        (InModuleScope PSPhoenix { Read-PhxConfig }).secrets.recipient | Should -Not -BeNullOrEmpty
+        @($script:SecretLines | Where-Object { $_ -match 'AGE-SECRET-KEY-1' }) | Should -HaveCount 1
+    }
+
+    It 'keeps the copy of the old key when the key changes, and refuses a secret key as recipient' {
+        Invoke-TestInit -Key '' -Secret 'correct horse battery staple', 'correct horse battery staple' | Out-Null
+        $first = (InModuleScope PSPhoenix { Read-PhxConfig }).secrets.recipient
+        $secretKey = ($script:SecretLines[0]).Trim()
+        # Keep it? no; a secret key pasted; Enter for a new one with a passphrase.
+        $output = Invoke-TestInit -Key 'n', $secretKey, '' -Secret 'another long passphrase here', 'another long passphrase here'
+        $output | Should -Match 'that is the secret half of the key'
+        $output | Should -Match 'the next run encrypts every secret to the new key'
+        $second = (InModuleScope PSPhoenix { Read-PhxConfig }).secrets.recipient
+        $second | Should -Not -Be $first
+        Get-TestKeyCopy | Sort-Object | Should -Be (@("key-$($first.Substring(4, 12)).age", "key-$($second.Substring(4, 12)).age") | Sort-Object)
+        Get-PhxOutput { phx status } | Should -Match "key-$($second.Substring(4, 12))\.age in the snapshot"
+    }
+
+    It 'makes a new key without a copy in the target only when told so twice' {
+        # Enter for a new key; no passphrase; "sure?" no; no passphrase; "sure?" yes.
+        $output = Invoke-TestInit -Key '', '', 'y' -Secret '', ''
+        $output | Should -Match 'secrets\s+age1\S+\s+a new key, no copy in the snapshot'
+        $output | Should -Match 'it is the only way to open your secrets'
+        Get-TestKeyCopy | Should -BeNullOrEmpty
+        Get-PhxOutput { phx status } | Should -Match 'no copy of the key in the snapshot'
+    }
+
+    It 'takes the recipient of a key the user has, and keeps the current key on Enter' {
+        $own = [PSPhoenix.Engine.Age]::NewKey()
+        $output = Invoke-TestInit -Key 'ssh-ed25519 AAAA', $own.Recipient
+        $output | Should -Match 'an age recipient starts with age1'
+        $script:SecretLines | Should -BeNullOrEmpty
+        (InModuleScope PSPhoenix { Read-PhxConfig }).secrets.recipient | Should -Be $own.Recipient
+        Get-TestKeyCopy | Should -BeNullOrEmpty
+        # Again: the current key, kept on Enter.
+        $output = Invoke-TestInit -Key ''
+        $output | Should -Match ("current key: " + [regex]::Escape($own.Recipient))
+        (InModuleScope PSPhoenix { Read-PhxConfig }).secrets.recipient | Should -Be $own.Recipient
     }
 }
 
@@ -2583,6 +2706,61 @@ Describe 'run' {
             $output
         }
         function Get-TestFileTimes { @(Get-ChildItem -LiteralPath $script:RunSnapshot -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.LastWriteTimeUtc.Ticks)" }) }
+        function Register-TestLeakyProvider {
+            # A provider that stages a file of every kind of secret the detector knows (#45), one
+            # copied in, one written around the writer, and one clean file.
+            # One file per kind the detector knows (#45), built at run time: nothing token-like is committed.
+            $script:Secrets = [ordered]@{
+                'github.txt'     = 'gh' + 'p_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+                'gitlab.txt'     = 'gl' + 'pat-' + ('q' * 20)
+                'slack.txt'      = 'xo' + 'xb-' + '1234567890-abcdefghijklmnopqrstuvwx'
+                'aws.txt'        = 'AK' + 'IA' + 'ABCDEFGHIJKLMNOP'
+                'npm.txt'        = 'np' + 'm_' + ('a1b2' * 9)
+                'apikey.txt'     = 's' + 'k-proj-' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6'
+                'azdo.txt'       = ('a1B2c3D4' * 9) + 'a1B2' + 'AZ' + 'DO' + 'x9Y8'
+                'jwt.txt'        = 'ey' + 'JhbGciOiJIUzI1NiJ9.ey' + 'JzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV'
+                'key.pem'        = 'MIIEowIBAAKCAQEA' + ('x7Y6' * 12)
+                'remote.txt'     = 'hunter2'
+                'header.txt'     = 'a1B2c3D4e5F6g7H8'
+                'database.txt'   = 'Winter2024!'
+                'storage.txt'    = 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8=='
+                'nuget.config'   = 'pa55word!'
+                'profile.ps1'    = 'f3a9c27d81e4b605f3a9c27d81e4b605'
+                'appsettings.json' = 'Zx9Qw3Er7Ty1Ui5Op2As8Df4'
+            }
+            $script:SecretText = @{
+                'key.pem'        = { param($v) "-----BEGIN RSA PRIVATE" + " KEY-----`n$v`n-----END RSA PRIVATE KEY-----" }
+                'remote.txt'     = { param($v) "url = https://wouter:$v@example.invalid/x.git" }
+                'header.txt'     = { param($v) "Authorization: Bearer $v" }
+                'database.txt'   = { param($v) "Server=db;User Id=sa;Password=$v;" }
+                'storage.txt'    = { param($v) "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=$v;" }
+                'nuget.config'   = { param($v) "<add key=`"ClearTextPassword`" value=`"$v`" />" }
+                'profile.ps1'    = { param($v) "Set-Location ~`n`$env:MY_API_TOKEN = '$v'" }
+                'appsettings.json' = { param($v) "{`n  `"ClientSecret`": `"$v`"`n}" }
+            }
+            $copySource = Join-Path $script:RunHome 'copied.ps1'
+            Set-Content -LiteralPath $copySource -Value "`$env:GH_TOKEN = '$($script:Secrets['github.txt'])'"
+            InModuleScope PSPhoenix -Parameters @{ Secrets = $script:Secrets; SecretText = $script:SecretText; CopySource = $copySource } {
+                param($Secrets, $SecretText, $CopySource)
+                # The provider runs in the module: what it uses goes there.
+                $script:Secrets = $Secrets
+                $script:SecretText = $SecretText
+                $script:CopySource = $CopySource
+                Register-PhxProvider @{ Name = 'leaky'; Description = 'stages secrets'; Restore = {}; Status = {}
+                    Backup = {
+                        param($Context)
+                        Write-PhxStagedText -Context $Context -Path 'clean.txt' -Value 'nothing to see'
+                        foreach ($name in $script:Secrets.Keys) {
+                            $text = if ($script:SecretText.ContainsKey($name)) { & $script:SecretText[$name] $script:Secrets[$name] } else { "token $($script:Secrets[$name])" }
+                            Write-PhxStagedText -Context $Context -Path "sub/$name" -Value $text
+                        }
+                        Copy-PhxStagedFile -Context $Context -Source $script:CopySource -Path 'copied.ps1'
+                        # Around the writer: the check before publishing catches it.
+                        Set-Content -LiteralPath (Join-Path $Context.Staging 'direct.txt') -Value "token $($script:Secrets['gitlab.txt'])"
+                    }
+                }
+            }
+        }
     }
     AfterEach {
         InModuleScope PSPhoenix { $script:PhxProviders = $script:SavedProviders }
@@ -2629,62 +2807,12 @@ Describe 'run' {
     }
 
     It 'holds back every staged file with a secret in it, and keeps the secret out of the snapshot, staging, log and output' {
-        # One file per kind the detector knows (#45), built at run time: nothing token-like is committed.
-        $script:Secrets = [ordered]@{
-            'github.txt'     = 'gh' + 'p_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
-            'gitlab.txt'     = 'gl' + 'pat-' + ('q' * 20)
-            'slack.txt'      = 'xo' + 'xb-' + '1234567890-abcdefghijklmnopqrstuvwx'
-            'aws.txt'        = 'AK' + 'IA' + 'ABCDEFGHIJKLMNOP'
-            'npm.txt'        = 'np' + 'm_' + ('a1b2' * 9)
-            'apikey.txt'     = 's' + 'k-proj-' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6'
-            'azdo.txt'       = ('a1B2c3D4' * 9) + 'a1B2' + 'AZ' + 'DO' + 'x9Y8'
-            'jwt.txt'        = 'ey' + 'JhbGciOiJIUzI1NiJ9.ey' + 'JzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV'
-            'key.pem'        = 'MIIEowIBAAKCAQEA' + ('x7Y6' * 12)
-            'remote.txt'     = 'hunter2'
-            'header.txt'     = 'a1B2c3D4e5F6g7H8'
-            'database.txt'   = 'Winter2024!'
-            'storage.txt'    = 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8=='
-            'nuget.config'   = 'pa55word!'
-            'profile.ps1'    = 'f3a9c27d81e4b605f3a9c27d81e4b605'
-            'appsettings.json' = 'Zx9Qw3Er7Ty1Ui5Op2As8Df4'
-        }
-        $script:SecretText = @{
-            'key.pem'        = { param($v) "-----BEGIN RSA PRIVATE" + " KEY-----`n$v`n-----END RSA PRIVATE KEY-----" }
-            'remote.txt'     = { param($v) "url = https://wouter:$v@example.invalid/x.git" }
-            'header.txt'     = { param($v) "Authorization: Bearer $v" }
-            'database.txt'   = { param($v) "Server=db;User Id=sa;Password=$v;" }
-            'storage.txt'    = { param($v) "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=$v;" }
-            'nuget.config'   = { param($v) "<add key=`"ClearTextPassword`" value=`"$v`" />" }
-            'profile.ps1'    = { param($v) "Set-Location ~`n`$env:MY_API_TOKEN = '$v'" }
-            'appsettings.json' = { param($v) "{`n  `"ClientSecret`": `"$v`"`n}" }
-        }
-        $copySource = Join-Path $script:RunHome 'copied.ps1'
-        Set-Content -LiteralPath $copySource -Value "`$env:GH_TOKEN = '$($script:Secrets['github.txt'])'"
-        InModuleScope PSPhoenix -Parameters @{ Secrets = $script:Secrets; SecretText = $script:SecretText; CopySource = $copySource } {
-            param($Secrets, $SecretText, $CopySource)
-            # The provider runs in the module: what it uses goes there.
-            $script:Secrets = $Secrets
-            $script:SecretText = $SecretText
-            $script:CopySource = $CopySource
-            Register-PhxProvider @{ Name = 'leaky'; Description = 'stages secrets'; Restore = {}; Status = {}
-                Backup = {
-                    param($Context)
-                    Write-PhxStagedText -Context $Context -Path 'clean.txt' -Value 'nothing to see'
-                    foreach ($name in $script:Secrets.Keys) {
-                        $text = if ($script:SecretText.ContainsKey($name)) { & $script:SecretText[$name] $script:Secrets[$name] } else { "token $($script:Secrets[$name])" }
-                        Write-PhxStagedText -Context $Context -Path "sub/$name" -Value $text
-                    }
-                    Copy-PhxStagedFile -Context $Context -Source $script:CopySource -Path 'copied.ps1'
-                    # Around the writer: the check before publishing catches it.
-                    Set-Content -LiteralPath (Join-Path $Context.Staging 'direct.txt') -Value "token $($script:Secrets['gitlab.txt'])"
-                }
-            }
-        }
+        Register-TestLeakyProvider
         $output = Invoke-TestRun
         $script:RunError | Should -BeNullOrEmpty
         $held = $script:Secrets.Count + 2
-        $output | Should -Match "leaky: 1 written, 0 unchanged, 0 removed, $held held back \(secrets\)"
-        $output | Should -Match 'held back sub/github\.txt line 1: a GitHub token - a secret is only stored encrypted'
+        $output | Should -Match "leaky: 1 written, 0 unchanged, 0 removed, $held held back \(no age key yet\)"
+        $output | Should -Match 'held back sub/github\.txt line 1: a GitHub token - a secret is only stored encrypted, and there is no age key yet: phx init'
         $output | Should -Match 'held back sub/appsettings\.json line 2: a secret value \(ClientSecret\)'
         $output | Should -Match 'held back direct\.txt line 1: a GitLab token'
         # Only the clean file anywhere: in the snapshot and in staging.
@@ -2701,9 +2829,40 @@ Describe 'run' {
         ) -join "`n"
         foreach ($secret in $script:Secrets.Values) { $everything.Contains($secret) | Should -BeFalse -Because 'no secret may reach a snapshot, the staging folder, the log or the output' }
         $status = Get-PhxOutput { phx status }
-        $status | Should -Match "secrets\s+$held file\(s\) held back, not in the snapshot"
+        $status | Should -Match "secrets\s+$held file\(s\) held back, not in the snapshot - a secret is only stored encrypted, and there is no age key yet - phx init"
         $status | Should -Match 'thing\(s\) need attention'
         foreach ($secret in $script:Secrets.Values) { $status.Contains($secret) | Should -BeFalse }
+    }
+
+    It 'encrypts every staged file with a secret to the age key, and keeps the ciphertext while nothing changed' {
+        $key = [PSPhoenix.Engine.Age]::NewKey()
+        InModuleScope PSPhoenix -Parameters @{ Recipient = $key.Recipient } { param($Recipient) $c = Read-PhxConfig; $c.secrets.recipient = $Recipient; Save-PhxConfig $c }
+        Register-TestLeakyProvider
+        $output = Invoke-TestRun
+        $script:RunError | Should -BeNullOrEmpty
+        $sealed = $script:Secrets.Count + 2
+        $output | Should -Match "leaky: $($sealed + 1) written, 0 unchanged, 0 removed, $sealed encrypted"
+        $output | Should -Match 'encrypted sub/appsettings\.json line 2: a secret value \(ClientSecret\)'
+        $output | Should -Not -Match 'held back'
+        $leaky = Join-Path $script:RunSnapshot 'leaky'
+        @(Get-ChildItem -LiteralPath $leaky -Recurse -File | Where-Object Extension -NE '.age').Name | Should -Be @('clean.txt')
+        @(Get-ChildItem -LiteralPath $leaky -Recurse -Filter '*.age').Count | Should -Be $sealed
+        # The age file opens with the key - and only the secret half of it.
+        $opened = [Text.Encoding]::UTF8.GetString([PSPhoenix.Engine.Age]::Decrypt([IO.File]::ReadAllBytes((Join-Path $leaky 'sub/database.txt.age')), $key.Identity))
+        $opened | Should -BeExactly "Server=db;User Id=sa;Password=$($script:Secrets['database.txt']);"
+        [Text.Encoding]::UTF8.GetString([PSPhoenix.Engine.Age]::Decrypt([IO.File]::ReadAllBytes((Join-Path $leaky 'direct.txt.age')), $key.Identity)) | Should -Match ([regex]::Escape($script:Secrets['gitlab.txt']))
+        $staging = InModuleScope PSPhoenix { Get-PhxStagingPath leaky }
+        $everything = @(
+            $output
+            Get-ChildItem -LiteralPath $script:RunSnapshot, $staging -Recurse -File | ForEach-Object { [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($_.FullName)) }
+        ) -join "`n"
+        foreach ($secret in $script:Secrets.Values) { $everything.Contains($secret) | Should -BeFalse -Because 'only ciphertext reaches staging and the snapshot' }
+        # Nothing changed: the same ciphertext, so nothing is written and a sync client uploads nothing.
+        $before = @(Get-ChildItem -LiteralPath $leaky -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.LastWriteTimeUtc.Ticks)" })
+        Start-Sleep -Milliseconds 50
+        Invoke-TestRun | Should -Match "leaky: 0 written, $($sealed + 1) unchanged, 0 removed, $sealed encrypted"
+        @(Get-ChildItem -LiteralPath $leaky -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.LastWriteTimeUtc.Ticks)" }) | Should -Be $before
+        Get-PhxOutput { phx status } | Should -Match "secrets\s+encrypted to $([regex]::Escape($key.Recipient.Substring(0, 12)))\.\.\..* no copy of the key in the snapshot"
     }
 
     It 'stages only inside the staging folder, and fails on a secret in a file the snapshot cannot do without' {
@@ -2734,7 +2893,7 @@ Describe 'run' {
         Get-PhxOutput { phx status } | Should -Match 'secrets\s+1 file\(s\) held back.*sometimes/db\.txt line 1: a password \(Password\)'
         InModuleScope PSPhoenix { $script:LeakNow = $false }
         Invoke-TestRun -Provider sometimes | Should -Match 'sometimes: 1 written'
-        Get-PhxOutput { phx status } | Should -Not -Match 'held back'
+        Get-PhxOutput { phx status } | Should -Not -Match 'file\(s\) held back'
         Test-Path -LiteralPath (Join-Path $script:RunSnapshot 'sometimes/db.txt') | Should -BeTrue
     }
 

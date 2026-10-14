@@ -15,3 +15,22 @@ function Read-PhxAnswer {
     $answer = $answer.Trim()
     if ($answer) { $answer } else { $Default }
 }
+
+function Show-PhxSecretLine {
+    # A line that holds a secret - a new age key: straight to the console, past PowerShell's
+    # streams, so a transcript (Start-Transcript, or one a group policy turns on) does not record it.
+    # Tests replace this one as well.
+    param([Parameter(Mandatory)][string]$Text)
+    [Console]::Out.WriteLine($Text)
+}
+
+function Read-PhxSecretAnswer {
+    # A secret answer - a passphrase: not echoed, not trimmed. Tests replace this one too.
+    param([Parameter(Mandatory)][string]$Prompt)
+    try { $secure = Read-Host $Prompt -AsSecureString }
+    catch [System.Management.Automation.PSInvalidOperationException] {
+        throw 'this needs an interactive console - run it in a terminal, not with -NonInteractive'
+    }
+    if ($null -eq $secure) { throw [OperationCanceledException]::new('input ended') }
+    [Net.NetworkCredential]::new('', $secure).Password
+}

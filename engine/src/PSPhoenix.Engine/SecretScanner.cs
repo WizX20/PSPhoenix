@@ -380,9 +380,15 @@ public static partial class SecretScanner
             || (v.Length >= 3 && char.IsAsciiLetter(v[0]) && v[1] == ':' && v[2] is '\\' or '/');
     }
 
-    /// <summary>Text from a file's bytes; null for a binary file.</summary>
+    /// <summary>Text from a file's bytes; null for a binary file, and for an age file - encrypted already.</summary>
     internal static string? Decode(byte[] bytes)
     {
+        // Only a header that parses makes it an age file: the first line alone would let any text
+        // past the scan.
+        if (Age.IsEncrypted(bytes))
+        {
+            return null;
+        }
         if (bytes.AsSpan().StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]))
         {
             return Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);

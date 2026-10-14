@@ -3,6 +3,13 @@
 # in the target, removed at once. Only a config it cannot read stops it: any other problem is a
 # warning line, counted at the end.
 
+function Format-PhxRecipient {
+    # An age recipient, shortened for a status line: age1qyqszqgp...3290gq.
+    param([Parameter(Mandatory)][string]$Recipient)
+    if ($Recipient.Length -le 24) { return $Recipient }
+    "$($Recipient.Substring(0, 12))...$($Recipient.Substring($Recipient.Length - 6))"
+}
+
 function Format-PhxAge {
     # "just now", "1 minute ago", "3 hours ago", "2 days ago".
     param([Parameter(Mandatory)][datetime]$Since)
@@ -114,13 +121,23 @@ function Show-PhxStatus {
     if (-not $at) { & $line 'last run' 'none yet - phx run' }
     elseif (@($last.failed).Count) { & $line 'last run' "$(Format-PhxAge $at) - failed: $(@($last.failed) -join ', ') - log: $($last.log)" -Warn }
     else { & $line 'last run' "$(Format-PhxAge $at) - $(@($last.providers).Count) provider(s), all fine" }
-    # Files the secret check held back: not in the snapshot until age (#25) can encrypt them.
+    # Secrets: encrypted to the age key in the config. Without one, a file with a secret is held
+    # back - not in the snapshot - and the last run's list says which.
+    $recipient = $config.secrets.recipient
+    if ($recipient) {
+        $copy = if (-not $config.target -or -not $config.target.path) { '' }
+        elseif ([IO.File]::Exists((Get-PhxKeyCopyPath $config))) { " - a passphrase-protected copy of the key is $(Split-Path -Leaf (Get-PhxKeyCopyPath $config)) in the snapshot" }
+        else { ' - no copy of the key in the snapshot: keep the key phx init showed you safe' }
+        & $line 'secrets' "encrypted to $(Format-PhxRecipient $recipient)$copy"
+    }
     $held = @(foreach ($name in @($state.Providers.Keys | Sort-Object)) { foreach ($entry in @($state.Providers[$name].Withheld)) { "$name/$entry" } })
     if ($held.Count) {
         $shown = ($held | Select-Object -First 3) -join '; '
         $rest = if ($held.Count -gt 3) { "; and $($held.Count - 3) more" } else { '' }
-        & $line 'secrets' "$($held.Count) file(s) held back, not in the snapshot - a secret is only stored encrypted, with age (#25): $shown$rest" -Warn
+        $why = if ($recipient) { 'until the next run encrypts them' } else { 'a secret is only stored encrypted, and there is no age key yet - phx init' }
+        & $line 'secrets' "$($held.Count) file(s) held back, not in the snapshot - ${why}: $shown$rest" -Warn
     }
+    elseif (-not $recipient) { & $line 'secrets' 'no age key yet - phx init sets one up; until then a file with a secret is held back' }
     & $line 'review' 'gitignored files to decide on - arrives with M3 (phx review)'
     & $line 'wip' 'local-only work - arrives with M4'
     if ($warnings.Count) { Write-Host "$($warnings.Count) thing(s) need attention" -ForegroundColor Yellow }

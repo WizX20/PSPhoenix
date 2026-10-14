@@ -31,7 +31,8 @@ This project is licensed under the [Business Source License 1.1](LICENSE) (BUSL-
 - **A wizard first.** `phx init` asks where your repositories live — as many folders as you like (`C:\Repos`, `D:\Work`, ...) — where backups go, how often, and walks you through the gitignored files it found.
 - **Then in the background.** A per-user scheduled task runs every hour (configurable). A run with nothing changed compares a few hundred file timestamps and is done; slow inventories such as `winget export` run once a day.
 - **Any folder as the target.** OneDrive, Dropbox, a NAS share or a USB disk: PSPhoenix writes plain files, the sync client moves them. A git repository as target follows later.
-- **Readable without PSPhoenix.** JSON, plain files, git bundles and [age](https://age-encryption.org)-encrypted secrets — recoverable by hand if need be.
+- **Secrets only encrypted.** A file with a password or token in it — found by its content, not just its name — goes into the snapshot only [age](https://age-encryption.org)-encrypted, to a key `phx init` makes. Keep the key it shows you; a passphrase-protected copy can sit in the target (`key-<id>.age`), so a restore needs only the passphrase. Nothing to install: PSPhoenix speaks age itself.
+- **Readable without PSPhoenix.** JSON, plain files, git bundles and age files — recoverable by hand if need be (`age -d -i key-<id>.age file.age`).
 - **Restore onto a new layout.** Repositories are known by their remote, not their path: restore into `D:\src` instead of `C:\Repos` and Claude Code still finds its memory.
 
 The full design, including what is not built yet: [docs/design.md](docs/design.md).
@@ -80,7 +81,7 @@ and settings, and the machine setup - winget, Scoop, PowerShell, Windows Termina
 environment variables.
 
 USAGE:
-  phx init                        set up or change: roots, accounts, target, machine, interval
+  phx init                        set up or change: roots, accounts, target, machine, key, interval
   phx status                      what is set up, and what needs attention
   phx scan                        re-discover repositories under the roots
   phx roots add|rm|list [<path>]  the folders that hold your repositories; add: -Depth <n>
