@@ -146,13 +146,15 @@ Including everything is not an option; a pure allowlist misses files nobody thou
    `bin`, `obj`, `node_modules`, `packages`, `.packages`, `.nuget`, `dist`, `out`, `build`,
    `artifacts`, `publish`, `.vs`, `.idea`, `.dart_tool`, `.gradle`, `.venv`, `venv`,
    `__pycache__`, `.terraform`, `.next`, `.nuxt`, `.angular`, `.cache`, `coverage`, `TestResults`,
-   `.git`, `.claude/worktrees`, ignoring case. A folder that is a repository or a worktree of its
+   `.git`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.eggs`, `.claude/worktrees`,
+   ignoring case. A folder that is a repository or a worktree of its
    own (a `.git` in it), or a Python virtual environment (a `pyvenv.cfg` in it), is not entered
    either. None of these is even listed.
 3. **Generated code**: `*.g.dart`, `*.freezed.dart`, `*.mocks.dart`, `*.g.cs`, `*.g.i.cs`,
    `GeneratedPluginRegistrant.*`, Gradle wrappers, ignored lock files (`package-lock.json`,
-   `yarn.lock`, `pubspec.lock`, `go.sum`, ...). **Noise**: logs, temporary and swap files,
-   `.DS_Store`, `Thumbs.db`, `desktop.ini`, `*.suo`, `*.cache`.
+   `yarn.lock`, `pubspec.lock`, `go.sum`, ...), Flutter's generated plugin lists and Xcode
+   config. **Noise**: logs, temporary and swap files, lock and pid files, `.DS_Store`,
+   `Thumbs.db`, `desktop.ini`, `*.suo`, `*.cache`.
 4. **Binary extensions and a size cap** (`files.maxKB`, default 1 MB). Filtered files from steps
    3 and 4 are left out unless the review includes them by name or pattern.
 5. **Secret classification** by name: `.env`, `.env.*`, `secrets.*`, `*.pfx`, `*.p12`, `*.pem`,
