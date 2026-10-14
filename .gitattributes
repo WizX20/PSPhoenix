@@ -5,3 +5,7 @@
 
 *.png binary
 *.zip binary
+
+# The age test vectors are exact bytes: no line-ending conversion.
+engine/tests/PSPhoenix.Engine.Tests/testkit/* binary
+engine/tests/PSPhoenix.Engine.Tests/testkit/README.md text

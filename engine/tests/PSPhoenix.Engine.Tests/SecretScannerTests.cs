@@ -10,6 +10,8 @@ public sealed class SecretScannerTests : IDisposable
 
     public void Dispose() => temp.Dispose();
 
+    private static readonly AgeKey AgeKey = Age.NewKey();
+
     /// <summary>A text with one secret, what it is, and the secret itself.</summary>
     public static TheoryData<string, string, SecretKind, string> OneSecret()
     {
@@ -44,6 +46,8 @@ public sealed class SecretScannerTests : IDisposable
             { "a password in .env", "DB_PASSWORD=" + "hunter22", SecretKind.Password, "hunter22" },
             { "a password in an XML element", "<password>" + "hunter22" + "</password>", SecretKind.Password, "hunter22" },
             { "a GUID as an API key", "\"apiKey\": \"3f2504e0-4f89-11d3-9a0c-0305e82c3301\"", SecretKind.SecretValue, "3f2504e0-4f89-11d3-9a0c-0305e82c3301" },
+            { "an age key file", $"# created: 2026-10-13T12:00:00Z\n# public key: {AgeKey.Recipient}\n{AgeKey.Identity}\n", SecretKind.AgeSecretKey, AgeKey.Identity },
+            { "an age key in a variable", $"AGE_KEY={AgeKey.Identity}", SecretKind.AgeSecretKey, AgeKey.Identity },
         };
         return data;
     }
@@ -84,6 +88,7 @@ public sealed class SecretScannerTests : IDisposable
             { "a short or repetitive token", "\"token\": \"abc\", \"apiKey\": \"aaaaaaaaaaaaaaaa\"" },
             { "a path to a key", "\"privateKey\": \"~/.ssh/id_ed25519\", \"credentials\": \"C:\\\\Users\\\\x\\\\.aws\\\\credentials\"" },
             { "a URL without credentials", "https://org@dev.azure.com/org ssh://git@github.com/o/r.git git@github.com:o/r.git" },
+            { "an age recipient: the public half", $"\"recipient\": \"{AgeKey.Recipient}\" # public key: {AgeKey.Recipient}" },
             { "prose about passwords", "The password policy requires twelve characters. Note: token: see the docs." },
             { "words that start like a key", "task-runner-configuration sk-learn-preprocessing-pipeline" },
         };

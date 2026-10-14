@@ -1,0 +1,1 @@
+- changed: secrets need no age tool. PSPhoenix encrypts and decrypts the age format itself, so the [age](https://age-encryption.org) tool is no longer a requirement. A snapshot's secrets still open with it, without PSPhoenix (#25)

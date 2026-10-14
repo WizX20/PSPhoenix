@@ -51,6 +51,12 @@ jobs:
         shell: pwsh
         run: ./scripts/lint.ps1
 
+      # The age tool, for the engine's interop tests: what PSPhoenix encrypts must open with it, and
+      # the other way round. Only for the tests - PSPhoenix itself never calls it.
+      - name: Install age (interop tests)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq age
+
       - name: Test the engine (xUnit)
         working-directory: engine
         shell: pwsh

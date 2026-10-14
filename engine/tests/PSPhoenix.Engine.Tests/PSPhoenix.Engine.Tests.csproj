@@ -20,6 +20,9 @@
     <Using Include="Xunit" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="testkit/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\src\PSPhoenix.Engine\PSPhoenix.Engine.csproj" />
   </ItemGroup>
 </Project>

@@ -226,8 +226,21 @@ Encryption uses [age](https://age-encryption.org):
   that passphrase.
 - **Not DPAPI**: it is bound to the machine and the Windows account, so after a crash the data
   would be unreadable - exactly the case this tool exists for.
-- `age` is an external binary (`scoop install age`, `winget install FiloSottile.age`). Without it,
-  secret-classified items are skipped and `phx status` says so.
+- **Built in, nothing to install.** The engine implements the age format itself (`Age`):
+  - X25519 recipients and scrypt passphrases;
+  - the header and its MAC;
+  - the STREAM payload.
+
+  .NET has no X25519 and no scrypt, and no maintained .NET library for age exists, so the engine
+  carries its own: a port of TweetNaCl's Curve25519 ladder, scrypt per RFC 7914 on .NET's PBKDF2,
+  and bech32 for the keys. ChaCha20-Poly1305 and HKDF come from .NET.
+- **Checked against age itself.** The official age test vectors (C2SP CCTV) run with the engine's
+  tests, and in CI the real `age` tool decrypts what the engine encrypts and the other way round.
+  So a snapshot stays readable without PSPhoenix: `age -d -i key.txt file.age` opens it. The ASCII
+  armor, plugins and the post-quantum hybrid keys are not built, because PSPhoenix writes none of
+  them.
+- **Until a key is set up** (`phx init`, #25), secret-classified items are held back and `phx status`
+  says so.
 
 **Detection.** A file is secret by its name (see [Gitignored files](#gitignored-files-filters-and-review))
 or by its content. One detector in the engine, `SecretScanner`, reads content. It finds:
@@ -517,7 +530,8 @@ with its own xUnit tests):
 - writing a file through a temporary name and one rename, copying, hashing (SHA-256);
 - publishing the staged files into the snapshot;
 - the state (`state.json`) and change detection - a provider's `$Context.Files`;
-- the secret scan (`SecretScanner`, #45): what is a secret, by content - see [Secrets](#secrets).
+- the secret scan (`SecretScanner`, #45): what is a secret, by content - see [Secrets](#secrets);
+- age encryption (`Age`, #25), built in - see [Secrets](#secrets).
 
 It targets .NET 8, what PowerShell 7.4 runs on, and depends on nothing but .NET: PowerShell calls
 its public classes, and an exception it throws reaches the user as its own message. The module
