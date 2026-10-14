@@ -1645,7 +1645,7 @@ Describe 'repo-files provider' {
     It 'skips a secret without the age key, and a repository that is not in place' {
         Set-TestFilesConfig -Decisions @{ include = @('config.local.env', '.env') }
         Invoke-FilesBackup $script:FilesStaging | Out-Null
-        Remove-Item -LiteralPath (Join-Path $script:FilesRepo '.env'), (Join-Path $script:FilesRepo 'config.local.env')
+        Remove-Item -LiteralPath (Join-Path $script:FilesRepo '.env'), (Join-Path $script:FilesRepo 'config.local.env') -Force
         $output = Invoke-FilesRestore $script:FilesStaging
         $output | Should -Match '\.env is encrypted and this restore has no age key - skipped'
         $output | Should -Match '1 restored, 0 already in place, 0 differ \(left as they are\), 1 skipped'
