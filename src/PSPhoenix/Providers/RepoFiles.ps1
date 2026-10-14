@@ -165,11 +165,10 @@ function Backup-PhxRepoFiles {
             $target = "$folder/$($file.Path)"
             if ($Context.DryRun) { & $Context.Log "would back up $target" 'Action'; continue }
             # A file can go while the run looks at it: the next run sees it gone.
-            try { Copy-PhxStagedFile -Context $Context -Source ([IO.Path]::GetFullPath((Join-PhxPath $key $file.Path))) -Path $target -Secret:($file.Decision -eq 'Secret') -Accept $file.Accepted }
+            try { $staged = Copy-PhxStagedFile -Context $Context -Source ([IO.Path]::GetFullPath((Join-PhxPath $key $file.Path))) -Path $target -Secret:($file.Decision -eq 'Secret') -Accept $file.Accepted -PassThru }
             catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { continue }
-            # Encrypted, plain, or held back for lack of a key.
-            $name = if ($Context.Sealed.Contains("$target.age")) { "$($file.Path).age" }
-            elseif ([IO.File]::Exists((Join-PhxPath $Context.Staging $target))) { $file.Path }
+            # Plain or encrypted, as the stager recorded it; nothing when held back for lack of a key.
+            $name = Get-PhxStoredName -Entry $staged -Folder $folder
             if (-not $name) { continue }
             $stored.Add([ordered]@{ path = $file.Path; stored = $name })
             $copied++

@@ -1,0 +1,1 @@
+- fix: a file the review called "not a secret" stays plain through `phx run` - the last secret check before publishing no longer encrypts it again, and `files.json` always names the file the snapshot holds (#68)

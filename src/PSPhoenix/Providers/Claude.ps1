@@ -63,10 +63,11 @@ function Copy-PhxClaudeStaged {
     # Stages one file; returns how it is stored - its path, or <path>.age - or nothing when it was
     # held back (a secret, no key yet) or went away while the run looked.
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Name)
-    try { Copy-PhxStagedFile -Context $Context -Source $Source -Path $Path }
+    try { $staged = Copy-PhxStagedFile -Context $Context -Source $Source -Path $Path -PassThru }
     catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { return }
-    if ($Context.Sealed.Contains("$Path.age")) { return "$Name.age" }
-    if ([IO.File]::Exists((Join-PhxPath $Context.Staging $Path))) { $Name }
+    if (-not $staged.Stored) { return }
+    # The stored name is the path's, with .age when encrypted.
+    $Name + $staged.Stored.Substring($Path.Length)
 }
 
 function Get-PhxClaudeProject {
@@ -179,8 +180,8 @@ function Backup-PhxClaude {
         $mcpCount += $mcp.User.Count
         if ($Context.DryRun) { & $Context.Log "would back up $mcpCount MCP server(s)" 'Action' }
         else {
-            Write-PhxStagedText -Context $Context -Path 'claude.json' -Value ([ordered]@{ mcpServers = $mcp.User; projects = $byProject } | ConvertTo-Json -Depth 20)
-            $mcpStored = if ($Context.Sealed.Contains('claude.json.age')) { 'claude.json.age' } elseif ([IO.File]::Exists((Join-PhxPath $Context.Staging 'claude.json'))) { 'claude.json' }
+            $staged = Write-PhxStagedText -Context $Context -Path 'claude.json' -Value ([ordered]@{ mcpServers = $mcp.User; projects = $byProject } | ConvertTo-Json -Depth 20) -PassThru
+            $mcpStored = Get-PhxStoredName -Entry $staged
         }
     }
     if ($Context.DryRun) { return }
