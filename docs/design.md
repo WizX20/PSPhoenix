@@ -493,6 +493,18 @@ One target can hold several machines side by side; restore picks one.
   and into which snapshot folder; per repository a hash of its refs.
 - A run compares size and mtime first, hashes only on a difference, copies only on a changed hash.
   A file touched but not changed is hashed once and does not count as changed.
+- **The staging folder stays between runs.** Each provider's stager records, per staged file, its
+  source (size and mtime, or a text's hash), how it was staged (secret, accepted findings, the age
+  recipient) and the staged file as it left it (size, mtime, SHA-256); the state keeps that record
+  when the provider's run succeeded. A file whose source, options and staged copy are all unchanged
+  is left as it is - not read, scanned, encrypted or hashed again - and publishing takes its hash
+  from the record. What a run no longer stages is pruned from the folder before publishing, so it
+  still holds exactly what that run produced. `phx run` says how many files it did not read again.
+- **The repository inventory** asks git only for a repository whose record could have changed: the
+  scan stamps each record with the size and mtime of what it was read from - `.git/config`, `HEAD`,
+  `packed-refs`, the primary remote's `HEAD`, each worktree's `HEAD`, `.gitattributes`,
+  `.gitmodules` and every file the config includes. The same stamp means the same record; a
+  repository on the reftable backend is always read. The warnings reading it gave are repeated.
 - Publishing compares a staged file's hash with the one the state recorded at the last publish,
   so the target is not read back - in a OneDrive folder, reading can mean downloading. Those
   hashes count only for the snapshot folder they were published into: after a new target or a

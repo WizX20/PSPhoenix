@@ -92,6 +92,8 @@ function Read-PhxRepoConfig {
     $settings = [Collections.Generic.List[object]]::new()
     $included = [Collections.Generic.List[object]]::new()
     $external = [Collections.Generic.List[string]]::new()
+    $files = [Collections.Generic.List[string]]::new()
+    $warnings = [Collections.Generic.List[string]]::new()
     $raw = @(Invoke-PhxGit -Repository $Path -Arguments 'config', '-z', '--local', '--includes', '--list', '--show-origin') -join "`n"
     $parts = $raw.Split([char]0)
     for ($i = 0; $i + 1 -lt $parts.Count; $i += 2) {
@@ -102,17 +104,20 @@ function Read-PhxRepoConfig {
         if ($origin -ne 'file:.git/config' -and $origin -like 'file:*') {
             # git names an included file relative to the repository (file:.git/../.gitconfig) or in full.
             $file = [IO.Path]::GetFullPath($origin.Substring(5), $Path)
+            if ($files -notcontains $file) { $files.Add($file) }
             if ((-not (Test-PhxPathWithin $file $Path) -or (Test-PhxPathWithin $file (Join-PhxPath $Path '.git'))) -and $external -notcontains $file) { $external.Add($file) }
         }
         if ($key -notmatch $script:PhxRepoSettingPattern -and $key -notmatch '^remote\..+\.(url|pushurl)$') { continue }
         if ($key -like 'credential.*' -and ($reason = Get-PhxCredentialSecret -Key $key -Value $value)) {
-            Write-Host "  ${Path}: $(Hide-PhxSecret $key) $reason - not recorded" -ForegroundColor Yellow
+            $warnings.Add("${Path}: $(Hide-PhxSecret $key) $reason - not recorded")
+            Write-Host "  $($warnings[-1])" -ForegroundColor Yellow
             continue
         }
         # Any other setting with a secret in its value is not recorded either: the inventory is
         # plain text. (A remote URL is recorded without it, below.)
         if ($key -notmatch '^remote\..+\.(url|pushurl)$' -and ($finding = @(Get-PhxSecretFinding "$value")[0])) {
-            Write-Host "  ${Path}: $key holds $($finding.Description) - not recorded" -ForegroundColor Yellow
+            $warnings.Add("${Path}: $key holds $($finding.Description) - not recorded")
+            Write-Host "  $($warnings[-1])" -ForegroundColor Yellow
             continue
         }
         if ($origin -ne 'file:.git/config') { $included.Add([ordered]@{ key = $key; value = $value }); continue }
@@ -123,7 +128,10 @@ function Read-PhxRepoConfig {
             # user:password@ and a token as user name go; a secret anywhere else in it (a token in
             # its query) is masked.
             $url = Hide-PhxSecret (Remove-PhxUrlSecret $value)
-            if ($url -cne $value) { Write-Host "  ${Path}: remote $name carries credentials in its URL - recorded without them" -ForegroundColor Yellow }
+            if ($url -cne $value) {
+                $warnings.Add("${Path}: remote $name carries credentials in its URL - recorded without them")
+                Write-Host "  $($warnings[-1])" -ForegroundColor Yellow
+            }
             if (-not $remotes.Contains($name)) { $remotes[$name] = [ordered]@{ urls = @(); pushUrls = @() } }
             $remotes[$name][$field] += $url
         }
@@ -131,7 +139,7 @@ function Read-PhxRepoConfig {
     }
     # A remote with only a push URL is nothing to clone from.
     foreach ($name in @($remotes.Keys)) { if (-not $remotes[$name].urls.Count) { $remotes.Remove($name) } }
-    [pscustomobject]@{ Remotes = $remotes; Settings = @($settings); Included = @($included); ExternalIncludes = @($external) }
+    [pscustomobject]@{ Remotes = $remotes; Settings = @($settings); Included = @($included); ExternalIncludes = @($external); IncludeFiles = @($files); Warnings = @($warnings) }
 }
 
 function Get-PhxPrimaryRemote {
@@ -222,10 +230,35 @@ function Get-PhxRepoRecord {
         settings         = @($local.Settings)
         helperAccount    = Get-PhxCredentialAccount (@($local.Settings) + @($local.Included))
         externalIncludes = @($local.ExternalIncludes)
+        stamp            = Get-PhxRepoStamp -Path $Path -Primary $primary -Includes @($local.IncludeFiles)
+        includeFiles     = @($local.IncludeFiles)
+        # What reading it warned about: a backup that reuses the record says it again.
+        warnings         = @($local.Warnings)
         worktrees        = @(Get-PhxWorktree -Root $Root -Path $Path)
         lfs              = [IO.Directory]::Exists((Join-PhxPath $gitDir 'lfs')) -or ([IO.File]::Exists($attributes) -and [IO.File]::ReadAllText($attributes) -match 'filter=lfs')
         submodules       = [IO.File]::Exists((Join-PhxPath $Path '.gitmodules'))
     }
+}
+
+function Get-PhxRepoStamp {
+    # What a repository record is read from, as sizes and times of the files under .git that hold it
+    # (config, HEAD, the refs it names, worktrees) and the files its config includes: the same stamp
+    # means the record would read the same, so a backup need not ask git again. Nothing for a
+    # repository on the reftable backend, whose refs are no such files - it is always read.
+    param([Parameter(Mandatory)][string]$Path, [string]$Primary, [string[]]$Includes = @())
+    $git = Join-PhxPath $Path '.git'
+    if ([IO.Directory]::Exists((Join-PhxPath $git 'reftable'))) { return }
+    $files = @('config', 'HEAD', 'packed-refs') | ForEach-Object { Join-PhxPath $git $_ }
+    if ($Primary) { $files += Join-PhxPath $git "refs/remotes/$Primary/HEAD" }
+    $worktrees = Join-PhxPath $git 'worktrees'
+    if ([IO.Directory]::Exists($worktrees)) { $files += @([IO.Directory]::GetDirectories($worktrees) | Sort-Object | ForEach-Object { Join-PhxPath $_ 'HEAD' }) }
+    $files += @('.gitattributes', '.gitmodules') | ForEach-Object { Join-PhxPath $Path $_ }
+    $files += @($Includes)
+    $parts = foreach ($file in $files) {
+        $info = [IO.FileInfo]::new($file)
+        if ($info.Exists) { "$file=$($info.Length):$($info.LastWriteTimeUtc.Ticks)" } else { "$file=-" }
+    }
+    "lfs=$([IO.Directory]::Exists((Join-PhxPath $git 'lfs')))|$($parts -join '|')"
 }
 
 function Get-PhxRepoCachePath { Join-PhxPath (Get-PhxStateDir) 'repos.json' }

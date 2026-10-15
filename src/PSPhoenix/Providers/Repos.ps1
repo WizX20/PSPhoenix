@@ -73,11 +73,19 @@ function Backup-PhxRepos {
             & $Context.Log "gone since the last scan, not recorded: $path" 'Warn'
             continue
         }
-        try { $now = Get-PhxRepoRecord -Root $record.root -Path $path }
-        catch {
-            & $Context.Log "could not read ${path}: $(Hide-PhxSecret $_.Exception.Message) - recorded from the last scan" 'Warn'
-            ConvertTo-PhxRepoInventory -Record $record -Accounts $accounts -FromScan 'unreadable'
-            continue
+        # Unchanged since the scan read it - the same config, HEAD, refs and includes: no git call.
+        $stamp = if ($record.stamp) { Get-PhxRepoStamp -Path $path -Primary $record.primaryRemote -Includes @($record.includeFiles) }
+        if ($stamp -and $stamp -ceq $record.stamp) {
+            $now = $record
+            foreach ($warning in @($record.warnings | Where-Object { $_ })) { & $Context.Log $warning 'Warn' }
+        }
+        else {
+            try { $now = Get-PhxRepoRecord -Root $record.root -Path $path }
+            catch {
+                & $Context.Log "could not read ${path}: $(Hide-PhxSecret $_.Exception.Message) - recorded from the last scan" 'Warn'
+                ConvertTo-PhxRepoInventory -Record $record -Accounts $accounts -FromScan 'unreadable'
+                continue
+            }
         }
         foreach ($file in @($now.externalIncludes)) {
             & $Context.Log "${path}: includes $file from outside the repository - a clone does not bring it back, and this snapshot does not hold it (the git provider, M5, will)" 'Warn'

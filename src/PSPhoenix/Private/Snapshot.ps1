@@ -99,9 +99,11 @@ function Publish-PhxFolder {
     param(
         [Parameter(Mandatory)][string]$Source,
         [Parameter(Mandatory)][string]$Destination,
-        [System.Collections.Generic.IDictionary[string, string]]$Published
+        [System.Collections.Generic.IDictionary[string, string]]$Published,
+        # The provider's stager: the hashes of the files it wrote or kept, so they are not read again.
+        [PSPhoenix.Engine.Stager]$Stager
     )
-    try { [PSPhoenix.Engine.FolderPublisher]::Publish($Source, $Destination, $Published) }
+    try { [PSPhoenix.Engine.FolderPublisher]::Publish($Source, $Destination, $Published, $Stager) }
     catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
 }
 
@@ -157,7 +159,9 @@ function Publish-PhxSnapshot {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Config,
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Provider,
-        [PSPhoenix.Engine.PhxState]$State
+        [PSPhoenix.Engine.PhxState]$State,
+        # Per provider its stager, whose hashes spare reading staged files again.
+        [hashtable]$Stagers = @{}
     )
     $snapshot = Get-PhxSnapshotPath $Config
     $info = Initialize-PhxSnapshot -Config $Config
@@ -181,7 +185,7 @@ function Publish-PhxSnapshot {
         $published = if ($State) { $State.PublishedHashes($name) }
         # One provider that cannot be published (a file held open in the target) does not stop the
         # others; its result carries the error.
-        try { $result = Publish-PhxFolder -Source (Get-PhxStagingPath $name) -Destination (Join-PhxPath $snapshot $name) -Published $published }
+        try { $result = Publish-PhxFolder -Source (Get-PhxStagingPath $name) -Destination (Join-PhxPath $snapshot $name) -Published $published -Stager $Stagers[$name] }
         catch {
             $results[$name] = [pscustomobject]@{ Error = Hide-PhxSecret $_.Exception.Message }
             continue
