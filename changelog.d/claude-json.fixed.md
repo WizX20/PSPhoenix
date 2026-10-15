@@ -1,0 +1,1 @@
+- fix: claude - the MCP servers of `~/.claude.json` are read and restored by the engine: two projects whose paths differ only in case keep their own servers, and a restore adds what is missing without changing the rest of the file (dates, numbers, formatting) or writing over a change Claude Code made meanwhile (#72)

@@ -2079,6 +2079,20 @@ Describe 'claude provider' {
         (Get-Content -LiteralPath (Join-Path $d '.claude.json') -Raw | ConvertFrom-Json -AsHashtable).oauthAccount.emailAddress | Should -Be 'someone@example.invalid'
     }
 
+    It 'adds a missing MCP server without changing the rest of ~/.claude.json (#72)' {
+        Invoke-ClaudeBackup $script:ClaudeStaging | Out-Null
+        $path = Join-Path $script:ClaudeDir '.claude.json'
+        $json = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
+        $json.mcpServers.Remove('github') | Out-Null
+        $text = '{ "firstStartTime": "2026-03-01T08:15:05.600Z", "numStartups": 1234567890123, ' + ($json | ConvertTo-Json -Depth 10).TrimStart().Substring(1)
+        [IO.File]::WriteAllText($path, $text)
+        Invoke-ClaudeRestore $script:ClaudeStaging -Identity $script:ClaudeKey.Identity | Should -Match '1 restored'
+        $after = Get-Content -LiteralPath $path -Raw
+        $after | Should -Match '"2026-03-01T08:15:05\.600Z"'
+        $after | Should -Match '1234567890123'
+        $after | Should -Match '"github"'
+    }
+
     It 'skips the encrypted MCP servers without the age key' {
         Invoke-ClaudeBackup $script:ClaudeStaging | Out-Null
         Use-TestHome | Out-Null
