@@ -128,7 +128,7 @@ function Backup-PhxRepoFiles {
     # keeps the list for phx status and the review.
     param([Parameter(Mandatory)]$Context)
     $cache = Read-PhxRepoCache
-    if (-not $cache) { & $Context.Log 'no scan yet - phx scan'; return }
+    if (-not $cache) { Assert-PhxSourceGone -Context $Context -Why 'no scan of the roots (phx scan)'; return }
     $records = @(Get-PhxScannedRecord -Cache $cache -Config $Context.Config)
     $folders = Get-PhxRepoFolderMap $records
     $manifest = [Collections.Generic.List[object]]::new()

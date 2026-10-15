@@ -93,7 +93,10 @@ public static class IgnoredFiles
 
     /// <summary>Names of files that hold a secret by their nature.</summary>
     public static IReadOnlyList<string> SecretNames { get; } =
-        [".env", ".env.*", "secrets.*", "*.pfx", "*.p12", "*.pem", "*.key", "id_*"];
+        [
+            ".env", ".env.*", "secrets.*", "*.pfx", "*.p12", "*.pem", "*.key", "id_*",
+            "*.jks", "*.keystore", "*.ppk", ".netrc", "_netrc", ".pgpass", "*.kdbx",
+        ];
 
     private static readonly PathPattern[] Generated = [.. GeneratedNames.Select(PathPattern.Parse)];
     private static readonly PathPattern[] Noise = [.. NoiseNames.Select(PathPattern.Parse)];
