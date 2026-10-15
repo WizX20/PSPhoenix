@@ -27,7 +27,9 @@ public enum FileDecision
 /// <item>a built-in filter (<see cref="CandidateFilter"/>): not backed up;</item>
 /// <item>anything else is pending.</item>
 /// </list>
-/// So a folder excluded as a whole can still have one file in it included by name.
+/// So a folder excluded as a whole can still have one file in it included by name. Only a pattern
+/// that names one file overrides a built-in filter: a folder or wildcard include does not pull in the
+/// large, binary or generated files below it the review never showed.
 /// </summary>
 public sealed class FileRules
 {
@@ -47,11 +49,12 @@ public sealed class FileRules
     public FileDecision Decide(IgnoredFile file)
     {
         ArgumentNullException.ThrowIfNull(file);
-        if (secret.Any(p => p.IsMatch(file.Path)))
+        bool filtered = file.Filter != CandidateFilter.None;
+        if (secret.Any(p => p.IsMatch(file.Path) && (p.Exact || !filtered)))
         {
             return FileDecision.Secret;
         }
-        if (include.Any(p => p.IsMatch(file.Path)))
+        if (include.Any(p => p.IsMatch(file.Path) && (p.Exact || !filtered)))
         {
             return file.SecretName ? FileDecision.Secret : FileDecision.Include;
         }
@@ -60,6 +63,26 @@ public sealed class FileRules
             return FileDecision.Exclude;
         }
         return FileDecision.Pending;
+    }
+
+    /// <summary>Whether an include or secret pattern matches <paramref name="path"/>.</summary>
+    public bool Names(string path) => include.Concat(secret).Any(p => p.IsMatch(path));
+
+    /// <summary>Whether an include or secret pattern points into <paramref name="folder"/> by name: the walk enters it, denied or oversized.</summary>
+    public bool PointsInto(string folder) => include.Concat(secret).Any(p => p.PointsInto(folder));
+
+    /// <summary>Whether an include or secret pattern can match below <paramref name="folder"/>: the walk must enter it, denied or not.</summary>
+    public bool Reaches(string folder) => include.Concat(secret).Any(p => p.CouldMatchBelow(folder));
+
+    /// <summary>
+    /// Whether the walk can skip <paramref name="folder"/>: an exclude pattern covers everything in it,
+    /// and no include or secret pattern reaches into it.
+    /// </summary>
+    public bool Prunes(string folder)
+    {
+        // A name no pattern of the user's spells out: only a pattern for the whole folder matches it.
+        string probe = PathPattern.Normalize(folder).Trim('/') + "/";
+        return exclude.Any(p => p.IsMatch(probe)) && !Reaches(folder);
     }
 
     private static PathPattern[] Parse(IEnumerable<string>? patterns) => [.. (patterns ?? []).Select(PathPattern.Parse)];

@@ -146,24 +146,31 @@ Including everything is not an option; a pure allowlist misses files nobody thou
 
 1. **List** with `git ls-files --others --ignored --exclude-standard --directory` in the main
    worktree of each repository. An ignored folder is one entry; the engine (`IgnoredFiles`) walks
-   it. It does not follow links, and stops at 20,000 files per repository with a warning: a
-   folder that big is excluded as a whole.
-2. **Path-segment denylist**, applied to *every* segment of every file path, not only to the top
-   entry git reports (a leftover untracked folder can hide `bin/` and `obj/` deep inside):
+   it, without following links and without entering a folder the review excluded as a whole.
+   - A folder git reports with more than 5,000 files becomes one entry and is left out (a Rust
+     `target/`, `Pods/`); the walk goes on with the rest.
+   - At 50,000 files in all the walk stops, and the repository keeps its last backup, with a
+     warning: a list cut short must not remove what it did not get to.
+2. **Denylist**, by folder name, on every ignored folder and every folder below it (a leftover
+   untracked folder can hide `bin/` and `obj/` deep inside) - not on the tracked folders a file git
+   reports lies in, so `packages/web/.env.local` in an npm workspace is listed:
    `bin`, `obj`, `node_modules`, `packages`, `.packages`, `.nuget`, `dist`, `out`, `build`,
    `artifacts`, `publish`, `.vs`, `.idea`, `.dart_tool`, `.gradle`, `.venv`, `venv`,
    `__pycache__`, `.terraform`, `.next`, `.nuxt`, `.angular`, `.cache`, `coverage`, `TestResults`,
    `.git`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.eggs`, `.claude/worktrees`,
    ignoring case. A folder that is a repository or a worktree of its
    own (a `.git` in it), or a Python virtual environment (a `pyvenv.cfg` in it), is not entered
-   either. None of these is even listed.
+   either. None of these is even listed - unless a decision names a file in it from the top
+   (`/bin/special.json`): then that file, and only what decisions name there, is listed. An
+   oversized folder a decision points into is walked whole.
 3. **Generated code**: `*.g.dart`, `*.freezed.dart`, `*.mocks.dart`, `*.g.cs`, `*.g.i.cs`,
    `GeneratedPluginRegistrant.*`, Gradle wrappers, ignored lock files (`package-lock.json`,
    `yarn.lock`, `pubspec.lock`, `go.sum`, ...), Flutter's generated plugin lists and Xcode
    config. **Noise**: logs, temporary and swap files, lock and pid files, `.DS_Store`,
    `Thumbs.db`, `desktop.ini`, `*.suo`, `*.cache`.
 4. **Binary extensions and a size cap** (`files.maxKB`, default 1 MB). Filtered files from steps
-   3 and 4 are left out unless the review includes them by name or pattern.
+   3 and 4 are left out unless the review includes them by name: a folder or wildcard pattern
+   does not pull in the large, binary or generated files the review never showed.
 5. **Secret classification** by name: `.env`, `.env.*`, `secrets.*`, `*.pfx`, `*.p12`, `*.pem`,
    `*.key`, `id_*`, keystores (`*.jks`, `*.keystore`), PuTTY keys (`*.ppk`), `.netrc`/`_netrc`,
    `.pgpass`, KeePass databases (`*.kdbx`) (the file name, not a folder), plus per-repository `secret` patterns - and by
@@ -209,7 +216,8 @@ relative to the repository, with `/`:
 - case is ignored, on every platform.
 
 `secret` wins over `include`, and `include` over `exclude`: a folder excluded as a whole can still
-have one file in it included by name. An included file with a secret name is a secret.
+have one file in it included by name. An included file with a secret name is a secret. Only a
+pattern that names one file - no wildcard, not a folder - overrides a built-in filter (step 3 and 4).
 
 **Backup and restore.** The decided files go to `repo-files/<identity>/<path>`, a secret as
 `<path>.age`; `repo-files/files.json` records per repository its identity, root, path, folder and

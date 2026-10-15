@@ -182,19 +182,71 @@ public sealed class IgnoredFilesTests : IDisposable
     }
 
     [Fact]
-    public void Stops_at_the_most_files_a_walk_looks_at()
+    public void An_oversized_folder_is_one_entry_and_the_walk_goes_on()
     {
         string folder = temp["many"];
         Directory.CreateDirectory(folder);
-        for (int i = 0; i <= IgnoredFiles.MaxFiles; i++)
+        for (int i = 0; i <= IgnoredFiles.FolderCap; i++)
         {
-            File.WriteAllBytes(Path.Combine(folder, $"f{i}.txt"), []);
+            File.WriteAllBytes(Path.Combine(folder, $"f{i}.txt"), [1]);
+        }
+        temp.Write("web/.env.local", "x");
+
+        IgnoredFileList list = List("many/", "web/.env.local");
+
+        list.Truncated.Should().BeFalse();
+        list.Files.Select(f => (f.Path, f.Filter)).Should().Equal(("many/", CandidateFilter.TooMany), ("web/.env.local", CandidateFilter.None));
+        list.Files[0].Count.Should().BeGreaterThan(IgnoredFiles.FolderCap);
+    }
+
+    [Fact]
+    public void A_folder_a_pattern_reaches_into_has_no_cap()
+    {
+        string folder = temp["many"];
+        Directory.CreateDirectory(folder);
+        for (int i = 0; i <= IgnoredFiles.FolderCap; i++)
+        {
+            File.WriteAllBytes(Path.Combine(folder, $"f{i}.txt"), [1]);
         }
 
-        IgnoredFileList list = List("many/");
+        IgnoredFileList list = IgnoredFiles.List(temp.Path, ["many/"], 1024, new FileRules(include: ["/many/f7.txt"]));
 
-        list.Truncated.Should().BeTrue();
-        list.Files.Should().HaveCount(IgnoredFiles.MaxFiles);
+        list.Files.Should().HaveCount(IgnoredFiles.FolderCap + 1);
+    }
+
+    [Fact]
+    public void Lists_a_file_git_reports_in_a_tracked_folder_named_like_a_denied_one()
+    {
+        // An npm/pnpm workspace: packages/ is source, its .env.local is ignored on its own.
+        temp.Write("packages/web/.env.local", "x");
+        temp.Write("build/tools/local.json", "{}");
+        temp.Write("packages/web/node_modules/x/index.js", "x");
+
+        List("packages/web/.env.local", "build/tools/local.json", "packages/web/node_modules/").Files.Select(f => f.Path)
+            .Should().Equal("build/tools/local.json", "packages/web/.env.local");
+    }
+
+    [Fact]
+    public void Does_not_enter_a_folder_the_review_excluded()
+    {
+        temp.Write("leftover/a.txt", "x");
+        temp.Write("leftover/sub/b.txt", "x");
+        temp.Write("other/c.txt", "x");
+
+        IgnoredFiles.List(temp.Path, ["leftover/", "other/"], 1024, new FileRules(exclude: ["/leftover/", "other/sub/"])).Files.Select(f => f.Path)
+            .Should().Equal("other/c.txt");
+    }
+
+    [Fact]
+    public void Enters_an_excluded_or_denied_folder_only_for_what_a_pattern_names()
+    {
+        temp.Write("leftover/keep.txt", "x");
+        temp.Write("leftover/drop.txt", "x");
+        temp.Write("bin/special.json", "{}");
+        temp.Write("bin/App.dll", "x");
+
+        IgnoredFiles.List(temp.Path, ["leftover/", "bin/"], 1024, new FileRules(include: ["/leftover/keep.txt", "/bin/special.json"], exclude: ["/leftover/"])).Files.Select(f => f.Path)
+            .Should().Equal("bin/special.json", "leftover/drop.txt", "leftover/keep.txt");
     }
 
     [Fact]
@@ -257,6 +309,61 @@ public sealed class FileRulesTests
     public void Refuses_a_pattern_that_is_not_one()
     {
         FluentActions.Invoking(() => new FileRules(exclude: ["../x"])).Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Only_a_pattern_naming_one_file_overrides_a_built_in_filter()
+    {
+        FileRules folder = new(include: ["dumps/"], secret: ["*.bak.json"]);
+        FileRules exact = new(include: ["/dumps/big.json"]);
+
+        folder.Decide(File("dumps/big.json", filter: CandidateFilter.Large)).Should().Be(FileDecision.Exclude);
+        folder.Decide(File("dumps/small.json")).Should().Be(FileDecision.Include);
+        folder.Decide(File("x.bak.json", filter: CandidateFilter.Large)).Should().Be(FileDecision.Exclude);
+        exact.Decide(File("dumps/big.json", filter: CandidateFilter.Large)).Should().Be(FileDecision.Include);
+    }
+
+    [Theory]
+    [InlineData("/leftover/", "leftover", true)]
+    [InlineData("/leftover/", "other", false)]
+    [InlineData("/notes.md", "leftover", false)]
+    [InlineData("src/**/local.json", "src/app", true)]
+    [InlineData("src/**/local.json", "lib", false)]
+    [InlineData("**/local.json", "lib", true)]
+    [InlineData("local.json", "lib", true)]
+    [InlineData("/src/app/x.json", "src", true)]
+    public void Knows_whether_a_pattern_reaches_into_a_folder(string pattern, string folder, bool expected)
+    {
+        new FileRules(include: [pattern]).Reaches(folder).Should().Be(expected);
+    }
+
+    [Fact]
+    public void Only_an_anchored_pattern_inside_a_folder_points_into_it()
+    {
+        new FileRules(include: ["/bin/special.json"]).PointsInto("bin").Should().BeTrue();
+        new FileRules(include: ["/leftover/"]).PointsInto("leftover/src/bin").Should().BeFalse();
+        new FileRules(include: ["leftover/"]).PointsInto("leftover/src/bin").Should().BeFalse();
+        new FileRules(include: ["*.json"]).PointsInto("bin").Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_folder_include_does_not_open_the_denied_folders_inside_it()
+    {
+        using TempFolder temp = new();
+        temp.Write("leftover/keep.txt", "x");
+        temp.Write("leftover/src/bin/app.config", "x");
+
+        IgnoredFiles.List(temp.Path, ["leftover/"], 1024, new FileRules(include: ["leftover/"])).Files.Select(f => f.Path)
+            .Should().Equal("leftover/keep.txt");
+    }
+
+    [Fact]
+    public void Prunes_a_folder_only_when_an_exclude_covers_it_and_nothing_reaches_in()
+    {
+        new FileRules(exclude: ["/leftover/"]).Prunes("leftover").Should().BeTrue();
+        new FileRules(exclude: ["*.log"]).Prunes("leftover").Should().BeFalse();
+        new FileRules(exclude: ["/leftover/"], include: ["/leftover/keep.txt"]).Prunes("leftover").Should().BeFalse();
+        new FileRules(exclude: ["/leftover/"], include: ["/notes.md"]).Prunes("leftover").Should().BeTrue();
     }
 }
 

@@ -17,6 +17,9 @@ public enum CandidateFilter
 
     /// <summary>Larger than the size cap (<c>files.maxKB</c>).</summary>
     Large,
+
+    /// <summary>An ignored folder with more than <see cref="IgnoredFiles.FolderCap"/> files: one entry for all of them.</summary>
+    TooMany,
 }
 
 /// <summary>A gitignored file in a repository.</summary>
@@ -24,11 +27,12 @@ public enum CandidateFilter
 /// <param name="Size">In bytes.</param>
 /// <param name="SecretName">Its name says it holds a secret (<c>.env</c>, <c>*.pfx</c>, a per-repository secret pattern): stored only encrypted.</param>
 /// <param name="Filter">Why it is left out unless the review includes it; <see cref="CandidateFilter.None"/> for a candidate.</param>
-public sealed record IgnoredFile(string Path, long Size, bool SecretName, CandidateFilter Filter);
+/// <param name="Count">How many files the entry stands for: 1, or more for a <see cref="CandidateFilter.TooMany"/> folder (its path ends in <c>/</c>).</param>
+public sealed record IgnoredFile(string Path, long Size, bool SecretName, CandidateFilter Filter, int Count = 1);
 
 /// <summary>The gitignored files of a repository.</summary>
 /// <param name="Files">In path order.</param>
-/// <param name="Truncated">The walk stopped at <see cref="IgnoredFiles.MaxFiles"/>: an ignored folder holds more than a backup should look at.</param>
+/// <param name="Truncated">The walk stopped at <see cref="IgnoredFiles.MaxFiles"/>: the list is not complete.</param>
 public sealed record IgnoredFileList(IReadOnlyList<IgnoredFile> Files, bool Truncated);
 
 /// <summary>
@@ -49,7 +53,10 @@ public sealed record IgnoredFileList(IReadOnlyList<IgnoredFile> Files, bool Trun
 public static class IgnoredFiles
 {
     /// <summary>The most files one repository's walk looks at.</summary>
-    public const int MaxFiles = 20000;
+    public const int MaxFiles = 50000;
+
+    /// <summary>The most files one ignored folder git reports may hold before it becomes one entry (<see cref="CandidateFilter.TooMany"/>).</summary>
+    public const int FolderCap = 5000;
 
     /// <summary>Folders never entered, whatever their depth: build output, package caches, IDE state.</summary>
     public static IReadOnlyList<string> DeniedSegments { get; } =
@@ -112,7 +119,25 @@ public static class IgnoredFiles
     /// <param name="entries">What git listed.</param>
     /// <param name="maxBytes">The size cap: a larger file is <see cref="CandidateFilter.Large"/>.</param>
     /// <param name="secretPatterns">The repository's own secret patterns, on top of <see cref="SecretNames"/>.</param>
-    public static IgnoredFileList List(string repository, IEnumerable<string> entries, long maxBytes, IEnumerable<string>? secretPatterns = null)
+    public static IgnoredFileList List(string repository, IEnumerable<string> entries, long maxBytes, IEnumerable<string>? secretPatterns = null) =>
+        List(repository, entries, maxBytes, null, secretPatterns);
+
+    /// <summary>
+    /// The files behind git's entries for <paramref name="repository"/>, with the review's
+    /// <paramref name="rules"/>: a folder they exclude is not entered, and a denied or oversized folder
+    /// a pattern of theirs points into is.
+    /// </summary>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item>The denylist applies to a folder git reports as ignored, and to the folders below it -
+    /// never to the tracked folders a file git reports lies in: <c>packages/web/.env.local</c> in a
+    /// workspace is listed.</item>
+    /// <item>A folder git reports with more than <see cref="FolderCap"/> files is one entry,
+    /// <see cref="CandidateFilter.TooMany"/>, and the walk goes on with the next.</item>
+    /// <item>The walk stops at <see cref="MaxFiles"/> in all (<see cref="IgnoredFileList.Truncated"/>).</item>
+    /// </list>
+    /// </remarks>
+    public static IgnoredFileList List(string repository, IEnumerable<string> entries, long maxBytes, FileRules? rules, IEnumerable<string>? secretPatterns = null)
     {
         AtomicFile.RequireFullPath(repository);
         ArgumentNullException.ThrowIfNull(entries);
@@ -122,19 +147,34 @@ public static class IgnoredFiles
         foreach (string raw in entries)
         {
             string entry = PathPattern.Normalize(raw).Trim('/');
-            if (entry.Length == 0 || IsDenied(entry) || entry.Split('/').Any(s => s is "." or ".."))
+            string[] segments = entry.Split('/');
+            if (entry.Length == 0 || segments.Any(s => s is "." or ".." || s.Equals(".git", StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
             string full = Path.GetFullPath(Path.Combine(repository, entry));
             if (raw.EndsWith('/') || raw.EndsWith('\\') || Directory.Exists(full))
             {
-                if (!Walk(full, entry, files, maxBytes, own))
+                if ((IsDeniedFolder(entry) && rules?.PointsInto(entry) != true) || rules?.Prunes(entry) == true)
+                {
+                    continue;
+                }
+                int before = files.Count;
+                // Into a denied folder only for what a pattern names; a folder a pattern reaches has no cap.
+                Walked walked = Walk(full, entry, files, maxBytes, own, rules, rules?.PointsInto(entry) == true ? int.MaxValue : FolderCap, onlyNamed: IsDeniedFolder(entry));
+                if (walked == Walked.FolderFull)
+                {
+                    long size = files.Skip(before).Sum(f => f.Size);
+                    files.RemoveRange(before, files.Count - before);
+                    files.Add(new IgnoredFile(entry + "/", size, false, CandidateFilter.TooMany, FolderCap + 1));
+                }
+                else if (walked == Walked.AllFull)
                 {
                     truncated = true;
                     break;
                 }
             }
+            // A file git reports itself lies in tracked folders: no denylist for it.
             else if (!Add(full, entry, files, maxBytes, own))
             {
                 truncated = true;
@@ -150,8 +190,6 @@ public static class IgnoredFiles
     {
         string normalized = PathPattern.Normalize(path).Trim('/');
         string[] segments = normalized.Split('/');
-        // The last segment of a file is its name, not a folder - but a folder named like a denied one
-        // is denied as a whole, so every segment counts.
         if (segments.Any(Denied.Contains))
         {
             return true;
@@ -160,16 +198,37 @@ public static class IgnoredFiles
         return DeniedFolders.Any(f => padded.Contains("/" + f + "/", StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>Whether an ignored folder is one the walk does not enter: by its own name, or ending in a denied folder path.</summary>
+    public static bool IsDeniedFolder(string folder)
+    {
+        string normalized = PathPattern.Normalize(folder).Trim('/');
+        string name = normalized[(normalized.LastIndexOf('/') + 1)..];
+        if (Denied.Contains(name))
+        {
+            return true;
+        }
+        string padded = "/" + normalized;
+        return DeniedFolders.Any(f => padded.EndsWith("/" + f, StringComparison.OrdinalIgnoreCase));
+    }
+
     /// <summary>Whether a file name says the file holds a secret.</summary>
     public static bool IsSecretName(string name) => Secret.Any(p => p.IsMatch(Path.GetFileName(PathPattern.Normalize(name))));
 
-    private static bool Walk(string folder, string relative, List<IgnoredFile> files, long maxBytes, PathPattern[] own)
+    private enum Walked
     {
-        Stack<(string Full, string Relative)> pending = new();
-        pending.Push((folder, relative));
+        Done,
+        FolderFull,
+        AllFull,
+    }
+
+    private static Walked Walk(string folder, string relative, List<IgnoredFile> files, long maxBytes, PathPattern[] own, FileRules? rules, int cap, bool onlyNamed)
+    {
+        int start = files.Count;
+        Stack<(string Full, string Relative, bool OnlyNamed)> pending = new();
+        pending.Push((folder, relative, onlyNamed));
         while (pending.Count > 0)
         {
-            (string full, string rel) = pending.Pop();
+            (string full, string rel, bool named) = pending.Pop();
             if (!Enterable(full))
             {
                 continue;
@@ -185,23 +244,33 @@ public static class IgnoredFiles
             }
             foreach (string child in children)
             {
-                string name = Path.GetFileName(child);
-                string childRel = rel + "/" + name;
-                if (IsDenied(childRel))
+                string childRel = rel + "/" + Path.GetFileName(child);
+                if (Directory.Exists(child))
+                {
+                    bool reached = rules?.PointsInto(childRel) == true;
+                    bool denied = IsDeniedFolder(childRel);
+                    if ((denied && !reached) || (named && !reached) || rules?.Prunes(childRel) == true)
+                    {
+                        continue;
+                    }
+                    pending.Push((child, childRel, named || denied));
+                    continue;
+                }
+                if (named && rules?.Names(childRel) != true)
                 {
                     continue;
                 }
-                if (Directory.Exists(child))
+                if (files.Count - start >= cap)
                 {
-                    pending.Push((child, childRel));
+                    return Walked.FolderFull;
                 }
-                else if (!Add(child, childRel, files, maxBytes, own))
+                if (!Add(child, childRel, files, maxBytes, own))
                 {
-                    return false;
+                    return Walked.AllFull;
                 }
             }
         }
-        return true;
+        return Walked.Done;
     }
 
     // A folder the walk enters: not a link, not a repository or a worktree of its own (its files are

@@ -31,11 +31,11 @@ function Get-PhxRepoFileRule {
 function Get-PhxIgnoredFile {
     # The gitignored files of one repository's main worktree, through the built-in filters (the
     # engine's IgnoredFiles): git lists them - an ignored folder as one entry - and the engine walks
-    # the folders. Returns an IgnoredFileList.
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][long]$MaxBytes, [string[]]$SecretPatterns = @())
+    # the folders, not entering one the review's -Rules exclude. Returns an IgnoredFileList.
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][long]$MaxBytes, [string[]]$SecretPatterns = @(), [PSPhoenix.Engine.FileRules]$Rules)
     $output = @(Invoke-PhxGit -Repository $Path -Arguments 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '--no-empty-directory', '-z') -join "`n"
     $entries = [string[]]@($output.Split([char]0) | Where-Object { $_ })
-    try { [PSPhoenix.Engine.IgnoredFiles]::List($Path, $entries, $MaxBytes, $SecretPatterns) }
+    try { [PSPhoenix.Engine.IgnoredFiles]::List($Path, $entries, $MaxBytes, $Rules, $SecretPatterns) }
     catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
 }
 
@@ -54,8 +54,8 @@ function Get-PhxRepoFileCandidate {
     # without it git lists them, and throws when it cannot.
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Record, [Parameter(Mandatory)][System.Collections.IDictionary]$Config, $List)
     $own = if ($Config.files.repos -is [System.Collections.IDictionary]) { $Config.files.repos[$Record.identity] }
-    if (-not $List) { $List = Get-PhxIgnoredFile -Path (Get-PhxRepoKey $Record) -MaxBytes (Get-PhxMaxFileBytes $Config) -SecretPatterns ([string[]]@($own.secret | Where-Object { $_ })) }
     $rules = Get-PhxRepoFileRule -Config $Config -Identity $Record.identity
+    if (-not $List) { $List = Get-PhxIgnoredFile -Path (Get-PhxRepoKey $Record) -MaxBytes (Get-PhxMaxFileBytes $Config) -SecretPatterns ([string[]]@($own.secret | Where-Object { $_ })) -Rules $rules }
     $plain = @(if ($own.plain -is [System.Collections.IDictionary]) {
             foreach ($key in $own.plain.Keys) { [pscustomobject]@{ Pattern = [PSPhoenix.Engine.PathPattern]::Parse($key); Signatures = @($own.plain[$key]) } }
         })
@@ -142,16 +142,26 @@ function Backup-PhxRepoFiles {
             try { $candidates = Get-PhxRepoFileCandidate -Record $record -Config $Context.Config }
             catch { & $Context.Log "could not list the gitignored files of ${key}: $(Hide-PhxSecret $_.Exception.Message)" 'Warn' }
         }
+        # A list cut short at the most files a walk looks at is not the whole truth: what is missing
+        # from it must not be removed from the snapshot. The last backup stays, as for an offline one.
+        if ($candidates -and $candidates.Truncated) {
+            & $Context.Log "${key}: more than $([PSPhoenix.Engine.IgnoredFiles]::MaxFiles) gitignored files to look at - kept the last backup of it; exclude the folders that hold them (phx review: x <folder>/)" 'Warn'
+            $candidates = $null
+            $truncated = $true
+        }
+        else { $truncated = $false }
         if (-not $candidates) {
             if ($Context.DryRun) { continue }
             $kept = Copy-PhxPublishedRepoFile -Context $Context -Key $key
             if ($kept) {
-                & $Context.Log "${key}: not readable now - kept the $(@($kept.files).Count) file(s) of the last backup" 'Warn'
+                if (-not $truncated) { & $Context.Log "${key}: not readable now - kept the $(@($kept.files).Count) file(s) of the last backup" 'Warn' }
                 $manifest.Add($kept)
             }
             continue
         }
-        if ($candidates.Truncated) { & $Context.Log "${key}: more than $([PSPhoenix.Engine.IgnoredFiles]::MaxFiles) gitignored files outside the filtered folders - only the first are looked at; exclude the folder that holds them" 'Warn' }
+        foreach ($big in @($candidates.Files | Where-Object Filter -EQ 'TooMany')) {
+            & $Context.Log "${key}: $($big.Path) holds more than $([PSPhoenix.Engine.IgnoredFiles]::FolderCap) files - left out as a whole; a pattern that names files in it brings those in (phx review: i /$($big.Path)<file>)"
+        }
         $waiting = @($candidates.Files | Where-Object Decision -EQ 'Pending')
         if ($waiting.Count) {
             $pending.Add([ordered]@{
