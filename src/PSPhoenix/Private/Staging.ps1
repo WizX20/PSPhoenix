@@ -41,57 +41,69 @@ function Format-PhxWithheld {
 
 function Add-PhxStagedResult {
     # Records what staging a file with a secret did: encrypted, or held back for lack of a key.
-    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Staged)
-    if (-not $Staged.Scan.HasSecret) { return }
-    $entry = Format-PhxWithheld -Path $Path -Findings @($Staged.Scan.Findings)
-    if ($Staged.Sealed) {
-        $Context.Sealed.Add("$($Path.Replace('\', '/')).age")
-        & $Context.Log "encrypted $entry"
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][PSPhoenix.Engine.StagedEntry]$Entry)
+    if ($Entry.As -eq [PSPhoenix.Engine.StagedAs]::Plain -or -not $Entry.Findings.Count) { return }
+    $line = Format-PhxWithheld -Path $Entry.Path -Findings @($Entry.Findings)
+    if ($Entry.As -eq [PSPhoenix.Engine.StagedAs]::Sealed) {
+        $Context.Sealed.Add($Entry.Stored)
+        & $Context.Log "encrypted $line"
         return
     }
-    $Context.Withheld.Add($entry)
-    & $Context.Log "held back $entry - a secret is only stored encrypted, and there is no age key yet: phx init" 'Warn'
+    $Context.Withheld.Add($line)
+    & $Context.Log "held back $line - a secret is only stored encrypted, and there is no age key yet: phx init" 'Warn'
 }
 
 function Write-PhxStagedText {
     # Stages a text as UTF-8: $Path is relative to the provider's staging folder. With -FailOnSecret
     # a secret fails the provider instead of being encrypted or held back - for a file that must stay
     # readable without a key, such as the repository inventory: its last published copy then stays.
+    # -PassThru returns what it became (the stager's StagedEntry: Stored, As).
     param(
         [Parameter(Mandatory)]$Context,
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][AllowEmptyString()][string]$Value,
-        [switch]$FailOnSecret
+        [switch]$FailOnSecret,
+        [switch]$PassThru
     )
     $target = Resolve-PhxStagedPath -Context $Context -Path $Path
-    $sealer = if ($FailOnSecret) { $null } else { $Context.Sealer }
-    try { $staged = [PSPhoenix.Engine.StagingWriter]::WriteText($target, $Value, $sealer) }
+    try { $entry = $Context.Stager.WriteText($target, $Value, -not $FailOnSecret) }
     catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
-    if ($FailOnSecret -and $staged.Scan.HasSecret) { throw "$(Format-PhxWithheld -Path $Path -Findings @($staged.Scan.Findings)) - not staged" }
-    Add-PhxStagedResult -Context $Context -Path $Path -Staged $staged
+    if ($FailOnSecret -and $entry.Findings.Count) { throw "$(Format-PhxWithheld -Path $Path -Findings @($entry.Findings)) - not staged" }
+    Add-PhxStagedResult -Context $Context -Entry $entry
+    if ($PassThru) { $entry }
 }
 
 function Copy-PhxStagedFile {
     # Stages a copy of $Source at $Path, relative to the provider's staging folder. A binary file
     # is copied unscanned: whether it is secret goes by its name, which the provider decides on -
     # -Secret stages it only encrypted, whatever its content (a .env, a .pfx). -Accept: findings
-    # (their Signature) the review called no secret.
-    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Path, [switch]$Secret, [string[]]$Accept = @())
+    # (their Signature) the review called no secret. -PassThru returns what it became.
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Path, [switch]$Secret, [string[]]$Accept = @(), [switch]$PassThru)
     $target = Resolve-PhxStagedPath -Context $Context -Path $Path
-    try { $staged = [PSPhoenix.Engine.StagingWriter]::CopyFile($Source, $target, $Context.Sealer, [bool]$Secret, [string[]]@($Accept | Where-Object { $_ })) }
+    try { $entry = $Context.Stager.CopyFile($Source, $target, [bool]$Secret, [string[]]@($Accept | Where-Object { $_ })) }
     catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
-    Add-PhxStagedResult -Context $Context -Path $Path -Staged $staged
+    Add-PhxStagedResult -Context $Context -Entry $entry
+    if ($PassThru) { $entry }
+}
+
+function Get-PhxStoredName {
+    # How a staged file is stored, relative to $Folder of the staging folder: its name, or
+    # <name>.age; nothing when it was held back. From the stager's record - never from what happens
+    # to be on disk.
+    param([Parameter(Mandatory)]$Entry, [string]$Folder = '')
+    if (-not $Entry -or -not $Entry.Stored) { return }
+    if (-not $Folder) { return $Entry.Stored }
+    $Entry.Stored.Substring($Folder.TrimEnd('/').Length + 1)
 }
 
 function Remove-PhxStagedSecret {
-    # The last check before publishing: a staged file with a secret in it - one a provider wrote
-    # around the writer - is replaced by its encrypted copy, or removed and held back without a key,
-    # so it never reaches the snapshot in plain text.
+    # The last check before publishing: a staged file the stager did not write itself - one a
+    # provider put there around it - is scanned, and with a secret in it replaced by its encrypted
+    # copy, or removed and held back without a key, so it never reaches the snapshot in plain text.
+    # What the stager wrote is not scanned again: a decision of the review stands.
     param([Parameter(Mandatory)]$Context)
-    if (-not $Context.Staging -or -not [IO.Directory]::Exists($Context.Staging)) { return }
-    foreach ($file in @([IO.Directory]::EnumerateFiles($Context.Staging, '*', [IO.SearchOption]::AllDirectories))) {
-        try { $staged = [PSPhoenix.Engine.StagingWriter]::CheckStaged($file, $Context.Sealer) }
-        catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
-        Add-PhxStagedResult -Context $Context -Path ([IO.Path]::GetRelativePath($Context.Staging, $file)) -Staged $staged
-    }
+    if (-not $Context.Stager) { return }
+    try { $found = @($Context.Stager.CheckRest()) }
+    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
+    foreach ($entry in $found) { Add-PhxStagedResult -Context $Context -Entry $entry }
 }

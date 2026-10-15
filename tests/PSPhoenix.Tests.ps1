@@ -1834,6 +1834,32 @@ Describe 'review' {
         Test-Path -LiteralPath (Join-Path $staging2 'github.com/WizX20/app/notes.md.age') | Should -BeTrue
     }
 
+    It 'keeps a file called no secret plain through phx run, and its manifest agrees (#68)' {
+        Set-Content -LiteralPath (Join-Path $script:ReviewRepo 'notes.md') -Value '{ "ClientSecret": "Zx9Qw3Er7Ty1Ui5Op2As8Df4" }'
+        Invoke-TestReview 'n 6' 'q' | Out-Null
+        $target = Join-Path $script:ReviewHome 'Target'
+        New-Item -ItemType Directory -Path $target | Out-Null
+        InModuleScope PSPhoenix -Parameters @{ Target = $target } {
+            param($Target)
+            $c = Read-PhxConfig
+            $c.target = [ordered]@{ type = 'folder'; path = $Target }
+            $c.machine = [ordered]@{ name = 'Box'; id = 'id-box' }
+            $c.secrets.recipient = [PSPhoenix.Engine.Age]::NewKey().Recipient
+            Save-PhxConfig $c
+        }
+        $output = Get-PhxOutput { phx run -Provider repo-files }
+        $output | Should -Not -Match 'encrypted .*notes\.md'
+        $folder = Join-Path $target 'Box/repo-files'
+        Test-Path -LiteralPath (Join-Path $folder 'github.com/WizX20/app/notes.md') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $folder 'github.com/WizX20/app/notes.md.age') | Should -BeFalse
+        $manifest = Get-Content -LiteralPath (Join-Path $folder 'files.json') -Raw | ConvertFrom-Json -AsHashtable
+        @($manifest.repositories[0].files | Where-Object path -EQ 'notes.md').stored | Should -Be 'notes.md'
+        # Every file the manifest names is in the snapshot.
+        foreach ($file in @($manifest.repositories[0].files)) {
+            Test-Path -LiteralPath (Join-Path $folder "github.com/WizX20/app/$($file.stored)") | Should -BeTrue -Because $file.stored
+        }
+    }
+
     It 'asks first from phx init, and leaves it on no' {
         Invoke-TestReview 'n' -Ask | Should -Match '7 gitignored file\(s\) in 1 repositories wait'
         Get-TestDecision | Should -BeNullOrEmpty

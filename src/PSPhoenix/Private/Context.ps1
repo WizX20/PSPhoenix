@@ -34,6 +34,7 @@ function New-PhxContext {
     )
     if (-not $Config) { $Config = Read-PhxConfig }
     if (-not $State) { $State = New-PhxState }
+    $sealer = if ($Staging) { New-PhxSealer -Config $Config -Provider $Provider }
     [pscustomobject]@{
         Provider = $Provider
         Config   = $Config
@@ -50,6 +51,9 @@ function New-PhxContext {
         Withheld = [Collections.Generic.List[string]]::new()
         Sealed   = [Collections.Generic.List[string]]::new()
         # What encrypts its secrets, to the age recipient in the config; nothing without a key.
-        Sealer   = $(if ($Staging) { New-PhxSealer -Config $Config -Provider $Provider })
+        Sealer   = $sealer
+        # Stages every file and records what it became - plain, encrypted, held back: the
+        # provider's manifest comes from here, and the last check skips what it wrote.
+        Stager   = $(if ($Staging) { [PSPhoenix.Engine.Stager]::new([IO.Path]::GetFullPath($Staging), $sealer) })
     }
 }

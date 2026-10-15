@@ -370,8 +370,12 @@ anything is written:
   file already in the snapshot is removed there.
 - The warning, the run log and `phx status` name the file, the line and the kind, never the value:
   `encrypted appsettings.json line 12: a secret value (ClientSecret)`.
-- Before publishing, the run scans the staging folder once more. Whatever reached it another way is
-  encrypted, or held back.
+- A stager (`Stager` in the engine) stages each provider's files and records what each became:
+  plain, encrypted or held back. A provider's manifest (`files.json`, `claude-files.json`) comes
+  from that record, never from what is on disk.
+- Before publishing, the run scans the files in the staging folder the stager did not write itself.
+  Whatever reached it another way is encrypted, or held back. What the stager wrote is not scanned
+  again: a decision of the review ("not a secret") stands.
 - The state records per provider what its last successful run held back. `phx status` shows them
   as a warning, and `phx run` adds both counts to the provider's line (`3 encrypted`, `2 held back`).
 - A file the snapshot cannot do without fails its provider instead, so the last published copy
