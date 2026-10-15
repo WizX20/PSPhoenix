@@ -1,1 +1,0 @@
-- fix: a root or target on a drive that is not there (an unplugged USB disk, a disconnected share) no longer fails `phx scan`, `phx run`, `phx status` or `phx init` - its repositories are kept from the last scan, also when the drive goes between two scans, and a restore goes on with the other repositories (#67)

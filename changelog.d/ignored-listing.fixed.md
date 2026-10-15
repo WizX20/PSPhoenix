@@ -1,5 +1,0 @@
-- fix: gitignored files (#70):
-  - an ignored folder with more than 5,000 files (a Rust `target/`, `Pods/`) is one entry, left out, and the listing goes on - it no longer cut the list short and removed later files, included ones too, from the snapshot; a list that is still cut short keeps the last backup
-  - the denylist applies to ignored folders, not to the tracked folders a file lies in: `packages/web/.env.local` in a workspace is listed; a folder the review excluded is not walked at all
-  - a folder or wildcard include no longer pulls in large, binary or generated files; only a pattern naming one file does
-  - skills named `build` or `publish` in `~/.claude` are backed up

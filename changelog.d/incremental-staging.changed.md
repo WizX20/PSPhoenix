@@ -1,3 +1,0 @@
-- changed: a backup run with nothing changed reads next to nothing (#73):
-  - the staging folder stays between runs; a file whose source did not change is not read, scanned, encrypted or hashed again, and `phx run` says how many
-  - the repository inventory asks git only for a repository whose `.git/config`, `HEAD`, refs or included files changed since the scan

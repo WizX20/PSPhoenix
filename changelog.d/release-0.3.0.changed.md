@@ -1,1 +1,0 @@
-- changed: 0.3.0 - M3 complete: gitignored files (`phx review`), Claude Code, age secrets; the README says what is built, what is not yet, and how to try it out

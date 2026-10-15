@@ -1,6 +1,0 @@
-- feat: the `repo-files` provider backs up the gitignored files that matter (#26):
-  - Git lists each repository's gitignored files; build output, package caches, nested repositories and virtual environments are never even looked at, on every path segment.
-  - Generated code, lock files, logs, binaries and files over `files.maxKB` (1 MB) are left out unless included by name.
-  - A file nobody decided on is pending and not backed up; `phx status` counts them. The decisions are patterns in `files.repos[<identity>]` (`include`, `secret`, `exclude`) and `files.exclude`.
-  - A file secret by its name (`.env`, `*.pfx`, `*.pem`, `id_*`, ...) or its content is stored only as `<name>.age`.
-  - Restore puts the files back into the repository's new place, decrypts the secrets, and never overwrites a file that differs.
