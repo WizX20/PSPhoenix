@@ -17,7 +17,13 @@ Your machine dies; your code does not - it lives in remotes. What dies with the 
 - **Claude Code** — per-project memory (found again after a restore to another folder), settings, skills, commands, agents and MCP servers. Never its credentials.
 - **The machine setup** — winget and Scoop packages, your PowerShell profile and modules, Windows Terminal settings, WSL distros, user environment variables, git and SSH config.
 
-> **Status: early development.** Released and installable. It backs up the repository inventory (M1) on a schedule (M2, `phx run`), gitignored files with their secrets encrypted (M3, as the review decides) and Claude Code's memory and settings (M3); local-only git work follows in M4, the machine setup in M5 and `phx restore` in M6. Commands marked `(Mx)` below arrive with that milestone; the [roadmap](docs/design.md#roadmap) and the [milestones](https://github.com/WizX20/PSPhoenix/milestones) show what comes when. See the [Changelog](CHANGELOG.md) for updates.
+> **Status: 0.x preview - not stable yet.** Released and installable, and backing up for real:
+>
+> - **Built (M1-M3):** the set-up (`phx init`, `phx roots`, `phx scan`, `phx status`), the background run (`phx run`, `phx schedule`), the repository inventory, gitignored files as `phx review` decides, Claude Code's memory and settings, and secrets age-encrypted.
+> - **Not yet:** local-only git work (M4), the machine setup (M5) and `phx restore` (M6). Until M6 a snapshot is readable by hand - JSON, plain files and age files - but `phx` cannot rebuild a machine from it yet.
+> - **Until 1.0** the config, the state and the snapshot layout may still change between versions; a change that needs it says so in the [Changelog](CHANGELOG.md).
+>
+> Commands marked `(Mx)` below arrive with that milestone; the [roadmap](docs/design.md#roadmap) and the [milestones](https://github.com/WizX20/PSPhoenix/milestones) show what comes when.
 
 ## License
 
@@ -52,7 +58,7 @@ phx help
 Scoop puts the module on your `PSModulePath`, so `phx` loads itself the first time you type it — in the session that installed it too. Tab completion of the sub-commands arrives with the module; to have it from the first keystroke of every session, add `Import-Module PSPhoenix` to your `$PROFILE`.
 
 ```powershell
-scoop update psphoenix          # a new version - releases come out weekly when something changed
+scoop update psphoenix          # a new version - releases come out weekly when something changed; 0.x: read the Changelog first
 scoop uninstall psphoenix
 ```
 
@@ -66,6 +72,22 @@ Expand-Archive .\PSPhoenix-<version>.zip -DestinationPath (Join-Path (Split-Path
 ```
 
 To update, delete that `PSPhoenix` folder and extract the new zip. **From a checkout** (to work on PSPhoenix itself): `task link` - it builds the engine, which needs the .NET SDK 10 or newer - see [DEVGUIDE.md](DEVGUIDE.md#running-from-source).
+
+## Try it
+
+A first run, start to finish - with a target folder of its own, so you can look at what lands there and throw it away:
+
+```powershell
+phx init                 # roots, accounts, a target (try a new folder first), machine, key, interval, schedule;
+                         # then the review of the gitignored files it found
+phx review               # decide on what is still pending - a folder or a pattern at a time
+phx run                  # one backup now
+phx status               # what is set up, the last run, and what needs attention
+```
+
+Then look in `<target>\<machine>`: one folder per provider, `phoenix.json`, your config, and the passphrase-protected copy of your age key. A second `phx run` with nothing changed writes nothing and says how many files it did not read again.
+
+To undo: `phx schedule off`, then remove the target folder, `%APPDATA%\PSPhoenix` (the config) and `%LOCALAPPDATA%\PSPhoenix` (the state).
 
 ## Help: `phx help`
 
