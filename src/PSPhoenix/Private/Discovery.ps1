@@ -2,48 +2,15 @@
 # are. A repository is known by its remote, not by its path, so a restore can put it elsewhere.
 # `phx scan` writes what it finds to repos.json in the state folder - machine-local, regenerable.
 
-# Never descended into: build output and package caches hold thousands of folders and no
-# repository worth finding.
-$script:PhxScanSkip = @('node_modules', 'bin', 'obj', 'packages', '.vs', '.idea', '.venv', 'venv',
-    '__pycache__', '.gradle', '.dart_tool', '.terraform', '.next', '$RECYCLE.BIN', 'System Volume Information')
 # 2: a record holds everything the repos provider records (it held identity and remotes only).
 $script:PhxRepoCacheVersion = 2
 
-function Test-PhxLinkFolder {
-    # True for a junction or symbolic link, which discovery does not follow (a loop, or the same
-    # repository twice). A cloud-sync placeholder - OneDrive, Dropbox, Google Drive - carries the
-    # ReparsePoint attribute as well but has no link target, and is searched like any folder.
-    param([Parameter(Mandatory)][string]$Path)
-    $info = [IO.DirectoryInfo]::new($Path)
-    [bool](($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $info.LinkTarget)
-}
-
 function Find-PhxRepository {
     # The repositories under one root, breadth-first to -Depth levels (a repository directly in the
-    # root is level 1). A folder with a .git directory is a repository: recorded, not entered. A
-    # .git file marks a linked worktree or a submodule: skipped - a worktree is recorded on its main
-    # repository, a submodule comes back with its parent. Links are not followed; folders that
-    # cannot be read, or vanish while the walk looks at them, are passed over.
+    # root is level 1) - the engine's RepositoryFinder, which says what it enters and what not.
     param([Parameter(Mandatory)][string]$Root, [int]$Depth = 3)
-    if ([IO.Directory]::Exists((Join-PhxPath $Root '.git'))) { return $Root }
-    $queue = [Collections.Generic.Queue[object]]::new()
-    $queue.Enqueue(@($Root, 0))
-    while ($queue.Count) {
-        $folder, $level = $queue.Dequeue()
-        if ($level -ge $Depth) { continue }
-        try { $children = [IO.Directory]::GetDirectories($folder) } catch { continue }
-        foreach ($child in $children) {
-            try {
-                if ($script:PhxScanSkip -contains [IO.Path]::GetFileName($child)) { continue }
-                if (Test-PhxLinkFolder $child) { continue }
-                $git = Join-PhxPath $child '.git'
-                if ([IO.Directory]::Exists($git)) { $child; continue }
-                if ([IO.File]::Exists($git)) { continue }
-                $queue.Enqueue(@($child, ($level + 1)))
-            }
-            catch { continue }
-        }
-    }
+    try { [PSPhoenix.Engine.RepositoryFinder]::Find([IO.Path]::GetFullPath($Root), $Depth) }
+    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
 }
 
 function Get-PhxIdentityOwner {

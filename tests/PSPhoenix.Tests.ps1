@@ -627,21 +627,6 @@ Describe 'repository identity' {
         }
     }
 
-    It 'tells a link from a folder - a cloud placeholder has no link target' {
-        $real = Join-Path $TestDrive 'real-folder'
-        $link = Join-Path $TestDrive 'link-folder'
-        New-Item -ItemType Directory -Path $real | Out-Null
-        New-Item -ItemType ($IsWindows ? 'Junction' : 'SymbolicLink') -Path $link -Target $real | Out-Null
-        try {
-            InModuleScope PSPhoenix -Parameters @{ Real = $real; Link = $link } {
-                param($Real, $Link)
-                Test-PhxLinkFolder $Link | Should -BeTrue
-                Test-PhxLinkFolder $Real | Should -BeFalse
-            }
-        }
-        finally { (Get-Item -LiteralPath $link -Force).Delete() }
-    }
-
     It 'resolves a relative local remote against the repository' {
         $base = Join-Path $TestDrive 'a/b'
         $identity = InModuleScope PSPhoenix -Parameters @{ Base = $base } { param($Base) ConvertTo-PhxRepoIdentity -Url '../origin.git' -BasePath $Base }
