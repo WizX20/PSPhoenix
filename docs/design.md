@@ -662,6 +662,7 @@ with its own xUnit tests):
 - the state (`state.json`) and change detection - a provider's `$Context.Files`;
 - the secret scan (`SecretScanner`, #45): what is a secret, by content - see [Secrets](#secrets);
 - age encryption (`Age`, #25), built in - see [Secrets](#secrets);
+- the discovery walk under each root (`RepositoryFinder`) - see [Concepts](#concepts);
 - the gitignored files of a repository through the built-in filters (`IgnoredFiles`), and the
   review's patterns and decisions (`PathPattern`, `FileRules`) - see
   [Gitignored files](#gitignored-files-filters-and-review).
