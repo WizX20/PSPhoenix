@@ -92,25 +92,6 @@ function Get-PhxClaudeProject {
     }
 }
 
-function Get-PhxClaudeMcp {
-    # The MCP servers of ~/.claude.json: the user's own (mcpServers), and per project the ones added
-    # for it alone (projects.<path>.mcpServers) - keyed by the project's path. Nothing else of the
-    # file: it also holds an account, caches and history.
-    $path = Get-PhxClaudeJsonPath
-    if (-not [IO.File]::Exists($path)) { return }
-    try { $json = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
-    catch { throw "$path cannot be read: $($_.Exception.Message)" }
-    if ($json -isnot [System.Collections.IDictionary]) { return }
-    $projects = [ordered]@{}
-    if ($json.projects -is [System.Collections.IDictionary]) {
-        foreach ($key in $json.projects.Keys) {
-            $servers = $json.projects[$key].mcpServers
-            if ($servers -is [System.Collections.IDictionary] -and $servers.Count) { $projects[$key] = $servers }
-        }
-    }
-    [pscustomobject]@{ User = $(if ($json.mcpServers -is [System.Collections.IDictionary]) { $json.mcpServers } else { [ordered]@{} }); Projects = $projects }
-}
-
 function Backup-PhxClaude {
     # Claude Code's state into staging: the home selection, each project's memory (and transcripts
     # when asked for), the MCP servers, and claude-files.json saying what is where.
@@ -165,25 +146,17 @@ function Backup-PhxClaude {
         $projects.Add($entry)
     }
 
-    # The MCP servers; a secret in one (an API key in env) has the whole file encrypted.
-    $mcp = Get-PhxClaudeMcp
+    # The MCP servers, read as JSON by the engine - keys exact, nothing else of the file; a secret in
+    # one (an API key in env) has the whole file encrypted.
+    $repositories = [PSPhoenix.Engine.McpRepository[]]@($records | ForEach-Object { [PSPhoenix.Engine.McpRepository]::new($_.identity, $_.root, $_.path, (Get-PhxRepoKey $_)) })
+    try { $mcp = [PSPhoenix.Engine.ClaudeMcp]::Backup((Get-PhxClaudeJsonPath), $repositories) }
+    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
     $mcpStored = $null
-    $mcpCount = 0
-    if ($mcp -and ($mcp.User.Count -or $mcp.Projects.Count)) {
-        $byProject = [ordered]@{}
-        foreach ($key in $mcp.Projects.Keys) {
-            $full = $key.Replace('/', [IO.Path]::DirectorySeparatorChar)
-            $record = @($records | Where-Object { [string]::Equals((Get-PhxRepoKey $_), $full, [StringComparison]::OrdinalIgnoreCase) })[0]
-            $byProject[$key] = if ($record) {
-                [ordered]@{ identity = $record.identity; root = $record.root; path = $record.path; mcpServers = $mcp.Projects[$key] }
-            }
-            else { [ordered]@{ mcpServers = $mcp.Projects[$key] } }
-            $mcpCount += $mcp.Projects[$key].Count
-        }
-        $mcpCount += $mcp.User.Count
+    $mcpCount = if ($mcp) { $mcp.Servers } else { 0 }
+    if ($mcp) {
         if ($Context.DryRun) { & $Context.Log "would back up $mcpCount MCP server(s)" 'Action' }
         else {
-            $staged = Write-PhxStagedText -Context $Context -Path 'claude.json' -Value ([ordered]@{ mcpServers = $mcp.User; projects = $byProject } | ConvertTo-Json -Depth 20) -PassThru
+            $staged = Write-PhxStagedText -Context $Context -Path 'claude.json' -Value $mcp.Json -PassThru
             $mcpStored = Get-PhxStoredName -Entry $staged
         }
     }
@@ -242,9 +215,9 @@ function Restore-PhxClaudeFile {
 }
 
 function Restore-PhxClaudeMcp {
-    # The MCP servers into ~/.claude.json: one that is missing is added - for a project under its
-    # new path - one that is there is left as it is, with a warning when it differs. The rest of
-    # the file is not touched.
+    # The MCP servers into ~/.claude.json, through the engine (ClaudeMcp): one that is missing is
+    # added - for a project under its new path - one that is there is left as it is, with a warning
+    # when it differs. The rest of the file stays as Claude Code wrote it.
     param([Parameter(Mandatory)][string]$Source, [switch]$Encrypted, [Parameter(Mandatory)]$Context, [Parameter(Mandatory)][System.Collections.IDictionary]$Counts)
     $bytes = [IO.File]::ReadAllBytes($Source)
     if ($Encrypted) {
@@ -252,48 +225,38 @@ function Restore-PhxClaudeMcp {
         try { $bytes = [PSPhoenix.Engine.Age]::Decrypt($bytes, $Context.Identity) }
         catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
     }
-    $saved = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json -AsHashtable
-    $path = Get-PhxClaudeJsonPath
-    $json = if ([IO.File]::Exists($path)) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable } else { [ordered]@{} }
-    if ($json -isnot [System.Collections.IDictionary]) { throw "$path is not a JSON object - the MCP servers are not restored" }
-    $outcome = @{ Changed = $false }
-    $merge = {
-        param($Into, $Servers, $Where)
-        foreach ($name in @($Servers.Keys)) {
-            $want = $Servers[$name] | ConvertTo-Json -Depth 20 -Compress
-            if ($Into.Contains($name)) {
-                if (($Into[$name] | ConvertTo-Json -Depth 20 -Compress) -cne $want) { & $Context.Log "MCP server $name ($Where) differs from the backup - left as it is" 'Warn'; $Counts.differs++ }
-                else { $Counts.present++ }
-                continue
+    $backup = [Text.Encoding]::UTF8.GetString($bytes)
+    # Where each project's servers go: the key of the repository's new path, the old key for a
+    # project without one, nothing for one the restore does not do.
+    $keys = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+    try { $projects = @([PSPhoenix.Engine.ClaudeMcp]::Projects($backup)) }
+    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
+    foreach ($project in $projects) {
+        $target = $project.Key
+        if ($project.Identity) {
+            if ($Context.Select.Count -and $Context.Select -notcontains $project.Identity) { $target = $null }
+            else {
+                $repo = Resolve-PhxRestoreRepoPath -Entry ([ordered]@{ root = $project.Root; path = $project.Path }) -Context $Context
+                if ($repo) { $target = ConvertTo-PhxClaudeJsonKey $repo }
+                else {
+                    & $Context.Log "$($project.Identity): its root $($project.Root) is not a path on this machine - its MCP servers are skipped" 'Warn'
+                    $Counts.skipped++
+                    $target = $null
+                }
             }
-            if ($Context.DryRun) { & $Context.Log "would add MCP server $name ($Where)" 'Action' }
-            $Into[$name] = $Servers[$name]
-            $Counts.restored++
-            $outcome.Changed = $true
+        }
+        elseif ($Context.Select.Count) { $target = $null }
+        $keys[$project.Key] = $target
+    }
+    try { $changes = @([PSPhoenix.Engine.ClaudeMcp]::Merge((Get-PhxClaudeJsonPath), $backup, $keys, $Context.DryRun)) }
+    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
+    foreach ($change in $changes) {
+        switch ("$($change.Outcome)") {
+            'Added' { if ($Context.DryRun) { & $Context.Log "would add MCP server $($change.Server) ($($change.Where))" 'Action' }; $Counts.restored++ }
+            'Present' { $Counts.present++ }
+            'Differs' { & $Context.Log "MCP server $($change.Server) ($($change.Where)) differs from the backup - left as it is" 'Warn'; $Counts.differs++ }
         }
     }
-    if ($saved.mcpServers -is [System.Collections.IDictionary] -and $saved.mcpServers.Count) {
-        if ($json.mcpServers -isnot [System.Collections.IDictionary]) { $json.mcpServers = [ordered]@{} }
-        & $merge $json.mcpServers $saved.mcpServers 'user'
-    }
-    if ($saved.projects -is [System.Collections.IDictionary]) {
-        foreach ($key in @($saved.projects.Keys)) {
-            $entry = $saved.projects[$key]
-            $projectKey = $key
-            if ($entry.identity) {
-                if ($Context.Select.Count -and $Context.Select -notcontains $entry.identity) { continue }
-                $repo = Resolve-PhxRestoreRepoPath -Entry $entry -Context $Context
-                if (-not $repo) { & $Context.Log "$($entry.identity): its root $($entry.root) is not a path on this machine - its MCP servers are skipped" 'Warn'; $Counts.skipped++; continue }
-                $projectKey = ConvertTo-PhxClaudeJsonKey $repo
-            }
-            elseif ($Context.Select.Count) { continue }
-            if ($json.projects -isnot [System.Collections.IDictionary]) { $json.projects = [ordered]@{} }
-            if ($json.projects[$projectKey] -isnot [System.Collections.IDictionary]) { $json.projects[$projectKey] = [ordered]@{} }
-            if ($json.projects[$projectKey].mcpServers -isnot [System.Collections.IDictionary]) { $json.projects[$projectKey].mcpServers = [ordered]@{} }
-            & $merge $json.projects[$projectKey].mcpServers $entry.mcpServers $projectKey
-        }
-    }
-    if ($outcome.Changed -and -not $Context.DryRun) { Write-PhxTextFile -Path $path -Value ($json | ConvertTo-Json -Depth 100) }
 }
 
 function Restore-PhxClaude {

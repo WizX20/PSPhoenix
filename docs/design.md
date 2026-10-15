@@ -476,7 +476,10 @@ matched to a scanned repository by the name Claude Code derives from the reposit
 character but a letter or digit made a dash - ignoring case, since the drive letter comes either
 way. Restore adds what is missing and leaves what is there, also when it differs (with a
 warning): a settings file, a memory file, an MCP server. Of `~/.claude.json` it only adds MCP
-servers; the rest of the file stays as Claude Code wrote it.
+servers; the rest of the file stays as Claude Code wrote it. The engine (`ClaudeMcp`) reads and
+merges the file as JSON nodes: keys compared exactly - two projects whose paths differ only in case
+stay two - strings and numbers as they were, no depth limit, and no write when nothing is added or
+when Claude Code wrote the file in the meantime.
 
 One target can hold several machines side by side; restore picks one.
 
