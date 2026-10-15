@@ -30,20 +30,20 @@ function Test-PhxMachineName {
 function Get-PhxSnapshotPath {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Config)
     if (-not $Config.target -or -not $Config.target.path) { throw 'no target yet - run phx init' }
-    Join-Path $Config.target.path (Get-PhxMachineName $Config)
+    Join-PhxPath $Config.target.path (Get-PhxMachineName $Config)
 }
 
 function Get-PhxStagingPath {
     # Where a run stages a provider's files: in the state folder, never in the target.
     param([Parameter(Mandatory)][string]$Provider)
-    Join-Path (Join-Path (Get-PhxStateDir) 'staging') $Provider
+    Join-PhxPath (Join-PhxPath (Get-PhxStateDir) 'staging') $Provider
 }
 
 function Read-PhxSnapshotInfo {
     # phoenix.json of a snapshot folder, or nothing when it has none. One that cannot be read is an
     # error: a folder that may hold somebody's backup is not overwritten on a guess.
     param([Parameter(Mandatory)][string]$Path)
-    $file = Join-Path $Path 'phoenix.json'
+    $file = Join-PhxPath $Path 'phoenix.json'
     if (-not [IO.File]::Exists($file)) { return }
     try { $info = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
     catch { throw "$file cannot be read: $($_.Exception.Message)" }
@@ -115,7 +115,7 @@ function Initialize-PhxSnapshot {
     $snapshot = Get-PhxSnapshotPath $Config
     $info = Assert-PhxSnapshotWritable -Path $snapshot -Config $Config
     if ($info) { return $info }
-    Write-PhxTextFile -Path (Join-Path $snapshot 'phoenix.json') -Value ([ordered]@{
+    Write-PhxTextFile -Path (Join-PhxPath $snapshot 'phoenix.json') -Value ([ordered]@{
             format = $script:PhxSnapshotFormat; machine = [ordered]@{ name = Get-PhxMachineName $Config; id = $Config.machine.id }; createdAt = [DateTime]::UtcNow.ToString('o')
         } | ConvertTo-Json -Depth 5)
     Read-PhxSnapshotInfo $snapshot
@@ -127,7 +127,7 @@ function Get-PhxKeyCopyPath {
     # (12 characters of its recipient): a new key gets a copy of its own, and the copies of older
     # keys stay for the older versions of the snapshot a sync client keeps.
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [string]$Recipient = $Config.secrets.recipient)
-    Join-Path (Get-PhxSnapshotPath $Config) "key-$($Recipient.Substring(4, 12)).age"
+    Join-PhxPath (Get-PhxSnapshotPath $Config) "key-$($Recipient.Substring(4, 12)).age"
 }
 
 function Save-PhxKeyCopy {
@@ -181,7 +181,7 @@ function Publish-PhxSnapshot {
         $published = if ($State) { $State.PublishedHashes($name) }
         # One provider that cannot be published (a file held open in the target) does not stop the
         # others; its result carries the error.
-        try { $result = Publish-PhxFolder -Source (Get-PhxStagingPath $name) -Destination (Join-Path $snapshot $name) -Published $published }
+        try { $result = Publish-PhxFolder -Source (Get-PhxStagingPath $name) -Destination (Join-PhxPath $snapshot $name) -Published $published }
         catch {
             $results[$name] = [pscustomobject]@{ Error = Hide-PhxSecret $_.Exception.Message }
             continue
@@ -194,7 +194,7 @@ function Publish-PhxSnapshot {
     }
     # The config travels along: a restore reads the roots, accounts and decisions from it.
     $configText = $Config | ConvertTo-Json -Depth 10
-    $configFile = Join-Path $snapshot 'config.json'
+    $configFile = Join-PhxPath $snapshot 'config.json'
     if (-not [IO.File]::Exists($configFile) -or [IO.File]::ReadAllText($configFile) -cne $configText) {
         Write-PhxTextFile -Path $configFile -Value $configText
         $changed = $true
@@ -210,7 +210,7 @@ function Publish-PhxSnapshot {
             updatedAt = $now
             providers = $providers
         }
-        Write-PhxTextFile -Path (Join-Path $snapshot 'phoenix.json') -Value ($document | ConvertTo-Json -Depth 10)
+        Write-PhxTextFile -Path (Join-PhxPath $snapshot 'phoenix.json') -Value ($document | ConvertTo-Json -Depth 10)
     }
     $results
 }

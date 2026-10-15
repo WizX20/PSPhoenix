@@ -17,7 +17,7 @@ function Get-PhxStableModulePath {
     # or `scoop cleanup` - so current, next to it, is named instead.
     param([string]$ModuleBase = (Get-Module PSPhoenix).ModuleBase, [string]$Version = "$(Get-PhxVersion)")
     if ((Split-Path $ModuleBase -Leaf) -eq $Version) {
-        $current = Join-Path (Split-Path $ModuleBase -Parent) 'current'
+        $current = Join-PhxPath (Split-Path $ModuleBase -Parent) 'current'
         if ([IO.Directory]::Exists($current)) { return $current }
     }
     $ModuleBase

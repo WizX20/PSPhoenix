@@ -2059,6 +2059,91 @@ Describe 'claude provider' {
     }
 }
 
+Describe 'a drive that is not there' -Skip:(-not $IsWindows) {
+    # An unplugged USB disk or a disconnected share: its drive letter is gone, not just a folder.
+    # Join-Path fails on such a path; PSPhoenix must still name it, report it and keep its last
+    # backup (#67).
+    BeforeAll {
+        $script:NoDrive = @([char[]]'QRSTUVWXYZ' | Where-Object { -not (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) -and -not [IO.Directory]::Exists("${_}:\") })[0]
+    }
+
+    BeforeEach {
+        $driveHome = Use-TestHome
+        $script:DriveRoot = Join-Path $driveHome 'Repos'
+        New-TestRepository (Join-Path $script:DriveRoot 'Here') -Remote 'origin=https://github.com/WizX20/here.git' | Out-Null
+        $script:GoneRoot = "$($script:NoDrive):\Repos"
+        phx roots add $script:DriveRoot 6>$null
+        phx scan 6>$null
+        # The last scan saw a repository on the drive that is gone now.
+        InModuleScope PSPhoenix -Parameters @{ Gone = $script:GoneRoot } {
+            param($Gone)
+            $c = Read-PhxConfig
+            $c.roots = @($c.roots) + @([ordered]@{ path = $Gone; depth = 3 })
+            Save-PhxConfig $c
+            $cache = Read-PhxRepoCache
+            $record = ConvertTo-PhxCaseInsensitive ($cache.repositories[0] | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable)
+            $record.root = $Gone
+            $record.path = 'Away'
+            $record.identity = 'github.com/WizX20/away'
+            Save-PhxRepoCache -Roots @($c.roots) -Records @(@($cache.repositories) + @($record))
+        }
+    }
+
+    It 'scans on, keeping the repositories of the missing drive' {
+        $output = Get-PhxOutput { phx scan -ErrorVariable failure -ErrorAction SilentlyContinue }
+        $failure | Should -BeNullOrEmpty
+        $output | Should -Match ([regex]::Escape($script:GoneRoot) + '\s+folder not found - kept 1 repositories')
+    }
+
+    It 'records them in the inventory, and lists the gitignored files of the rest' {
+        $staging = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $output = InModuleScope PSPhoenix -Parameters @{ Staging = $staging } {
+            param($Staging)
+            $repos = New-PhxContext -Provider repos -Staging (Join-PhxPath $Staging 'repos')
+            Backup-PhxRepos -Context $repos
+            $files = New-PhxContext -Provider repo-files -Staging (Join-PhxPath $Staging 'repo-files')
+            Backup-PhxRepoFiles -Context $files
+            Get-PhxClaudeStatus -Context $files
+        } 6>&1 | Out-String
+        $output | Should -Match '2 repositories recorded'
+        $output | Should -Match 'offline - recorded from the last scan'
+        $output | Should -Match '0 file\(s\) from 0 repositories'
+    }
+
+    It 'restores the other repositories when one root is on a missing drive, and fails at the end' {
+        $staging = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $lines = [Collections.Generic.List[string]]::new()
+        Mock Get-PhxGhAccount -ModuleName PSPhoenix { }
+        $failure = $null
+        try {
+            InModuleScope PSPhoenix -Parameters @{ Staging = $staging } {
+                param($Staging)
+                Backup-PhxRepos -Context (New-PhxContext -Provider repos -Staging $Staging) | Out-Null
+                $document = Get-Content -LiteralPath (Join-PhxPath $Staging 'repos.json') -Raw | ConvertFrom-Json -AsHashtable
+                # The repository that is here gets a remote it can be cloned from.
+                foreach ($repo in $document.repositories) { if ($repo.path -eq 'Here') { $repo.root = Join-PhxPath $Staging 'restored' } }
+                Set-Content -LiteralPath (Join-PhxPath $Staging 'repos.json') -Value ($document | ConvertTo-Json -Depth 10)
+                Restore-PhxRepos -Context (New-PhxContext -Provider repos -Staging $Staging)
+            } 6>&1 | ForEach-Object { $lines.Add("$_") }
+        }
+        catch { $failure = $_.Exception.Message }
+        $failure | Should -Match 'repositories could not be restored'
+        ($lines -join "`n") | Should -Match ([regex]::Escape("$($script:GoneRoot)\Away"))
+    }
+
+    It 'shows a target on a missing drive in phx status, as a warning' {
+        InModuleScope PSPhoenix -Parameters @{ Target = "$($script:NoDrive):\Backup" } {
+            param($Target)
+            $c = Read-PhxConfig
+            $c.target = [ordered]@{ type = 'folder'; path = $Target }
+            Save-PhxConfig $c
+        }
+        $output = Get-PhxOutput { phx status -ErrorVariable failure -ErrorAction SilentlyContinue }
+        $failure | Should -BeNullOrEmpty
+        $output | Should -Match 'target\s+\w:\\Backup - folder not found'
+    }
+}
+
 Describe 'init' {
     BeforeAll {
         function script:Set-TestAnswer {

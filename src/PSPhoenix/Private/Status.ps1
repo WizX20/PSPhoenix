@@ -25,7 +25,7 @@ function Test-PhxWritableFolder {
     # True when a file can be created in the folder: a read-only share, a write-protected disk or a
     # folder without permission fails here rather than at the first backup.
     param([Parameter(Mandatory)][string]$Path)
-    $probe = Join-Path $Path ".phx-write-test-$([guid]::NewGuid().ToString('N'))"
+    $probe = Join-PhxPath $Path ".phx-write-test-$([guid]::NewGuid().ToString('N'))"
     try {
         [IO.File]::Create($probe, 1, [IO.FileOptions]::DeleteOnClose).Dispose()
         $true

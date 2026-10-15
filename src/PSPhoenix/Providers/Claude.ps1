@@ -21,14 +21,14 @@ function Get-PhxClaudeDir {
     # Claude Code's folder: CLAUDE_CONFIG_DIR when set, as Claude Code reads it, else ~/.claude.
     $dir = [Environment]::GetEnvironmentVariable('CLAUDE_CONFIG_DIR')
     if ($dir -and [IO.Path]::IsPathFullyQualified($dir)) { return $dir }
-    Join-Path $HOME '.claude'
+    Join-PhxPath $HOME '.claude'
 }
 
 function Get-PhxClaudeJsonPath {
     # ~/.claude.json - inside CLAUDE_CONFIG_DIR when that is set.
     $dir = [Environment]::GetEnvironmentVariable('CLAUDE_CONFIG_DIR')
-    if ($dir -and [IO.Path]::IsPathFullyQualified($dir)) { return Join-Path $dir '.claude.json' }
-    Join-Path $HOME '.claude.json'
+    if ($dir -and [IO.Path]::IsPathFullyQualified($dir)) { return Join-PhxPath $dir '.claude.json' }
+    Join-PhxPath $HOME '.claude.json'
 }
 
 function ConvertTo-PhxClaudeProjectName {
@@ -66,7 +66,7 @@ function Copy-PhxClaudeStaged {
     try { Copy-PhxStagedFile -Context $Context -Source $Source -Path $Path }
     catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { return }
     if ($Context.Sealed.Contains("$Path.age")) { return "$Name.age" }
-    if ([IO.File]::Exists((Join-Path $Context.Staging $Path))) { $Name }
+    if ([IO.File]::Exists((Join-PhxPath $Context.Staging $Path))) { $Name }
 }
 
 function Get-PhxClaudeProject {
@@ -75,7 +75,7 @@ function Get-PhxClaudeProject {
     # A repository is matched by the name Claude Code derives from its path, ignoring case - the
     # drive letter comes either way.
     param([object[]]$Records = @())
-    $projects = Join-Path (Get-PhxClaudeDir) 'projects'
+    $projects = Join-PhxPath (Get-PhxClaudeDir) 'projects'
     if (-not [IO.Directory]::Exists($projects)) { return }
     $byName = @{}
     foreach ($record in $Records) {
@@ -124,10 +124,10 @@ function Backup-PhxClaude {
     $sources = @(
         foreach ($name in $script:PhxClaudeHomeFiles) { $name }
         foreach ($file in [IO.Directory]::GetFiles($claude, 'statusline*')) { [IO.Path]::GetFileName($file) }
-        foreach ($folder in $script:PhxClaudeHomeFolders) { foreach ($file in @(Get-PhxClaudeFile (Join-Path $claude $folder))) { "$folder/$file" } }
+        foreach ($folder in $script:PhxClaudeHomeFolders) { foreach ($file in @(Get-PhxClaudeFile (Join-PhxPath $claude $folder))) { "$folder/$file" } }
     )
     foreach ($relative in $sources) {
-        $source = Join-Path $claude $relative
+        $source = Join-PhxPath $claude $relative
         if (-not [IO.File]::Exists($source)) { continue }
         if ($Context.DryRun) { & $Context.Log "would back up ~/.claude/$relative" 'Action'; continue }
         $stored = Copy-PhxClaudeStaged -Context $Context -Source $source -Path "home/$relative" -Name $relative
@@ -138,7 +138,7 @@ function Backup-PhxClaude {
     $projects = [Collections.Generic.List[object]]::new()
     $matched = 0
     foreach ($project in @(Get-PhxClaudeProject -Records $records)) {
-        $files = @(foreach ($file in @(Get-PhxClaudeFile (Join-Path $project.Folder 'memory'))) { "memory/$file" })
+        $files = @(foreach ($file in @(Get-PhxClaudeFile (Join-PhxPath $project.Folder 'memory'))) { "memory/$file" })
         if ($transcripts) { $files += @([IO.Directory]::GetFiles($project.Folder, '*.jsonl') | ForEach-Object { [IO.Path]::GetFileName($_) }) }
         if (-not $files.Count) { continue }
         $entry = [ordered]@{ name = $project.Name }
@@ -153,7 +153,7 @@ function Backup-PhxClaude {
         if ($Context.DryRun) { & $Context.Log "would back up $($files.Count) file(s) of $(if ($project.Record) { $project.Record.identity } else { $project.Name })" 'Action'; continue }
         $stored = [Collections.Generic.List[object]]::new()
         foreach ($file in $files) {
-            $name = Copy-PhxClaudeStaged -Context $Context -Source (Join-Path $project.Folder $file) -Path "projects/$($entry.folder)/$file" -Name $file
+            $name = Copy-PhxClaudeStaged -Context $Context -Source (Join-PhxPath $project.Folder $file) -Path "projects/$($entry.folder)/$file" -Name $file
             if ($name) { $stored.Add([ordered]@{ path = $file; stored = $name }) }
         }
         if (-not $stored.Count) { continue }
@@ -180,7 +180,7 @@ function Backup-PhxClaude {
         if ($Context.DryRun) { & $Context.Log "would back up $mcpCount MCP server(s)" 'Action' }
         else {
             Write-PhxStagedText -Context $Context -Path 'claude.json' -Value ([ordered]@{ mcpServers = $mcp.User; projects = $byProject } | ConvertTo-Json -Depth 20)
-            $mcpStored = if ($Context.Sealed.Contains('claude.json.age')) { 'claude.json.age' } elseif ([IO.File]::Exists((Join-Path $Context.Staging 'claude.json'))) { 'claude.json' }
+            $mcpStored = if ($Context.Sealed.Contains('claude.json.age')) { 'claude.json.age' } elseif ([IO.File]::Exists((Join-PhxPath $Context.Staging 'claude.json'))) { 'claude.json' }
         }
     }
     if ($Context.DryRun) { return }
@@ -208,11 +208,11 @@ function Restore-PhxClaudeEntry {
     }
     elseif ($Context.Select.Count) { return }
     if ($name -notmatch '^[A-Za-z0-9-]+$') { throw "project folder $name is not one Claude Code makes - refused" }
-    $target = Join-Path (Join-Path (Get-PhxClaudeDir) 'projects') $name
-    $source = [IO.Path]::GetFullPath((Join-Path (Join-Path $Context.Staging 'projects') "$($Entry.folder)"))
-    if (-not (Test-PhxPathWithin $source (Join-Path $Context.Staging 'projects'))) { throw "its folder $($Entry.folder) leads out of the snapshot - refused" }
+    $target = Join-PhxPath (Join-PhxPath (Get-PhxClaudeDir) 'projects') $name
+    $source = [IO.Path]::GetFullPath((Join-PhxPath (Join-PhxPath $Context.Staging 'projects') "$($Entry.folder)"))
+    if (-not (Test-PhxPathWithin $source (Join-PhxPath $Context.Staging 'projects'))) { throw "its folder $($Entry.folder) leads out of the snapshot - refused" }
     foreach ($file in $files) {
-        Restore-PhxClaudeFile -Source (Join-Path $source "$($file.stored)") -Target (Join-Path $target "$($file.path)") -Within $target -SourceWithin $source -Encrypted:("$($file.stored)" -cne "$($file.path)") -Context $Context -Counts $Counts
+        Restore-PhxClaudeFile -Source (Join-PhxPath $source "$($file.stored)") -Target (Join-PhxPath $target "$($file.path)") -Within $target -SourceWithin $source -Encrypted:("$($file.stored)" -cne "$($file.path)") -Context $Context -Counts $Counts
     }
 }
 
@@ -297,16 +297,16 @@ function Restore-PhxClaude {
     # folder Claude Code derives from the repository's new path, the MCP servers into
     # ~/.claude.json. Nothing that is there is overwritten. Idempotent.
     param([Parameter(Mandatory)]$Context)
-    $file = Join-Path $Context.Staging 'claude-files.json'
+    $file = Join-PhxPath $Context.Staging 'claude-files.json'
     if (-not [IO.File]::Exists($file)) { & $Context.Log 'no Claude Code state in this snapshot'; return }
     $manifest = ConvertTo-PhxCaseInsensitive (Get-Content -LiteralPath $file -Raw | ConvertFrom-Json -AsHashtable)
     if ($manifest.format -gt $script:PhxClaudeFormat) { throw "$file was written by a newer PSPhoenix (format $($manifest.format)) - update PSPhoenix first" }
     $claude = Get-PhxClaudeDir
     $counts = [ordered]@{ restored = 0; present = 0; differs = 0; skipped = 0; failed = 0 }
     if (-not $Context.Select.Count) {
-        $homeSource = Join-Path $Context.Staging 'home'
+        $homeSource = Join-PhxPath $Context.Staging 'home'
         foreach ($entry in @($manifest.home | Where-Object { $_ })) {
-            Restore-PhxClaudeFile -Source (Join-Path $homeSource "$($entry.stored)") -Target (Join-Path $claude "$($entry.path)") -Within $claude -SourceWithin $homeSource -Encrypted:("$($entry.stored)" -cne "$($entry.path)") -Context $Context -Counts $counts
+            Restore-PhxClaudeFile -Source (Join-PhxPath $homeSource "$($entry.stored)") -Target (Join-PhxPath $claude "$($entry.path)") -Within $claude -SourceWithin $homeSource -Encrypted:("$($entry.stored)" -cne "$($entry.path)") -Context $Context -Counts $counts
         }
     }
     foreach ($entry in @($manifest.projects | Where-Object { $_ })) {
@@ -314,7 +314,7 @@ function Restore-PhxClaude {
         catch { & $Context.Log "$(if ($entry.identity) { $entry.identity } else { $entry.name }): $($_.Exception.Message)" 'Warn'; $counts.failed += @($entry.files).Count }
     }
     if ($manifest.claudeJson) {
-        $source = [IO.Path]::GetFullPath((Join-Path $Context.Staging "$($manifest.claudeJson)"))
+        $source = [IO.Path]::GetFullPath((Join-PhxPath $Context.Staging "$($manifest.claudeJson)"))
         if ($manifest.claudeJson -notin 'claude.json', 'claude.json.age' -or -not [IO.File]::Exists($source)) { & $Context.Log "the MCP servers ($($manifest.claudeJson)) are missing from the snapshot" 'Warn'; $counts.failed++ }
         else {
             try { Restore-PhxClaudeMcp -Source $source -Encrypted:($manifest.claudeJson -eq 'claude.json.age') -Context $Context -Counts $counts }
@@ -333,7 +333,7 @@ function Get-PhxClaudeStatus {
     if (-not [IO.Directory]::Exists($claude)) { return "no Claude Code folder ($claude)" }
     $cache = Read-PhxRepoCache -Quiet
     $records = if ($cache) { @(Get-PhxScannedRecord -Cache $cache -Config $Context.Config) } else { @() }
-    $withMemory = @(Get-PhxClaudeProject -Records $records | Where-Object { @(Get-PhxClaudeFile (Join-Path $_.Folder 'memory')).Count })
+    $withMemory = @(Get-PhxClaudeProject -Records $records | Where-Object { @(Get-PhxClaudeFile (Join-PhxPath $_.Folder 'memory')).Count })
     $matched = @($withMemory | Where-Object Record).Count
     $settings = $Context.Config.providers['claude']
     $transcripts = if ($settings -is [System.Collections.IDictionary] -and $settings.transcripts -eq $true) { 'session transcripts included' } else { 'session transcripts not (providers.claude.transcripts)' }

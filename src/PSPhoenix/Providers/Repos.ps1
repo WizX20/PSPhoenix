@@ -63,12 +63,13 @@ function Backup-PhxRepos {
     $accounts = $Context.Config.accounts
     $inventory = foreach ($record in $records) {
         $path = Get-PhxRepoKey $record
-        if ($record.offline) {
+        # A root that is gone since the scan (an unplugged drive) is offline, not every repository on it deleted.
+        if ($record.offline -or -not [IO.Directory]::Exists("$($record.root)")) {
             & $Context.Log "offline - recorded from the last scan: $path" 'Warn'
             ConvertTo-PhxRepoInventory -Record $record -Accounts $accounts -FromScan 'offline'
             continue
         }
-        if (-not [IO.Directory]::Exists((Join-Path $path '.git'))) {
+        if (-not [IO.Directory]::Exists((Join-PhxPath $path '.git'))) {
             & $Context.Log "gone since the last scan, not recorded: $path" 'Warn'
             continue
         }
@@ -183,7 +184,7 @@ function Restore-PhxRepo {
     if (-not (Test-PhxPathWithin $target $Root)) { throw "its path $($Repo.path) leads out of the root $Root - refused" }
     $occupied = [IO.Directory]::Exists($target) -and @([IO.Directory]::EnumerateFileSystemEntries($target)).Count
     if ($occupied) {
-        if (-not [IO.Directory]::Exists((Join-Path $target '.git'))) { & $log "$target exists and is not a repository - $($Repo.identity) skipped" 'Warn'; return 'skipped' }
+        if (-not [IO.Directory]::Exists((Join-PhxPath $target '.git'))) { & $log "$target exists and is not a repository - $($Repo.identity) skipped" 'Warn'; return 'skipped' }
         $there = (Get-PhxRepoRecord -Root $Root -Path $target).identity
         if ($there -ne $Repo.identity) { & $log "$target holds $there, not $($Repo.identity) - skipped" 'Warn'; return 'skipped' }
         if ($Context.DryRun) { & $log "would re-apply remotes and settings: $target" 'Action'; return 'present' }
@@ -213,7 +214,7 @@ function Restore-PhxRepos {
     # the context says so. Idempotent: a second run finds them all in place. A root that is not a
     # path on this platform (C:\Repos on Linux) must be mapped.
     param([Parameter(Mandatory)]$Context)
-    $file = Join-Path $Context.Staging 'repos.json'
+    $file = Join-PhxPath $Context.Staging 'repos.json'
     if (-not [IO.File]::Exists($file)) { throw "no repository inventory in $($Context.Staging)" }
     $document = ConvertTo-PhxCaseInsensitive (Get-Content -LiteralPath $file -Raw | ConvertFrom-Json -AsHashtable)
     if ($document.format -gt $script:PhxReposFormat) { throw "$file was written by a newer PSPhoenix (format $($document.format)) - update PSPhoenix first" }
