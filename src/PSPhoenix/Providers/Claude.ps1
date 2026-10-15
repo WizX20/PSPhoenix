@@ -16,6 +16,8 @@ $script:PhxClaudeFormat = 1
 # What the user wrote in ~/.claude: files at the top, and folders.
 $script:PhxClaudeHomeFiles = @('settings.json', 'CLAUDE.md', 'keybindings.json')
 $script:PhxClaudeHomeFolders = @('skills', 'commands', 'agents')
+# Folders a tool fills inside a skill, never the user's own work.
+$script:PhxClaudeSkip = @('node_modules', '.git', '.venv', 'venv', '__pycache__')
 
 function Get-PhxClaudeDir {
     # Claude Code's folder: CLAUDE_CONFIG_DIR when set, as Claude Code reads it, else ~/.claude.
@@ -45,8 +47,9 @@ function ConvertTo-PhxClaudeJsonKey {
 }
 
 function Get-PhxClaudeFile {
-    # The files below a folder, relative to it with /, through the denylist (no node_modules in a
-    # skill) and without following links.
+    # The files below a folder, relative to it with /, without following links and without what a
+    # tool put there (node_modules, a virtual environment, a .git). Not the build-output denylist of
+    # repo-files: a skill may well be called build or publish.
     param([Parameter(Mandatory)][string]$Folder)
     if (-not [IO.Directory]::Exists($Folder)) { return }
     $options = [IO.EnumerationOptions]::new()
@@ -55,7 +58,7 @@ function Get-PhxClaudeFile {
     $options.IgnoreInaccessible = $true
     foreach ($file in [IO.Directory]::EnumerateFiles($Folder, '*', $options)) {
         $relative = [IO.Path]::GetRelativePath($Folder, $file).Replace('\', '/')
-        if (-not [PSPhoenix.Engine.IgnoredFiles]::IsDenied($relative)) { $relative }
+        if (-not @($relative.Split('/') | Where-Object { $_ -in $script:PhxClaudeSkip }).Count) { $relative }
     }
 }
 

@@ -185,7 +185,7 @@ function Get-PhxReviewRepository {
         $key = Get-PhxRepoKey $record
         if ($record.offline -or -not [IO.Directory]::Exists((Join-PhxPath $key '.git'))) { continue }
         $own = if ($Config.files.repos -is [System.Collections.IDictionary]) { $Config.files.repos[$record.identity] }
-        try { $list = Get-PhxIgnoredFile -Path $key -MaxBytes (Get-PhxMaxFileBytes $Config) -SecretPatterns ([string[]]@($own.secret | Where-Object { $_ })) }
+        try { $list = Get-PhxIgnoredFile -Path $key -MaxBytes (Get-PhxMaxFileBytes $Config) -SecretPatterns ([string[]]@($own.secret | Where-Object { $_ })) -Rules (Get-PhxRepoFileRule -Config $Config -Identity $record.identity) }
         catch { Write-Host "  could not list the gitignored files of ${key}: $(Hide-PhxSecret $_.Exception.Message)" -ForegroundColor Yellow; continue }
         [pscustomobject]@{ Record = $record; Key = $key; List = $list }
     }

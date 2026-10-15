@@ -1576,6 +1576,30 @@ Describe 'repo-files provider' {
         $files | Should -Contain '.env'
     }
 
+    It 'lists an ignored file in a workspace folder named like a denied one, and not one an exclude covers (#70)' {
+        $web = Join-Path $script:FilesRepo 'packages/web'
+        New-Item -ItemType Directory -Force -Path $web | Out-Null
+        Set-Content -LiteralPath (Join-Path $web 'keep.txt') -Value 'tracked'
+        git -C $script:FilesRepo add packages/web/keep.txt
+        git -C $script:FilesRepo -c user.name=test -c user.email=test@example.invalid commit -q -m web
+        Add-Content -LiteralPath (Join-Path $script:FilesRepo '.gitignore') -Value '.env.local'
+        Set-Content -LiteralPath (Join-Path $web '.env.local') -Value 'A=1'
+        Set-TestFilesConfig -Decisions @{ exclude = @('/leftover/') }
+        Invoke-FilesBackup $script:FilesStaging | Out-Null
+        $files = @((InModuleScope PSPhoenix { Get-PhxRepoFilesPending }).repositories[0].files.path)
+        $files | Should -Contain 'packages/web/.env.local'
+        $files | Should -Not -Contain 'leftover/keep.txt'
+    }
+
+    It 'does not pull filtered files in through a folder include' {
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo 'leftover/dump.log') -Value 'noise'
+        Set-TestFilesConfig -Decisions @{ include = @('/leftover/') }
+        Invoke-FilesBackup $script:FilesStaging | Out-Null
+        $staged = Get-TestStaged $script:FilesStaging
+        $staged | Should -Contain 'github.com/WizX20/app/leftover/keep.txt'
+        $staged | Should -Not -Contain 'github.com/WizX20/app/leftover/dump.log'
+    }
+
     It 'leaves a file over the size cap out unless it is included' {
         Set-TestFilesConfig -MaxKB 2
         Invoke-FilesBackup $script:FilesStaging | Out-Null
@@ -1996,6 +2020,16 @@ Describe 'claude provider' {
         $json.Contains('oauthAccount') | Should -BeFalse
         $json.projects[$script:ClaudeRepo.Replace('\', '/')].identity | Should -Be 'github.com/WizX20/app'
         $json.projects.Contains('C:/Other') | Should -BeFalse
+    }
+
+    It 'backs up a skill named like a build folder' {
+        New-TestFile (Join-Path $script:ClaudeDir 'skills/build/SKILL.md') '# build'
+        New-TestFile (Join-Path $script:ClaudeDir 'skills/publish/SKILL.md') '# publish'
+        Invoke-ClaudeBackup $script:ClaudeStaging | Out-Null
+        $staged = Get-TestStaged $script:ClaudeStaging
+        $staged | Should -Contain 'home/skills/build/SKILL.md'
+        $staged | Should -Contain 'home/skills/publish/SKILL.md'
+        $staged | Should -Not -Contain 'home/skills/pr/node_modules/x/index.js'
     }
 
     It 'takes the session transcripts only when the config asks' {

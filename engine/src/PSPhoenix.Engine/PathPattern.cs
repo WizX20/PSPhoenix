@@ -24,10 +24,55 @@ public sealed class PathPattern
 {
     private readonly Regex regex;
 
-    private PathPattern(string text, Regex regex)
+    private PathPattern(string text, Regex regex, string body, bool anchored, bool folder)
     {
         Text = text;
         this.regex = regex;
+        Anchored = anchored;
+        Folder = folder;
+        int wildcard = body.IndexOfAny(['*', '?']);
+        Exact = wildcard < 0 && !folder;
+        // The text before the first wildcard, up to its last /: every path it matches starts with it.
+        // Without a wildcard that is the path itself: it matches that file, or what is below it.
+        string literal = wildcard < 0 ? body + "/" : body[..wildcard];
+        Prefix = anchored ? literal[..(literal.LastIndexOf('/') + 1)] : string.Empty;
+    }
+
+    /// <summary>Matches from the repository's top only.</summary>
+    public bool Anchored { get; }
+
+    /// <summary>Names a folder (ends in <c>/</c>).</summary>
+    public bool Folder { get; }
+
+    /// <summary>Names one path, without wildcards: a decision on that file, not on a group.</summary>
+    public bool Exact { get; }
+
+    // The folder part every matching path starts with, with a trailing /; empty when it can match anywhere.
+    private string Prefix { get; }
+
+    /// <summary>
+    /// Whether the pattern names a place in or below <paramref name="folder"/> itself - anchored, its
+    /// fixed part inside it (<c>/bin/special.json</c> for <c>bin</c>) - rather than matching there by
+    /// chance (<c>*.json</c>, <c>/</c>-less names).
+    /// </summary>
+    public bool PointsInto(string folder)
+    {
+        string inside = Normalize(folder).Trim('/') + "/";
+        return Anchored && Prefix.StartsWith(inside, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Whether the pattern can match a path below <paramref name="folder"/> (relative, with <c>/</c>):
+    /// a walk that skips the folder could miss a file the pattern names.
+    /// </summary>
+    public bool CouldMatchBelow(string folder)
+    {
+        string inside = Normalize(folder).Trim('/') + "/";
+        if (!Anchored)
+        {
+            return true;
+        }
+        return Prefix.StartsWith(inside, StringComparison.OrdinalIgnoreCase) || inside.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>The pattern as written.</summary>
@@ -98,7 +143,7 @@ public sealed class PathPattern
         }
         // A folder's files match through it; a file pattern also names a folder of that name.
         regex.Append(folder ? "/.*$" : "(?:/.*)?$");
-        pattern = new PathPattern(text!, new Regex(regex.ToString(), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1)));
+        pattern = new PathPattern(text!, new Regex(regex.ToString(), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1)), body.TrimEnd('/'), anchored, folder);
         error = null;
         return true;
     }
