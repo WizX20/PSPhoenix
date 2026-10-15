@@ -137,18 +137,26 @@ function Invoke-PhxRun {
         $trackers = @{}
         $withheld = @{}
         $sealed = @{}
+        $stagers = @{}
         foreach ($entry in $providers) {
             $name = $entry.Name
             Write-PhxRunLine "${name}:" Cyan
             try {
-                # A fresh staging folder: what is in it afterwards is exactly what this run produced.
-                # One that cannot be emptied fails the provider: a stale file would be published.
+                # The staging folder stays between runs: a file whose source did not change is left
+                # as the last run staged it (the stager's records in the state). What this run did
+                # not stage is pruned before publishing, so what is in it afterwards is exactly what
+                # this run produced; one that cannot be removed fails the provider.
                 $staging = Get-PhxStagingPath $name
-                if ([IO.Directory]::Exists($staging)) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction Stop }
                 [IO.Directory]::CreateDirectory($staging) | Out-Null
-                $context = New-PhxContext -Provider $name -Staging $staging -Config $config -State $state
+                $context = New-PhxContext -Provider $name -Staging $staging -Config $config -State $state -Previous $state.StagedBy($name)
                 # Then the last secret check on what it staged, whichever way it got there.
-                Invoke-PhxLogged -Source $name -Action { & $entry.Backup $context; Remove-PhxStagedSecret -Context $context } | Out-Null
+                Invoke-PhxLogged -Source $name -Action {
+                    & $entry.Backup $context
+                    try { $context.Stager.Prune($started) | Out-Null }
+                    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
+                    Remove-PhxStagedSecret -Context $context
+                } | Out-Null
+                $stagers[$name] = $context.Stager
                 $trackers[$name] = $context.Files
                 $withheld[$name] = [string[]]@($context.Withheld)
                 $sealed[$name] = $context.Sealed.Count
@@ -161,7 +169,7 @@ function Invoke-PhxRun {
                 $state.Failed($name, $message)
             }
         }
-        $results = if ($succeeded.Count) { Publish-PhxSnapshot -Config $config -Provider @($succeeded) -State $state } else { @{} }
+        $results = if ($succeeded.Count) { Publish-PhxSnapshot -Config $config -Provider @($succeeded) -State $state -Stagers $stagers } else { @{} }
         foreach ($name in @($succeeded)) {
             $result = $results[$name]
             if ($result.Error) {
@@ -173,7 +181,9 @@ function Invoke-PhxRun {
             }
             # Its last run is the start of this one; what it saw is what its next run compares with.
             $state.Succeeded($name, $started, $trackers[$name], $withheld[$name])
+            $state.KeepStaged($name, $stagers[$name].Records)
             $held = @(
+                if ($stagers[$name].Reused) { "$($stagers[$name].Reused) unchanged since the last run, not read again" }
                 if ($sealed[$name]) { "$($sealed[$name]) encrypted" }
                 if ($withheld[$name].Count) { "$($withheld[$name].Count) held back (no age key yet)" }
             ) | ForEach-Object { ", $_" }

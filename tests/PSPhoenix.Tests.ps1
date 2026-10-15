@@ -992,6 +992,16 @@ Describe 'repos provider' {
         Mock Get-PhxGhAccount -ModuleName PSPhoenix { }
     }
 
+    It 'reads a repository through git again only when what it records from changed (#73)' {
+        # The scan read both; a backup that asks git again would fail here.
+        Mock Get-PhxRepoRecord -ModuleName PSPhoenix { throw 'read again' }
+        $output = Invoke-ReposBackup $snapshot
+        $output | Should -Match '2 repositories recorded'
+        $output | Should -Not -Match 'could not read'
+        git -C $one config user.name 'Someone Else'
+        Invoke-ReposBackup $snapshot | Should -Match 'could not read .*One.*read again'
+    }
+
     It 'records remotes, branches, identity settings and the account' {
         Invoke-ReposBackup $snapshot | Should -Match '2 repositories recorded'
         $inventory = @(Read-TestInventory $snapshot)
@@ -2131,6 +2141,28 @@ Describe 'claude provider' {
         $quiet = Get-PhxOutput { phx run -Provider claude -ErrorAction SilentlyContinue -ErrorVariable failure2; $script:ClaudeFailure = $failure2 }
         $script:ClaudeFailure | Should -BeNullOrEmpty
         $quiet | Should -Match 'no Claude Code folder .* - nothing to back up'
+    }
+
+    It 'reads nothing again on a second run with nothing changed, and publishes a change (#73)' {
+        $target = Join-Path $script:ClaudeHome 'Target'
+        New-Item -ItemType Directory -Path $target | Out-Null
+        InModuleScope PSPhoenix -Parameters @{ Target = $target } {
+            param($Target)
+            $c = Read-PhxConfig
+            $c.target = [ordered]@{ type = 'folder'; path = $Target }
+            $c.machine = [ordered]@{ name = 'Box'; id = 'id-box' }
+            Save-PhxConfig $c
+        }
+        Get-PhxOutput { phx run -Provider claude } | Should -Not -Match 'not read again'
+        $second = Get-PhxOutput { phx run -Provider claude }
+        $second | Should -Match 'claude: 0 written, 12 unchanged, 0 removed, 12 unchanged since the last run, not read again'
+        # A change is staged and published; a file that is gone leaves the snapshot.
+        [IO.File]::WriteAllText((Join-Path $script:ClaudeDir "projects/$script:ProjectName/memory/note.md"), 'remember this too')
+        Remove-Item -LiteralPath (Join-Path $script:ClaudeDir 'commands/ship.md')
+        $third = Get-PhxOutput { phx run -Provider claude }
+        $third | Should -Match 'claude: 2 written, 9 unchanged, 1 removed'
+        Get-Content -LiteralPath (Join-Path $target 'Box/claude/projects/github.com/WizX20/app/memory/note.md') -Raw | Should -Be 'remember this too'
+        Test-Path -LiteralPath (Join-Path $target 'Box/claude/home/commands/ship.md') | Should -BeFalse
     }
 
     It 'says in phx status how much memory there is' {
@@ -3626,7 +3658,7 @@ Describe 'run' {
         # Nothing changed: the same ciphertext, so nothing is written and a sync client uploads nothing.
         $before = @(Get-ChildItem -LiteralPath $leaky -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.LastWriteTimeUtc.Ticks)" })
         Start-Sleep -Milliseconds 50
-        Invoke-TestRun | Should -Match "leaky: 0 written, $($sealed + 1) unchanged, 0 removed, $sealed encrypted"
+        Invoke-TestRun | Should -Match "leaky: 0 written, $($sealed + 1) unchanged, 0 removed, \d+ unchanged since the last run, not read again, $sealed encrypted"
         @(Get-ChildItem -LiteralPath $leaky -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.LastWriteTimeUtc.Ticks)" }) | Should -Be $before
         Get-PhxOutput { phx status } | Should -Match "secrets\s+encrypted to $([regex]::Escape($key.Recipient.Substring(0, 12)))\.\.\..* no copy of the key in the snapshot"
     }

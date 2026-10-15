@@ -30,7 +30,9 @@ function New-PhxContext {
         [string[]]$Select = @(),
         # Restore: the age identity (AGE-SECRET-KEY-1...) that opens the snapshot's secrets; none
         # skips them. Never logged.
-        [string]$Identity
+        [string]$Identity,
+        # Backup: what the provider's last successful run staged - unchanged files are kept as they are.
+        [System.Collections.Generic.IReadOnlyDictionary[string, PSPhoenix.Engine.StagedRecord]]$Previous
     )
     if (-not $Config) { $Config = Read-PhxConfig }
     if (-not $State) { $State = New-PhxState }
@@ -54,6 +56,6 @@ function New-PhxContext {
         Sealer   = $sealer
         # Stages every file and records what it became - plain, encrypted, held back: the
         # provider's manifest comes from here, and the last check skips what it wrote.
-        Stager   = $(if ($Staging) { [PSPhoenix.Engine.Stager]::new([IO.Path]::GetFullPath($Staging), $sealer) })
+        Stager   = $(if ($Staging) { [PSPhoenix.Engine.Stager]::new([IO.Path]::GetFullPath($Staging), $sealer, $Previous) })
     }
 }

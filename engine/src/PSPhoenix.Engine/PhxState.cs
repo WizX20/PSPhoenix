@@ -72,6 +72,20 @@ public sealed class PhxState
     /// <summary>The change detection for a provider's run, starting from what its last successful run saw.</summary>
     public FileTracker Tracker(string provider) => new(Files.GetValueOrDefault(provider));
 
+    /// <summary>Per provider, what its last successful run staged (relative path -> record): the next run reuses what did not change.</summary>
+    public Dictionary<string, Dictionary<string, StagedRecord>> Staged { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>What <paramref name="provider"/>'s last successful run staged; empty when none.</summary>
+    public IReadOnlyDictionary<string, StagedRecord> StagedBy(string provider)
+        => Staged.TryGetValue(provider, out Dictionary<string, StagedRecord>? records) ? records : new Dictionary<string, StagedRecord>(StringComparer.Ordinal);
+
+    /// <summary>Keeps what <paramref name="provider"/> staged in a run that succeeded.</summary>
+    public void KeepStaged(string provider, IReadOnlyDictionary<string, StagedRecord> records)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+        Staged[provider] = new Dictionary<string, StagedRecord>(records, StringComparer.Ordinal);
+    }
+
     /// <summary>
     /// A provider succeeded in the run that started at <paramref name="started"/>: that is its last
     /// run now - the start, not the end, so a long run does not push its next turn past the slack of
@@ -174,6 +188,8 @@ public sealed class PhxState
 
         public Dictionary<string, string?>? Refs { get; set; }
 
+        public Dictionary<string, Dictionary<string, StagedRecord?>?>? Staged { get; set; }
+
         public static Document From(PhxState state) => new()
         {
             Version = CurrentVersion,
@@ -183,6 +199,7 @@ public sealed class PhxState
             Published = state.Published.ToDictionary(entry => entry.Key, entry => (Dictionary<string, string?>?)entry.Value.ToDictionary(file => file.Key, file => (string?)file.Value)),
             PublishedTo = state.PublishedTo,
             Refs = state.Refs.ToDictionary(entry => entry.Key, entry => (string?)entry.Value),
+            Staged = state.Staged.ToDictionary(entry => entry.Key, entry => (Dictionary<string, StagedRecord?>?)entry.Value.ToDictionary(file => file.Key, file => (StagedRecord?)file.Value)),
         };
 
         public PhxState ToState()
@@ -211,6 +228,18 @@ public sealed class PhxState
             foreach ((string name, Dictionary<string, string?>? hashes) in Published ?? [])
             {
                 state.Published[name] = Copy(hashes);
+            }
+            foreach ((string name, Dictionary<string, StagedRecord?>? records) in Staged ?? [])
+            {
+                Dictionary<string, StagedRecord> kept = new(StringComparer.Ordinal);
+                foreach ((string path, StagedRecord? record) in records ?? [])
+                {
+                    if (record is not null && record.Options is not null)
+                    {
+                        kept[path] = record with { Findings = record.Findings ?? [] };
+                    }
+                }
+                state.Staged[name] = kept;
             }
             foreach ((string path, string? hash) in Refs ?? [])
             {

@@ -50,7 +50,15 @@ public static class FolderPublisher
     /// </param>
     /// <exception cref="PublishException">A file could not be read, written or removed.</exception>
     public static PublishResult Publish(string source, string destination, IDictionary<string, string>? published)
-        => Publish(source, destination, published, FileHash.Sha256);
+        => Publish(source, destination, published, FileHash.Sha256, null);
+
+    /// <summary>
+    /// As <see cref="Publish(string, string, IDictionary{string, string}?)"/>, with the staged files'
+    /// hashes where the stager knows them (<see cref="Stager.KnownHash"/>): a file it left as the last
+    /// run staged it is not read at all.
+    /// </summary>
+    public static PublishResult Publish(string source, string destination, IDictionary<string, string>? published, Stager? stager)
+        => Publish(source, destination, published, FileHash.Sha256, stager is null ? null : stager.KnownHash);
 
     /// <summary>
     /// True when <paramref name="path"/> exists with the content of <paramref name="source"/>: the
@@ -61,7 +69,7 @@ public static class FolderPublisher
         => SameContent(source, path, sourceHash, FileHash.Sha256);
 
     /// <summary>Publish with the hash function given: the tests see which files it reads.</summary>
-    internal static PublishResult Publish(string source, string destination, IDictionary<string, string>? published, Func<string, string> hash)
+    internal static PublishResult Publish(string source, string destination, IDictionary<string, string>? published, Func<string, string> hash, Func<string, string?>? stagedHash = null)
     {
         AtomicFile.RequireFullPath(source);
         AtomicFile.RequireFullPath(destination);
@@ -104,7 +112,7 @@ public static class FolderPublisher
             string target = Path.Combine(destination, relative);
             try
             {
-                string sourceHash = hash(file);
+                string sourceHash = stagedHash?.Invoke(relative) ?? hash(file);
                 bool known = published is not null
                     && published.TryGetValue(relative, out string? last)
                     && string.Equals(last, sourceHash, StringComparison.Ordinal)
