@@ -606,7 +606,11 @@ An unknown command, or one whose milestone has not arrived yet, is an error - `$
 
 `phx init` saves nothing before its last question - neither the config nor the scan of the roots it
 offers; `q` at any prompt, Ctrl+C or the end of input stops without saving - and starts from the
-current values when run again. It offers the current roots and the usual folders that hold
+current values when run again. A choice from a list - the roots (several), the account per owner,
+the target, the interval - is made with the arrow keys on a console: space ticks a row, Enter
+accepts, `q` or Esc stops, and a last row takes a typed path or interval. Without one (input
+redirected, `-NonInteractive`, another host) the same lists are numbered and answered by typing
+numbers, a label or a path. It offers the current roots and the usual folders that hold
 repositories (`~/source/repos`, `C:\Repos`, `~/src`, ...) with their repository counts; asks, per
 owner on a host `gh` is logged in to, which account its repositories use - defaulting to the account
 set before (kept, with a warning, when `gh` is not logged in with it), else what their credential
