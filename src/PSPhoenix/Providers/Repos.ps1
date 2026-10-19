@@ -187,9 +187,7 @@ function Restore-PhxRepo {
     )
     $log = $Context.Log
     # The inventory names a place under the root, nothing else: not a full path, not ../.. out of it.
-    if ([IO.Path]::IsPathRooted("$($Repo.path)")) { throw "its path $($Repo.path) is not relative to its root - refused" }
-    $target = Get-PhxRepoPath -Root $Root -RelativePath $Repo.path
-    if (-not (Test-PhxPathWithin $target $Root)) { throw "its path $($Repo.path) leads out of the root $Root - refused" }
+    $target = Resolve-PhxRestorePath -Folder $Root -RelativePath "$($Repo.path)"
     $occupied = [IO.Directory]::Exists($target) -and @([IO.Directory]::EnumerateFileSystemEntries($target)).Count
     if ($occupied) {
         if (-not [IO.Directory]::Exists((Join-PhxPath $target '.git'))) { & $log "$target exists and is not a repository - $($Repo.identity) skipped" 'Warn'; return 'skipped' }
