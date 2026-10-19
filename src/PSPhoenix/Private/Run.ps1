@@ -30,8 +30,9 @@ function Invoke-PhxLogged {
     $errors = [Collections.Generic.List[string]]::new()
     & $Action *>&1 | ForEach-Object {
         if ($_ -is [System.Management.Automation.WarningRecord]) {
-            Write-PhxRunLog -Message "warning: $($_.Message)" -Source $Source
-            Write-Host "  warning: $($_.Message)" -ForegroundColor Yellow
+            $text = Hide-PhxSecret "$($_.Message)"
+            Write-PhxRunLog -Message "warning: $text" -Source $Source
+            Write-Host "  warning: $text" -ForegroundColor Yellow
         }
         elseif ($_ -is [System.Management.Automation.ErrorRecord]) {
             $text = Hide-PhxSecret "$($_.Exception.Message)"
@@ -42,7 +43,8 @@ function Invoke-PhxLogged {
         elseif ($_ -is [System.Management.Automation.VerboseRecord] -or $_ -is [System.Management.Automation.DebugRecord]) { }
         elseif ($_ -is [System.Management.Automation.InformationRecord]) {
             $data = $_.MessageData
-            $text = if ($data -is [System.Management.Automation.HostInformationMessage]) { $data.Message } else { "$data" }
+            # A token a provider prints is masked on screen as in the log: a console can be recorded.
+            $text = Hide-PhxSecret $(if ($data -is [System.Management.Automation.HostInformationMessage]) { $data.Message } else { "$data" })
             Write-PhxRunLog -Message $text -Source $Source
             # A line without a colour of its own carries the host's, which is -1 - no colour - on a
             # host without a console (a CI runner, a redirected run): not one Write-Host takes.
@@ -58,6 +60,7 @@ function Invoke-PhxLogged {
 function Write-PhxRunLine {
     # A line of the run itself: to the host and to the log.
     param([Parameter(Mandatory)][string]$Message, [string]$Color)
+    $Message = Hide-PhxSecret $Message
     Write-PhxRunLog -Message $Message
     if ($Color) { Write-Host $Message -ForegroundColor $Color } else { Write-Host $Message }
 }
@@ -122,7 +125,7 @@ function Invoke-PhxRun {
             Save-PhxConfig $config
         }
         $snapshot = Get-PhxSnapshotPath $config
-        Assert-PhxSnapshotWritable -Path $snapshot -Config $config | Out-Null
+        $info = Assert-PhxSnapshotWritable -Path $snapshot -Config $config
         Write-PhxRunLine "phx run $(Get-PhxVersion) -> $snapshot" Green
         $state = Read-PhxState
         if (@($config.roots).Count -and (Test-PhxScanDue -Cache (Read-PhxRepoCache -Quiet) -Config $config)) {
@@ -169,7 +172,7 @@ function Invoke-PhxRun {
                 $state.Failed($name, $message)
             }
         }
-        $results = if ($succeeded.Count) { Publish-PhxSnapshot -Config $config -Provider @($succeeded) -State $state -Stagers $stagers } else { @{} }
+        $results = if ($succeeded.Count) { Publish-PhxSnapshot -Config $config -Provider @($succeeded) -State $state -Stagers $stagers -Info $info } else { @{} }
         foreach ($name in @($succeeded)) {
             $result = $results[$name]
             if ($result.Error) {

@@ -44,7 +44,7 @@ public sealed class Sealer
     /// </summary>
     internal byte[] Seal(string path, byte[] plaintext)
     {
-        string id = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path)));
+        string id = Id(path);
         string cached = Path.Combine(cacheFolder, id + ".age");
         string stampFile = Path.Combine(cacheFolder, id + ".stamp");
         // The stamp names the plaintext, the recipient and the very ciphertext it vouches for: a
@@ -64,6 +64,35 @@ public sealed class Sealer
         AtomicFile.WriteAllText(stampFile, $"{stamp}\n{Convert.ToHexString(SHA256.HashData(encrypted))}");
         return encrypted;
     }
+
+    /// <summary>
+    /// Removes from the cache every ciphertext but those of <paramref name="kept"/> (full paths of
+    /// staged files, as sealed): a secret no longer staged leaves no copy behind. Returns how many
+    /// files went.
+    /// </summary>
+    public int Prune(IEnumerable<string> kept)
+    {
+        ArgumentNullException.ThrowIfNull(kept);
+        if (!Directory.Exists(cacheFolder))
+        {
+            return 0;
+        }
+        HashSet<string> ids = new(kept.Select(Id), StringComparer.Ordinal);
+        int removed = 0;
+        foreach (string file in Directory.EnumerateFiles(cacheFolder).ToList())
+        {
+            // <id>.age and <id>.stamp; anything else - a temporary file of a run that died - goes too.
+            string name = Path.GetFileName(file);
+            if (!ids.Contains(name.Split('.')[0]))
+            {
+                File.Delete(file);
+                removed++;
+            }
+        }
+        return removed;
+    }
+
+    private static string Id(string path) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(path))));
 }
 
 /// <summary>

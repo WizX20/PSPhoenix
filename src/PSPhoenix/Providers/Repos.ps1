@@ -132,7 +132,8 @@ function Invoke-PhxClone {
             [Environment]::SetEnvironmentVariable($variable, (Get-PhxGhToken -Account $Account -HostName $tokenHost))
             $options = '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential'
         }
-        Invoke-PhxGit -Repository $parent -Arguments ($options + @('clone', '--quiet', '--origin', $RemoteName) + @($configs) + @('--', $Url, $Target)) | Out-Null
+        # A large repository takes a while to clone: an hour before it counts as hung.
+        Invoke-PhxGit -Repository $parent -Arguments ($options + @('clone', '--quiet', '--origin', $RemoteName) + @($configs) + @('--', $Url, $Target)) -TimeoutSeconds 3600 | Out-Null
     }
     finally { [Environment]::SetEnvironmentVariable($variable, $saved) }
 }

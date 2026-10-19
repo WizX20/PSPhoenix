@@ -30,6 +30,29 @@ public sealed class IncrementalStagerTests : IDisposable
     }
 
     [Fact]
+    public void Prunes_the_ciphertexts_of_secrets_no_longer_staged()
+    {
+        string kept = temp.Write("src/kept.env", "TOKEN=1");
+        string gone = temp.Write("src/gone.env", "TOKEN=2");
+        Stager first = NewStager();
+        first.CopyFile(kept, temp["staging", "kept.env"], secret: true);
+        first.CopyFile(gone, temp["staging", "gone.env"], secret: true);
+        first.PruneSealed().Should().Be(0);
+        Directory.GetFiles(temp["sealed"]).Should().HaveCount(4);
+        byte[] ciphertext = File.ReadAllBytes(temp["staging", "kept.env.age"]);
+
+        Stager second = NewStager(first.Records);
+        second.CopyFile(kept, temp["staging", "kept.env"], secret: true);
+
+        second.PruneSealed().Should().Be(2);
+        Directory.GetFiles(temp["sealed"]).Should().HaveCount(2);
+        // The one still staged keeps its ciphertext: a third run that encrypts it again reuses it.
+        File.WriteAllText(temp["staging", "kept.env.age"], "touched");
+        NewStager(second.Records).CopyFile(kept, temp["staging", "kept.env"], secret: true);
+        File.ReadAllBytes(temp["staging", "kept.env.age"]).Should().Equal(ciphertext);
+    }
+
+    [Fact]
     public void Stages_again_what_changed_its_source_its_options_or_its_staged_copy()
     {
         string source = temp.Write("src/notes.md", "my notes");

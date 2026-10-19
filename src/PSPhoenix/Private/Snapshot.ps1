@@ -51,33 +51,40 @@ function Read-PhxSnapshotInfo {
     ConvertTo-PhxCaseInsensitive $info
 }
 
+function Test-PhxSnapshotFolder {
+    # The snapshot folder $Path, its phoenix.json read once: { Info = that phoenix.json or nothing;
+    # Problem = why the installation with id $Id may not write the folder, or nothing }.
+    param([Parameter(Mandatory)][string]$Path, [string]$Id)
+    try { $info = Read-PhxSnapshotInfo $Path }
+    catch { return [pscustomobject]@{ Info = $null; Problem = $_.Exception.Message } }
+    $problem = if (-not $info) {
+        if ([IO.Directory]::Exists($Path) -and @([IO.Directory]::EnumerateFileSystemEntries($Path)).Count) {
+            "$Path holds files but no phoenix.json - it is not a PSPhoenix snapshot; give this machine another name (phx init) or empty the folder"
+        }
+    }
+    elseif ($info.format -gt $script:PhxSnapshotFormat) { "$Path was written by a newer PSPhoenix (format $($info.format)) - update PSPhoenix first" }
+    elseif ($info.machine.id -and $info.machine.id -ne $Id) {
+        "$Path holds the snapshot of another installation (last written $(ConvertTo-PhxTimestamp $info.updatedAt)) - restore from it first, or give this machine another name: phx init"
+    }
+    [pscustomobject]@{ Info = $info; Problem = $problem }
+}
+
 function Get-PhxSnapshotProblem {
     # Why the installation with id $Id may not write the snapshot folder $Path - nothing when it
     # may: a phoenix.json that cannot be read, one of a newer PSPhoenix or of another installation,
     # or no phoenix.json in a folder that holds files - somebody's folder, which publishing would
     # empty. phx init, phx run and phx status all ask here.
     param([Parameter(Mandatory)][string]$Path, [string]$Id)
-    try { $info = Read-PhxSnapshotInfo $Path }
-    catch { return $_.Exception.Message }
-    if (-not $info) {
-        if ([IO.Directory]::Exists($Path) -and @([IO.Directory]::EnumerateFileSystemEntries($Path)).Count) {
-            return "$Path holds files but no phoenix.json - it is not a PSPhoenix snapshot; give this machine another name (phx init) or empty the folder"
-        }
-        return
-    }
-    if ($info.format -gt $script:PhxSnapshotFormat) { return "$Path was written by a newer PSPhoenix (format $($info.format)) - update PSPhoenix first" }
-    if ($info.machine.id -and $info.machine.id -ne $Id) {
-        return "$Path holds the snapshot of another installation (last written $(ConvertTo-PhxTimestamp $info.updatedAt)) - restore from it first, or give this machine another name: phx init"
-    }
+    (Test-PhxSnapshotFolder -Path $Path -Id $Id).Problem
 }
 
 function Assert-PhxSnapshotWritable {
     # Returns the folder's phoenix.json (nothing for a new folder) when this installation may write
-    # it; throws why when it may not (Get-PhxSnapshotProblem).
+    # it; throws why when it may not (Get-PhxSnapshotProblem). Reads it once.
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][System.Collections.IDictionary]$Config)
-    $problem = Get-PhxSnapshotProblem -Path $Path -Id $Config.machine.id
-    if ($problem) { throw $problem }
-    Read-PhxSnapshotInfo $Path
+    $folder = Test-PhxSnapshotFolder -Path $Path -Id $Config.machine.id
+    if ($folder.Problem) { throw $folder.Problem }
+    $folder.Info
 }
 
 function ConvertTo-PhxTimestamp {
@@ -111,11 +118,12 @@ function Initialize-PhxSnapshot {
     # This machine's snapshot folder, claimed for this installation, and its phoenix.json. A new
     # folder is claimed before anything else goes in: a run that dies half-way must not leave files
     # without the phoenix.json that says whose they are. Throws when this installation may not
-    # write the folder (Get-PhxSnapshotProblem).
-    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config)
+    # write the folder (Get-PhxSnapshotProblem). -Info is what Assert-PhxSnapshotWritable returned
+    # earlier in the same run, under its lock: the folder is not read again.
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [System.Collections.IDictionary]$Info)
     if (-not $Config.machine -or -not $Config.machine.id) { throw 'this machine has no id yet - run phx init' }
     $snapshot = Get-PhxSnapshotPath $Config
-    $info = Assert-PhxSnapshotWritable -Path $snapshot -Config $Config
+    $info = if ($PSBoundParameters.ContainsKey('Info')) { $Info } else { Assert-PhxSnapshotWritable -Path $snapshot -Config $Config }
     if ($info) { return $info }
     Write-PhxTextFile -Path (Join-PhxPath $snapshot 'phoenix.json') -Value ([ordered]@{
             format = $script:PhxSnapshotFormat; machine = [ordered]@{ name = Get-PhxMachineName $Config; id = $Config.machine.id }; createdAt = [DateTime]::UtcNow.ToString('o')
@@ -161,10 +169,14 @@ function Publish-PhxSnapshot {
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Provider,
         [PSPhoenix.Engine.PhxState]$State,
         # Per provider its stager, whose hashes spare reading staged files again.
-        [hashtable]$Stagers = @{}
+        [hashtable]$Stagers = @{},
+        # The folder's phoenix.json as the run read it under its lock (Initialize-PhxSnapshot -Info).
+        [System.Collections.IDictionary]$Info
     )
     $snapshot = Get-PhxSnapshotPath $Config
-    $info = Initialize-PhxSnapshot -Config $Config
+    $initialize = @{ Config = $Config }
+    if ($PSBoundParameters.ContainsKey('Info')) { $initialize.Info = $Info }
+    $info = Initialize-PhxSnapshot @initialize
     $now = [DateTime]::UtcNow.ToString('o')
     # Temporary files of a write to phoenix.json, config.json or a key copy that died half-way.
     foreach ($stale in @([IO.Directory]::EnumerateFiles($snapshot, '.*.tmp') | Where-Object { [IO.Path]::GetFileName($_) -match '^\.(phoenix\.json|config\.json|key-[a-z0-9]{12}\.age)\.[0-9a-f]{8}\.tmp$' })) {
@@ -196,12 +208,20 @@ function Publish-PhxSnapshot {
             $changed = $true
         }
     }
-    # The config travels along: a restore reads the roots, accounts and decisions from it.
+    # The config travels along: a restore reads the roots, accounts and decisions from it. The
+    # state knows the hash of the config last published here, so an unchanged one is not read back
+    # - in a OneDrive folder reading can mean downloading.
     $configText = $Config | ConvertTo-Json -Depth 10
     $configFile = Join-PhxPath $snapshot 'config.json'
-    if (-not [IO.File]::Exists($configFile) -or [IO.File]::ReadAllText($configFile) -cne $configText) {
-        Write-PhxTextFile -Path $configFile -Value $configText
-        $changed = $true
+    $configHash = [PSPhoenix.Engine.FileHash]::Sha256Text($configText)
+    $known = if ($State) { $State.PublishedHashes('.snapshot') }
+    $exists = [IO.File]::Exists($configFile)
+    if (-not $exists -or -not $known -or $known['config.json'] -cne $configHash) {
+        if (-not $exists -or [IO.File]::ReadAllText($configFile) -cne $configText) {
+            Write-PhxTextFile -Path $configFile -Value $configText
+            $changed = $true
+        }
+        if ($known) { $known['config.json'] = $configHash }
     }
     if ($changed) {
         $document = [ordered]@{

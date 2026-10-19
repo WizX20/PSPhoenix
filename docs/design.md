@@ -170,7 +170,9 @@ Including everything is not an option; a pure allowlist misses files nobody thou
    `Thumbs.db`, `desktop.ini`, `*.suo`, `*.cache`.
 4. **Binary extensions and a size cap** (`files.maxKB`, default 1 MB). Filtered files from steps
    3 and 4 are left out unless the review includes them by name: a folder or wildcard pattern
-   does not pull in the large, binary or generated files the review never showed.
+   does not pull in the large, binary or generated files the review never showed. A file whose
+   name Windows cannot hold (`:`, `?`, a trailing dot, ... - possible on Linux) is left out with a
+   warning: it could not be published to such a target, nor restored there.
 5. **Secret classification** by name: `.env`, `.env.*`, `secrets.*`, `*.pfx`, `*.p12`, `*.pem`,
    `*.key`, `id_*`, keystores (`*.jks`, `*.keystore`), PuTTY keys (`*.ppk`), `.netrc`/`_netrc`,
    `.pgpass`, KeePass databases (`*.kdbx`) (the file name, not a folder), plus per-repository `secret` patterns - and by
@@ -303,8 +305,9 @@ Encryption uses [age](https://age-encryption.org):
     the user chooses, so a restore needs only that passphrase.
     - The name carries 12 characters of the key's recipient, so `phx status` checks the copy that
       belongs to the current key.
-    - The encryption is scrypt, as `age -p` uses. The passphrase needs four words or 20
-      characters, typed twice: whoever can read the target can try passphrases at leisure.
+    - The encryption is scrypt, as `age -p` uses. The passphrase needs four different words of
+      three letters or more (15 letters in all) or 20 characters of which eight differ, typed
+      twice: whoever can read the target can try passphrases at leisure.
     - Without PSPhoenix it opens the same way: `age -d -i key-<id>.age file.age` asks for the
       passphrase.
     - A key without that copy is possible, but `phx init` asks twice: the shown key is then the
@@ -379,7 +382,8 @@ anything is written:
 - **Same plaintext, same file.** age output differs every time, so encrypting an unchanged secret
   again would give a new file every run, and the sync client would upload every secret every hour.
   The writer keeps the last ciphertext of each staged file in the state folder (`sealed/`). As long
-  as the plaintext and the recipient are the same, it stages that file again.
+  as the plaintext and the recipient are the same, it stages that file again. A provider's run
+  removes the ciphertexts of files it no longer stages encrypted.
 - **Without a key** the file is **held back**: never written to staging and not published, so a
   file already in the snapshot is removed there.
 - The warning, the run log and `phx status` name the file, the line and the kind, never the value:
@@ -473,8 +477,8 @@ are keyed by their path.
 The `claude` provider reads Claude Code's folder where Claude Code does: `CLAUDE_CONFIG_DIR` when
 set (with `.claude.json` inside it), else `~/.claude` and `~/.claude.json`. A project's folder is
 matched to a scanned repository by the name Claude Code derives from the repository's path - every
-character but a letter or digit made a dash - ignoring case, since the drive letter comes either
-way. Restore adds what is missing and leaves what is there, also when it differs (with a
+character but a letter or digit made a dash - compared as paths are on the platform: ignoring
+case on Windows, since the drive letter comes either way, exactly elsewhere. Restore adds what is missing and leaves what is there, also when it differs (with a
 warning): a settings file, a memory file, an MCP server. Of `~/.claude.json` it only adds MCP
 servers; the rest of the file stays as Claude Code wrote it. The engine (`ClaudeMcp`) reads and
 merges the file as JSON nodes: keys compared exactly - two projects whose paths differ only in case
@@ -508,7 +512,11 @@ One target can hold several machines side by side; restore picks one.
 - Publishing compares a staged file's hash with the one the state recorded at the last publish,
   so the target is not read back - in a OneDrive folder, reading can mean downloading. Those
   hashes count only for the snapshot folder they were published into: after a new target or a
-  renamed machine, the first publish compares with what is there.
+  renamed machine, the first publish compares with what is there. The same goes for the config
+  the snapshot carries (`config.json`), and a run reads `phoenix.json` once.
+- git runs with a time limit (5 minutes, a clone an hour) and never asks on a terminal
+  (`GIT_TERMINAL_PROMPT=0`): a hung share or a credential prompt nobody sees must not hold the
+  run.
 - Repository discovery is cached and refreshed daily, when a configured root is missing from the
   scan, or by `phx scan`.
 - Git-heavy work (`wip` bundles) runs only for repositories whose refs changed: one
