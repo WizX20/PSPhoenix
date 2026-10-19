@@ -47,7 +47,7 @@ foreach ($folder in 'Private', 'Providers') {
 $script:PhxPlanned = [ordered]@{
     restore  = 'M6'
 }
-$script:PhxCommands = @($script:PhxPlanned.Keys) + @('init', 'status', 'run', 'review', 'schedule', 'roots', 'scan', 'providers', 'version', 'help')
+$script:PhxCommands = @($script:PhxPlanned.Keys) + @('init', 'status', 'run', 'review', 'schedule', 'logs', 'roots', 'scan', 'providers', 'version', 'help')
 
 function Get-PhxVersion { (Get-Module PSPhoenix).Version }
 
@@ -68,6 +68,8 @@ USAGE:
   phx run [-Provider <name>]      one backup run now (the scheduled task calls this)
   phx schedule on|off|status      the background task; -Every 30m|1h|1d sets the interval
   phx review                      decide which gitignored files to back up
+  phx logs [<n>|errors]           the last runs; one run's log; what went wrong lately
+  phx logs verbose on|off         the detail of every run in its log, kept 7 days
   phx restore [-From <target>]    rebuild this machine from a snapshot                 (M6)
   phx providers                   what gets backed up on this platform
   phx version                     module version
@@ -137,6 +139,7 @@ function phx {
             'run' { Invoke-PhxRun -Provider $Provider }
             'review' { Invoke-PhxReview }
             'schedule' { Invoke-PhxScheduleCommand -Action $Arg -Every $Every }
+            'logs' { Invoke-PhxLogsCommand -Action $Arg -Value $Arg2 }
             'providers' { Show-PhxProviders }
             'version' { Write-Host "PSPhoenix $(Get-PhxVersion)" }
         }

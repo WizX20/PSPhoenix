@@ -380,7 +380,7 @@ Describe 'config' {
         $config.interval | Should -Be '1h'
         $config.providers.winget.enabled | Should -BeFalse
         # The defaults' spelling and order survive: a save writes 'version', never 'Version'.
-        @($config.Keys) | Should -Be @('version', 'roots', 'target', 'machine', 'interval', 'providers', 'accounts', 'secrets', 'files')
+        @($config.Keys) | Should -Be @('version', 'roots', 'target', 'machine', 'interval', 'providers', 'accounts', 'secrets', 'files', 'logging')
     }
 
     It 'refuses a config whose <Case>' -ForEach @(
@@ -4112,6 +4112,101 @@ Describe 'run' {
         finally { InModuleScope PSPhoenix { $script:PhxRunLogKeep = $script:SavedKeep } }
         $logs = Join-Path (InModuleScope PSPhoenix { Get-PhxStateDir }) 'logs'
         @(Get-ChildItem -LiteralPath $logs -Filter 'run-*.log') | Should -HaveCount 2
+    }
+
+    It 'logs the detail of a run when logging.verbose is on, and none when it is off (#93)' {
+        InModuleScope PSPhoenix {
+            Register-PhxProvider @{ Name = 'detail'; Description = 'stages through the stager'; Restore = {}; Status = {}
+                Backup = {
+                    param($Context)
+                    Write-PhxStagedText -Context $Context -Path 'notes.txt' -Value 'my notes'
+                    Write-Verbose 'detail looked at one thing'
+                }
+            }
+        }
+        $logOf = { Get-Content -LiteralPath (InModuleScope PSPhoenix { Read-PhxState }).lastRun.log -Raw }
+        Invoke-TestRun -Provider detail | Out-Null
+        & $logOf | Should -Not -Match 'verbose:'
+        Get-PhxOutput { phx logs verbose on } | Should -Match 'verbose logging on'
+        (InModuleScope PSPhoenix { Read-PhxConfig }).logging.verbose | Should -BeTrue
+        $output = Invoke-TestRun -Provider detail
+        $output | Should -Not -Match 'verbose:'
+        $log = & $logOf
+        $log | Should -Match '\[detail\] verbose: detail looked at one thing'
+        $log | Should -Match '\[detail\] verbose: notes\.txt: kept from the last run, plain'
+        $log | Should -Match '\[detail\] verbose: took \d+\.\ds'
+        $log | Should -Match '\[run\] verbose: published to '
+        Set-Content -LiteralPath (Join-Path (InModuleScope PSPhoenix { Get-PhxStagingPath 'detail' }) 'notes.txt') -Value 'changed in staging'
+        Invoke-TestRun -Provider detail | Out-Null
+        & $logOf | Should -Match '\[detail\] verbose: notes\.txt: staged, plain'
+        Get-PhxOutput { phx logs verbose off } | Should -Match 'verbose logging off'
+        Invoke-TestRun -Provider detail | Out-Null
+        & $logOf | Should -Not -Match 'verbose:'
+    }
+
+    It 'marks the warnings and errors a run shows in its log' {
+        InModuleScope PSPhoenix {
+            Register-PhxProvider @{ Name = 'grumpy'; Description = 'warns'; Restore = {}; Status = {}
+                Backup = { param($Context) & $Context.Log 'something is off' 'Warn' }
+            }
+        }
+        Invoke-TestRun -Provider grumpy | Out-Null
+        Get-Content -LiteralPath (InModuleScope PSPhoenix { Read-PhxState }).lastRun.log -Raw | Should -Match '\[grumpy\] warning: something is off'
+    }
+
+    It 'lists the runs, shows one, and gathers what went wrong (#93)' {
+        Get-PhxOutput { phx logs } | Should -Match 'no runs logged yet'
+        Invoke-TestRun | Out-Null
+        InModuleScope PSPhoenix {
+            Register-PhxProvider @{ Name = 'broken'; Description = 'fails'; Restore = {}; Status = {}
+                Backup = { param($Context) & $Context.Log 'it looks bad' 'Warn'; throw 'it broke' }
+            }
+        }
+        Start-Sleep -Milliseconds 20
+        Invoke-TestRun | Out-Null
+        $list = Get-PhxOutput { phx logs }
+        # The second run: slow is not due again; broken fails.
+        $list | Should -Match '(?m)^\s+1\s+\S+ \S+\s+\d+[.,]\ds\s+failed\s+1\s+1\s+alpha, broken \(failed\)'
+        $list | Should -Match '(?m)^\s+2\s+\S+ \S+\s+\d+[.,]\ds\s+ok\s+0\s+0\s+alpha, slow'
+        $one = Get-PhxOutput { phx logs 2 }
+        $one | Should -Match '\d\d:\d\d:\d\d \[alpha\]\s+alpha wrote its file'
+        $errors = Get-PhxOutput { phx logs errors }
+        $errors | Should -Match 'run 1 - .*failed'
+        $errors | Should -Match '\[broken\]\s+warning: it looks bad'
+        $errors | Should -Match '\[run\]\s+error: broken failed: it broke'
+        $errors | Should -Not -Match 'run 2'
+        { phx logs 9 -ErrorAction Stop } | Should -Throw '*there is no run 9*'
+        { phx logs nonsense -ErrorAction Stop } | Should -Throw '*phx logs*verbose on|off*'
+    }
+
+    It 'keeps verbose logs by age, not by count (#93)' {
+        InModuleScope PSPhoenix {
+            $dir = Get-PhxLogDir
+            [IO.Directory]::CreateDirectory($dir) | Out-Null
+            $now = [DateTime]::UtcNow
+            foreach ($day in 1..40) {
+                $file = Join-PhxPath $dir ('run-{0}.log' -f $now.AddHours(-$day * 5).ToString('yyyyMMdd-HHmmss-fff'))
+                [IO.File]::WriteAllText($file, '')
+                [IO.File]::SetLastWriteTimeUtc($file, $now.AddHours(-$day * 5))
+            }
+            New-PhxRunLog -KeepDays 7 -Now $now | Out-Null
+            # 33 of the 40 are younger than a week (5 hours apart), and the new one.
+            @(Get-PhxRunLogFile) | Should -HaveCount 34
+            New-PhxRunLog -Now $now.AddSeconds(1) | Out-Null
+            @(Get-PhxRunLogFile) | Should -HaveCount 30
+        }
+    }
+
+    It 'refuses a logging setting it cannot use' {
+        InModuleScope PSPhoenix {
+            $config = Read-PhxConfig
+            $config.logging = [ordered]@{ verbose = 'yes'; keepDays = 7 }
+            Save-PhxConfig $config
+            { Read-PhxConfig } | Should -Throw '*logging.verbose must be true or false*'
+            $config.logging = [ordered]@{ verbose = $true; keepDays = 0 }
+            Save-PhxConfig $config
+            { Read-PhxConfig } | Should -Throw '*logging.keepDays must be*'
+        }
     }
 }
 

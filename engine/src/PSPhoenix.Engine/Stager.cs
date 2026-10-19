@@ -68,6 +68,7 @@ public sealed class Stager
     private readonly Dictionary<string, StagedEntry> entries = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StagedRecord> records = new(StringComparer.Ordinal);
     private Dictionary<string, StagedRecord>? byStored;
+    private readonly HashSet<string> reused = new(StringComparer.Ordinal);
 
     /// <summary>A stager for the staging folder <paramref name="root"/>, encrypting with <paramref name="sealer"/> (none: secrets are held back).</summary>
     public Stager(string root, Sealer? sealer)
@@ -95,6 +96,9 @@ public sealed class Stager
 
     /// <summary>How many files were left as the last run staged them.</summary>
     public int Reused { get; private set; }
+
+    /// <summary>Whether the entry at <paramref name="relative"/> was left as the last run staged it.</summary>
+    public bool WasReused(string relative) => reused.Contains(relative.Replace('\\', '/'));
 
     /// <summary>The entry for <paramref name="path"/> (full, or relative to the root), or nothing.</summary>
     public StagedEntry? Find(string path) => entries.GetValueOrDefault(Relative(path));
@@ -266,6 +270,7 @@ public sealed class Stager
             }
         }
         Reused++;
+        reused.Add(relative);
         StagedEntry entry = new(relative, last.Stored, last.As, last.Findings);
         entries[relative] = entry;
         records[relative] = last;
