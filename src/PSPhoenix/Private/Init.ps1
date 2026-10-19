@@ -54,8 +54,8 @@ function Write-PhxInitStep {
 }
 
 function Select-PhxInitRoot {
-    # Step 1: the roots - the current ones and the usual folders that hold repositories, by number,
-    # or any path typed in.
+    # Step 1: the roots - the current ones and the usual folders that hold repositories, ticked in a
+    # list, or any path typed in.
     param([object[]]$Current = @())
     $offers = [Collections.Generic.List[object]]::new()
     foreach ($root in $Current) { $offers.Add([pscustomobject]@{ Path = $root.path; Depth = [int]$root.depth; Current = $true; Count = 0 }) }
@@ -70,22 +70,15 @@ function Select-PhxInitRoot {
     }
     $offers = @($offers | Where-Object { $_.Current -or $_.Count })
 
-    Write-PhxInitStep 'Roots - the folders that hold your repositories' "numbers from the list and/or paths, comma-separated; a new root searches $script:PhxDefaultRootDepth levels deep (later: phx roots add <path> -Depth <n>)"
-    for ($i = 0; $i -lt $offers.Count; $i++) {
-        $note = if ($offers[$i].Current) { '   (current)' } else { '' }
-        Write-Host ('  {0}. {1}   {2} repositories{3}' -f ($i + 1), $offers[$i].Path, $offers[$i].Count, $note)
-    }
-    $defaults = @(for ($i = 0; $i -lt $offers.Count; $i++) { if ($offers[$i].Current -or -not $Current.Count) { $i + 1 } })
+    Write-PhxInitStep 'Roots - the folders that hold your repositories' "a new root searches $script:PhxDefaultRootDepth levels deep (later: phx roots add <path> -Depth <n>)"
+    $labels = [string[]]@($offers | ForEach-Object { '{0}   {1} repositories{2}' -f $_.Path, $_.Count, $(if ($_.Current) { '   (current)' } else { '' }) })
+    $defaults = [int[]]@(for ($i = 0; $i -lt $offers.Count; $i++) { if ($offers[$i].Current -or -not $Current.Count) { $i } })
     while ($true) {
-        $answer = Read-PhxInitAnswer -Prompt '  Roots' -Default ($defaults -join ',')
+        $picked = @(Read-PhxChoice -Prompt 'Roots' -Options $labels -Default $defaults -Multi -Other 'another folder - type its path' -TypedHint 'and/or paths')
         try {
             $chosen = [Collections.Generic.List[object]]::new()
-            foreach ($token in @($answer -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
-                if ($token -match '^\d+$') {
-                    $number = [int]$token
-                    if ($number -lt 1 -or $number -gt $offers.Count) { throw "there is no number $token in the list" }
-                    $chosen.Add($offers[$number - 1])
-                }
+            foreach ($token in $picked) {
+                if ($token -is [int]) { $chosen.Add($offers[$token]) }
                 else {
                     $full = ConvertTo-PhxFullPath $token
                     if (-not [IO.Directory]::Exists($full)) { throw "no such folder: $full" }
@@ -137,12 +130,8 @@ function Select-PhxInitAccount {
         $fromHelpers = @($owner.Group | Where-Object { $_.helperAccount } | Group-Object { $_.helperAccount } | Sort-Object Count -Descending | ForEach-Object Name)
         $active = @($logins | Where-Object { $_.Host -eq $hostName -and $_.Active } | ForEach-Object Login)
         $default = @(@($configured) + $fromHelpers + $active + $names | Where-Object { $_ -and $choices -contains $_ })[0]
-        while ($true) {
-            $answer = Read-PhxInitAnswer -Prompt "  $($owner.Name) ($($owner.Count) repositories) - $($choices -join ' / ')" -Default $default
-            $match = @($choices | Where-Object { $_ -eq $answer })[0]
-            if ($match) { $result[$owner.Name] = $match; break }
-            Write-Host "  one of: $($choices -join ', ')" -ForegroundColor Yellow
-        }
+        $picked = @(Read-PhxChoice -Prompt "$($owner.Name) ($($owner.Count) repositories)" -Options ([string[]]$choices) -Default @([array]::IndexOf($choices, $default)))
+        $result[$owner.Name] = $choices[$picked[0]]
     }
     $result
 }
@@ -151,22 +140,18 @@ function Select-PhxInitTarget {
     # Step 4: the folder snapshots go to.
     param([System.Collections.IDictionary]$Current)
     $suggestions = @(Get-PhxTargetSuggestion)
-    Write-PhxInitStep 'Target - the folder snapshots go to' 'a synced folder (OneDrive, Dropbox), a NAS share or a USB disk; a number or a path'
-    for ($i = 0; $i -lt $suggestions.Count; $i++) { Write-Host ('  {0}. {1}   ({2})' -f ($i + 1), $suggestions[$i].Path, $suggestions[$i].Label) }
-    $default = @(@($Current.path) + @($suggestions | ForEach-Object Path) | Where-Object { $_ })[0]
+    Write-PhxInitStep 'Target - the folder snapshots go to' 'a synced folder (OneDrive, Dropbox), a NAS share or a USB disk'
+    $offers = [Collections.Generic.List[object]]::new()
+    if ($Current.path -and -not @($suggestions | Where-Object { [string]::Equals($_.Path, $Current.path, (Get-PhxPathComparison)) }).Count) {
+        $offers.Add([pscustomobject]@{ Path = "$($Current.path)"; Label = 'current' })
+    }
+    foreach ($suggestion in $suggestions) { $offers.Add($suggestion) }
+    $labels = [string[]]@($offers | ForEach-Object { '{0}   ({1})' -f $_.Path, $_.Label })
+    $default = @(for ($i = 0; $i -lt $offers.Count; $i++) { if ([string]::Equals($offers[$i].Path, $Current.path, (Get-PhxPathComparison))) { $i } })
+    if (-not $default.Count -and $offers.Count) { $default = @(0) }
     while ($true) {
-        $answer = Read-PhxInitAnswer -Prompt '  Target' -Default $default
-        if (-not $answer) { Write-Host '  a folder, please' -ForegroundColor Yellow; continue }
-        # A bare number picks from the list; a folder named like one is typed as a path (./2).
-        if ($answer -match '^\d+$') {
-            $number = 0
-            if (-not [int]::TryParse($answer, [ref]$number) -or $number -lt 1 -or $number -gt $suggestions.Count) {
-                Write-Host "  there is no number $answer in the list - a folder named ${answer}: .$([IO.Path]::DirectorySeparatorChar)$answer" -ForegroundColor Yellow
-                continue
-            }
-            $path = $suggestions[$number - 1].Path
-        }
-        else { $path = Get-PhxActualPath (ConvertTo-PhxFullPath $answer) }
+        $picked = @(Read-PhxChoice -Prompt 'Target' -Options $labels -Default ([int[]]$default) -Other 'another folder - type its path' -TypedHint 'or a path')
+        $path = if ($picked[0] -is [int]) { $offers[$picked[0]].Path } else { Get-PhxActualPath (ConvertTo-PhxFullPath $picked[0]) }
         if ([IO.File]::Exists($path)) { Write-Host "  $path is a file" -ForegroundColor Yellow; continue }
         if (-not [IO.Directory]::Exists($path) -and -not (Read-PhxInitYesNo -Prompt "  $path does not exist yet - create it when saving?")) { continue }
         if (-not @($suggestions | Where-Object { $_.Business -and [string]::Equals($_.Path, $path, (Get-PhxPathComparison)) }).Count) {
@@ -246,10 +231,14 @@ function Select-PhxInitSecret {
 function Select-PhxInitInterval {
     # Step 7: how often the background run goes.
     param([string]$Current)
-    Write-PhxInitStep 'Interval - how often the background run backs up' 'minutes, hours or days: 30m, 1h, 4h, 1d'
-    $default = if ($Current) { $Current } else { '1h' }
+    Write-PhxInitStep 'Interval - how often the background run backs up' 'from 15 minutes to 31 days'
+    $values = [Collections.Generic.List[string]]@('15m', '30m', '1h', '4h', '1d')
+    if ($Current -and $values -notcontains $Current) { $values.Add($Current) }
+    $labels = [string[]]@($values | ForEach-Object { if ($_ -eq '1h') { '1h   (recommended)' } else { $_ } })
+    $default = $values.IndexOf($(if ($Current) { $Current } else { '1h' }))
     while ($true) {
-        $answer = Read-PhxInitAnswer -Prompt '  Interval' -Default $default
+        $picked = @(Read-PhxChoice -Prompt 'Interval' -Options $labels -Default @($default) -Other 'another interval - type it (45m, 2h, 7d)' -TypedHint 'or an interval like 2h')
+        $answer = if ($picked[0] -is [int]) { $values[$picked[0]] } else { $picked[0] }
         if (Test-PhxInterval $answer) { return $answer }
         Write-Host '  like 30m, 1h or 1d - from 15m to 31d' -ForegroundColor Yellow
     }

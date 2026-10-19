@@ -69,6 +69,9 @@ BeforeAll {
     Mock Get-PhxScheduledTask -ModuleName PSPhoenix { }
     Mock Register-PhxScheduledTask -ModuleName PSPhoenix { $script:SchedulerLeaks.Add('register'); throw 'a test reached the Task Scheduler' }
     Mock Unregister-PhxScheduledTask -ModuleName PSPhoenix { $script:SchedulerLeaks.Add('unregister'); throw 'a test reached the Task Scheduler' }
+    # Nor the console's keys: a choice list asks for typed answers, which the tests script through
+    # Read-PhxAnswer. A test of the arrow keys turns it on and scripts Read-PhxKey.
+    Mock Test-PhxChoiceConsole -ModuleName PSPhoenix { $false }
     # From here on no test derives anything from the real home - not even a path printed in the
     # help. A test that needs a folder of its own calls Use-TestHome again for its path. (Pester
     # has no root-level BeforeEach.)
@@ -2377,6 +2380,96 @@ Describe 'a drive that is not there' -Skip:(-not $IsWindows) {
         $output = Get-PhxOutput { phx status -ErrorVariable failure -ErrorAction SilentlyContinue }
         $failure | Should -BeNullOrEmpty
         $output | Should -Match 'target\s+\w:\\Backup - folder not found'
+    }
+}
+
+Describe 'choice lists' {
+    # Read-PhxChoice (#86): the arrow keys on a console, typed answers elsewhere.
+    BeforeAll {
+        function script:New-TestKey {
+            param([ConsoleKey]$Key, [char]$Char = [char]0)
+            [ConsoleKeyInfo]::new($Char, $Key, $false, $false, $false)
+        }
+    }
+
+    It 'moves, wraps, ticks and accepts with the keys' {
+        $keys = @{}
+        foreach ($name in 'UpArrow', 'DownArrow', 'Enter', 'Escape', 'F5') { $keys[$name] = New-TestKey $name }
+        $keys.Spacebar = New-TestKey Spacebar ' '
+        $keys.A = New-TestKey A 'a'
+        $keys.Q = New-TestKey Q 'q'
+        InModuleScope PSPhoenix -Parameters @{ Keys = $keys } {
+            param($Keys)
+            $state = [pscustomobject]@{ Labels = @('a', 'b', 'c'); Other = $null; Rows = 3; Index = 0; Selected = [bool[]]@($true, $false, $false); Multi = $true }
+            Step-PhxChoice -State $state -Key $Keys.UpArrow | Should -Be 'move'
+            $state.Index | Should -Be 2
+            Step-PhxChoice -State $state -Key $Keys.Spacebar | Should -Be 'toggle'
+            @($state.Selected) | Should -Be @($true, $false, $true)
+            Step-PhxChoice -State $state -Key $Keys.A | Out-Null
+            @($state.Selected) | Should -Be @($true, $true, $true)
+            Step-PhxChoice -State $state -Key $Keys.A | Out-Null
+            @($state.Selected) | Should -Be @($false, $false, $false)
+            Step-PhxChoice -State $state -Key $Keys.DownArrow | Should -Be 'move'
+            $state.Index | Should -Be 0
+            Step-PhxChoice -State $state -Key $Keys.Enter | Should -Be 'accept'
+            Step-PhxChoice -State $state -Key $Keys.Escape | Should -Be 'cancel'
+            Step-PhxChoice -State $state -Key $Keys.Q | Should -Be 'cancel'
+            Step-PhxChoice -State $state -Key $Keys.F5 | Should -Be 'none'
+        }
+    }
+
+    It 'ticks rows on a console and returns them, the list giving way to one line' {
+        Mock Test-PhxChoiceConsole -ModuleName PSPhoenix { $true }
+        $script:Keys = [Collections.Generic.Queue[ConsoleKeyInfo]]::new([ConsoleKeyInfo[]]@(
+                (New-TestKey Spacebar ' '), (New-TestKey DownArrow), (New-TestKey Spacebar ' '), (New-TestKey DownArrow), (New-TestKey Spacebar ' '), (New-TestKey Enter)))
+        Mock Read-PhxKey -ModuleName PSPhoenix { $script:Keys.Dequeue() }
+        $output = Get-PhxOutput {
+            $script:Picked = InModuleScope PSPhoenix { @(Read-PhxChoice -Prompt 'Roots' -Options 'one', 'two', 'three' -Default 0 -Multi) }
+        }
+        @($script:Picked) | Should -Be @(1, 2)
+        $output | Should -Match '> \[x\] one'
+        $output | Should -Match 'Roots: two, three'
+    }
+
+    It 'asks for the text on the last row of a console list' {
+        Mock Test-PhxChoiceConsole -ModuleName PSPhoenix { $true }
+        $script:Keys = [Collections.Generic.Queue[ConsoleKeyInfo]]::new([ConsoleKeyInfo[]]@((New-TestKey UpArrow), (New-TestKey Enter)))
+        Mock Read-PhxKey -ModuleName PSPhoenix { $script:Keys.Dequeue() }
+        Mock Read-PhxAnswer -ModuleName PSPhoenix { '2h' }
+        $picked = InModuleScope PSPhoenix { @(Read-PhxChoice -Prompt 'Interval' -Options '1h', '4h' -Default 0 -Other 'another interval') } 6>$null
+        @($picked) | Should -Be @('2h')
+        @($picked)[0] | Should -BeOfType [string]
+    }
+
+    It 'stops on q or Esc on a console' {
+        Mock Test-PhxChoiceConsole -ModuleName PSPhoenix { $true }
+        Mock Read-PhxKey -ModuleName PSPhoenix { New-TestKey Escape }
+        { InModuleScope PSPhoenix { Read-PhxChoice -Prompt 'Target' -Options 'a', 'b' } 6>$null } | Should -Throw -ExceptionType ([OperationCanceledException])
+    }
+
+    It 'takes typed answers elsewhere: <Answer>' -ForEach @(
+        @{ Answer = ''; Multi = $true; Expected = @(0, 1) }
+        @{ Answer = '3, 1'; Multi = $true; Expected = @(2, 0) }
+        @{ Answer = 'TWO'; Multi = $false; Expected = @(1) }
+        @{ Answer = 'C:/elsewhere'; Multi = $false; Expected = @('C:/elsewhere') }
+    ) {
+        $script:Answer = $Answer
+        Mock Read-PhxAnswer -ModuleName PSPhoenix { if ($script:Answer) { $script:Answer } else { $Default } }
+        $picked = InModuleScope PSPhoenix -Parameters @{ Multi = $Multi } {
+            param($Multi)
+            @(Read-PhxChoice -Prompt 'Pick' -Options 'one', 'two', 'three' -Default 0, 1 -Multi:$Multi -Other 'something else')
+        } 6>$null
+        @($picked) | Should -Be $Expected
+    }
+
+    It 'asks again for a number that is not in the list, and stops on q' {
+        $script:Typed = [Collections.Generic.Queue[string]]::new([string[]]@('7', '2'))
+        Mock Read-PhxAnswer -ModuleName PSPhoenix { $script:Typed.Dequeue() }
+        $output = Get-PhxOutput { $script:Picked = InModuleScope PSPhoenix { @(Read-PhxChoice -Prompt 'Pick' -Options 'one', 'two') } }
+        $output | Should -Match 'there is no number 7 in the list'
+        @($script:Picked) | Should -Be @(1)
+        Mock Read-PhxAnswer -ModuleName PSPhoenix { 'q' }
+        { InModuleScope PSPhoenix { Read-PhxChoice -Prompt 'Pick' -Options 'one', 'two' } 6>$null } | Should -Throw -ExceptionType ([OperationCanceledException])
     }
 }
 
