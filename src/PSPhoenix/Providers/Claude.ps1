@@ -12,12 +12,13 @@
 # Snapshot: claude/home/<file>, claude/projects/<identity>/memory/..., claude/claude.json (the MCP
 # servers), and claude/claude-files.json - what is where, so a restore needs nothing else.
 
-$script:PhxClaudeFormat = 1
-# What the user wrote in ~/.claude: files at the top, and folders.
-$script:PhxClaudeHomeFiles = @('settings.json', 'CLAUDE.md', 'keybindings.json')
-$script:PhxClaudeHomeFolders = @('skills', 'commands', 'agents')
+$script:PhxClaudeFormat = [PSPhoenix.Engine.RestoreManifest]::ClaudeFormat
+# What the user wrote in ~/.claude: files at the top, and folders - the engine's list, so a restore
+# writes back only what a backup reads.
+$script:PhxClaudeHomeFiles = @([PSPhoenix.Engine.RestorePlanner]::ClaudeHomeFiles)
+$script:PhxClaudeHomeFolders = @([PSPhoenix.Engine.RestorePlanner]::ClaudeHomeFolders)
 # Folders a tool fills inside a skill, never the user's own work.
-$script:PhxClaudeSkip = @('node_modules', '.git', '.venv', 'venv', '__pycache__')
+$script:PhxClaudeSkip = @([PSPhoenix.Engine.RestorePlanner]::ClaudeSkipped)
 
 function Get-PhxClaudeDir {
     # Claude Code's folder: CLAUDE_CONFIG_DIR when set, as Claude Code reads it, else ~/.claude.
@@ -173,48 +174,26 @@ function Backup-PhxClaude {
 function Restore-PhxClaudeEntry {
     # One project's files into ~/.claude/projects/<name>: the name from the repository's new path,
     # or the one it had.
-    param([Parameter(Mandatory)][System.Collections.IDictionary]$Entry, [Parameter(Mandatory)]$Context, [Parameter(Mandatory)][System.Collections.IDictionary]$Counts)
-    $files = @($Entry.files | Where-Object { $_ })
-    $name = "$($Entry.name)"
-    if ($Entry.identity) {
-        if ($Context.Select.Count -and $Context.Select -notcontains $Entry.identity) { return }
+    param([Parameter(Mandatory)]$Entry, [Parameter(Mandatory)]$Context, [Parameter(Mandatory)][System.Collections.IDictionary]$Counts)
+    $files = @($Entry.Files)
+    $name = $Entry.Name
+    $label = $Entry.Name
+    if ($Entry.Identity) {
+        if ($Context.Select.Count -and $Context.Select -notcontains $Entry.Identity) { return }
+        $label = $Entry.Identity
         $repo = Resolve-PhxRestoreRepoPath -Entry $Entry -Context $Context
         if (-not $repo) {
-            & $Context.Log "$($Entry.identity): its root $($Entry.root) is not a path on this machine - map it to one; its memory is skipped" 'Warn'
+            & $Context.Log "$($Entry.Identity): its root $($Entry.Root) is not a path on this machine - map it to one; its memory is skipped" 'Warn'
             $Counts.skipped += $files.Count
             return
         }
         $name = ConvertTo-PhxClaudeProjectName $repo
     }
     elseif ($Context.Select.Count) { return }
-    if ($name -notmatch '^[A-Za-z0-9-]+$') { throw "project folder $name is not one Claude Code makes - refused" }
-    $target = Join-PhxPath (Join-PhxPath (Get-PhxClaudeDir) 'projects') $name
-    $source = [IO.Path]::GetFullPath((Join-PhxPath (Join-PhxPath $Context.Staging 'projects') "$($Entry.folder)"))
-    if (-not (Test-PhxPathWithin $source (Join-PhxPath $Context.Staging 'projects'))) { throw "its folder $($Entry.folder) leads out of the snapshot - refused" }
+    $source = Resolve-PhxRestorePath -Folder (Join-PhxPath $Context.Staging 'projects') -RelativePath $Entry.Folder
     foreach ($file in $files) {
-        Restore-PhxClaudeFile -Source (Join-PhxPath $source "$($file.stored)") -Target (Join-PhxPath $target "$($file.path)") -Within $target -SourceWithin $source -Encrypted:("$($file.stored)" -cne "$($file.path)") -Context $Context -Counts $Counts
+        Restore-PhxManifestFile -SourceFolder $source -File $file -TargetFolder (Get-PhxClaudeDir) -Prefix "projects/$name" -Scope ClaudeProject -Label $label -Context $Context -Counts $Counts
     }
-}
-
-function Restore-PhxClaudeFile {
-    # One file back, as repo-files does it: written when missing, left alone when the same or when
-    # it differs (with a warning), a secret decrypted with the restore's age key.
-    param(
-        [Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Target,
-        [Parameter(Mandatory)][string]$Within, [Parameter(Mandatory)][string]$SourceWithin,
-        [switch]$Encrypted, [Parameter(Mandatory)]$Context, [Parameter(Mandatory)][System.Collections.IDictionary]$Counts
-    )
-    $Target = [IO.Path]::GetFullPath($Target)
-    $Source = [IO.Path]::GetFullPath($Source)
-    if (-not (Test-PhxPathWithin $Target $Within) -or -not (Test-PhxPathWithin $Source $SourceWithin)) {
-        & $Context.Log "$Target leads out of where it belongs - refused" 'Warn'
-        $Counts.failed++
-        return
-    }
-    if (-not [IO.File]::Exists($Source)) { & $Context.Log "$Source is missing from the snapshot" 'Warn'; $Counts.failed++; return }
-    try { $result = Restore-PhxRepoFile -Source $Source -Target $Target -Encrypted:$Encrypted -Context $Context }
-    catch { & $Context.Log "${Target}: $(Hide-PhxSecret $_.Exception.Message)" 'Warn'; $result = 'failed' }
-    $Counts[$result]++
 }
 
 function Restore-PhxClaudeMcp {
@@ -269,25 +248,25 @@ function Restore-PhxClaude {
     param([Parameter(Mandatory)]$Context)
     $file = Join-PhxPath $Context.Staging 'claude-files.json'
     if (-not [IO.File]::Exists($file)) { & $Context.Log 'no Claude Code state in this snapshot'; return }
-    $manifest = ConvertTo-PhxCaseInsensitive (Get-Content -LiteralPath $file -Raw | ConvertFrom-Json -AsHashtable)
-    if ($manifest.format -gt $script:PhxClaudeFormat) { throw "$file was written by a newer PSPhoenix (format $($manifest.format)) - update PSPhoenix first" }
+    try { $manifest = [PSPhoenix.Engine.RestoreManifest]::ReadClaude($file) }
+    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
     $claude = Get-PhxClaudeDir
     $counts = [ordered]@{ restored = 0; present = 0; differs = 0; skipped = 0; failed = 0 }
     if (-not $Context.Select.Count) {
         $homeSource = Join-PhxPath $Context.Staging 'home'
-        foreach ($entry in @($manifest.home | Where-Object { $_ })) {
-            Restore-PhxClaudeFile -Source (Join-PhxPath $homeSource "$($entry.stored)") -Target (Join-PhxPath $claude "$($entry.path)") -Within $claude -SourceWithin $homeSource -Encrypted:("$($entry.stored)" -cne "$($entry.path)") -Context $Context -Counts $counts
+        foreach ($entry in $manifest.Home) {
+            Restore-PhxManifestFile -SourceFolder $homeSource -File $entry -TargetFolder $claude -Scope ClaudeHome -Label '~/.claude' -Context $Context -Counts $counts
         }
     }
-    foreach ($entry in @($manifest.projects | Where-Object { $_ })) {
+    foreach ($entry in $manifest.Projects) {
         try { Restore-PhxClaudeEntry -Entry $entry -Context $Context -Counts $counts }
-        catch { & $Context.Log "$(if ($entry.identity) { $entry.identity } else { $entry.name }): $($_.Exception.Message)" 'Warn'; $counts.failed += @($entry.files).Count }
+        catch { & $Context.Log "$(if ($entry.Identity) { $entry.Identity } else { $entry.Name }): $($_.Exception.Message)" 'Warn'; $counts.failed += @($entry.Files).Count }
     }
-    if ($manifest.claudeJson) {
-        $source = [IO.Path]::GetFullPath((Join-PhxPath $Context.Staging "$($manifest.claudeJson)"))
-        if ($manifest.claudeJson -notin 'claude.json', 'claude.json.age' -or -not [IO.File]::Exists($source)) { & $Context.Log "the MCP servers ($($manifest.claudeJson)) are missing from the snapshot" 'Warn'; $counts.failed++ }
+    if ($manifest.ClaudeJson) {
+        $source = Join-PhxPath $Context.Staging $manifest.ClaudeJson
+        if ($manifest.ClaudeJson -cnotin 'claude.json', 'claude.json.age' -or -not [IO.File]::Exists($source)) { & $Context.Log "the MCP servers ($($manifest.ClaudeJson)) are missing from the snapshot" 'Warn'; $counts.failed++ }
         else {
-            try { Restore-PhxClaudeMcp -Source $source -Encrypted:($manifest.claudeJson -eq 'claude.json.age') -Context $Context -Counts $counts }
+            try { Restore-PhxClaudeMcp -Source $source -Encrypted:($manifest.ClaudeJson -ceq 'claude.json.age') -Context $Context -Counts $counts }
             catch { & $Context.Log "MCP servers: $(Hide-PhxSecret $_.Exception.Message)" 'Warn'; $counts.failed++ }
         }
     }

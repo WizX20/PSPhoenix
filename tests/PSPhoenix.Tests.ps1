@@ -1267,8 +1267,8 @@ Describe 'repos provider' {
 
     It 'refuses a tampered inventory: <Case>' -ForEach @(
         @{ Case = 'a setting PSPhoenix does not record'; Tamper = { param($r) $r.settings += @{ key = 'core.hooksPath'; value = 'C:/evil' } }; InPlace = $false; Message = '*core.hooksPath is not a setting PSPhoenix records*' }
-        @{ Case = 'a path out of the root'; Tamper = { param($r) $r.path = '../../escaped' }; InPlace = $false; Message = '*leads out of the root*' }
-        @{ Case = 'a full path'; Tamper = { param($r) $r.path = (Join-Path $TestDrive 'full-path') }; InPlace = $false; Message = '*is not relative to its root*' }
+        @{ Case = 'a path out of the root'; Tamper = { param($r) $r.path = '../../escaped' }; InPlace = $false; Message = '*../../escaped: not a plain path*refused*' }
+        @{ Case = 'a full path'; Tamper = { param($r) $r.path = (Join-Path $TestDrive 'full-path') }; InPlace = $false; Message = '*full-path: not a relative path - refused*' }
         @{ Case = 'a URL that reads as an option'; Tamper = { param($r) $r.remotes.upstream.urls = @('--upload-pack=touch pwned') }; InPlace = $true; Message = "*has a URL starting with '-'*" }
     ) {
         Invoke-ReposBackup $snapshot | Out-Null
@@ -1708,8 +1708,23 @@ Describe 'repo-files provider' {
         Set-Content -LiteralPath (Join-Path $folder 'x') -Value 'x'
         @{ format = 1; repositories = @(@{ identity = 'github.com/WizX20/app'; root = $script:FilesRoot; path = 'App'; folder = 'evil'; files = @(@{ path = '../../outside.txt'; stored = 'x' }) }) } |
             ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $script:FilesStaging 'files.json')
-        { Invoke-FilesRestore $script:FilesStaging } | Should -Throw '*leads out of the repository*'
+        { Invoke-FilesRestore $script:FilesStaging } | Should -Throw '*not a plain path*refused*'
         Test-Path -LiteralPath (Join-Path $script:FilesHome 'outside.txt') | Should -BeFalse
+    }
+
+    It 'refuses a manifest that writes into .git, and one that is not what PSPhoenix writes (#71)' {
+        $folder = Join-Path $script:FilesStaging 'evil'
+        New-Item -ItemType Directory -Path $folder | Out-Null
+        Set-Content -LiteralPath (Join-Path $folder 'post-checkout') -Value 'echo pwned'
+        $manifest = Join-Path $script:FilesStaging 'files.json'
+        @{ format = 1; repositories = @(@{ identity = 'github.com/WizX20/app'; root = $script:FilesRoot; path = 'App'; folder = 'evil'; files = @(@{ path = '.git/hooks/post-checkout'; stored = 'post-checkout' }) }) } |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifest
+        { Invoke-FilesRestore $script:FilesStaging } | Should -Throw '*inside .git - refused*'
+        Test-Path -LiteralPath (Join-Path $script:FilesRepo '.git/hooks/post-checkout') | Should -BeFalse
+
+        @{ format = 1; repositories = @(@{ identity = 'github.com/WizX20/app'; root = $script:FilesRoot; path = @('App'); folder = 'evil' }) } |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifest
+        { Invoke-FilesRestore $script:FilesStaging } | Should -Throw '*repositories?0?.path is not a text*'
     }
 
     It 'keeps the files of a repository it cannot read now in the snapshot' {
@@ -2189,8 +2204,23 @@ Describe 'claude provider' {
         New-TestFile (Join-Path $staging 'home/x') 'x'
         @{ format = 1; home = @(@{ path = '../../outside.txt'; stored = 'x' }); projects = @() } | ConvertTo-Json -Depth 5 |
             Set-Content -LiteralPath (Join-Path $staging 'claude-files.json')
-        { Invoke-ClaudeRestore $staging } | Should -Throw '*leads out of where it belongs*'
+        { Invoke-ClaudeRestore $staging } | Should -Throw '*not a plain path*refused*'
         Test-Path -LiteralPath (Join-Path $script:ClaudeHome 'outside.txt') | Should -BeFalse
+    }
+
+    It 'restores into Claude Code''s folder only what a backup reads from it (#71)' {
+        $staging = Join-Path $script:ClaudeHome 'evil'
+        New-TestFile (Join-Path $staging 'home/x') 'x'
+        New-TestFile (Join-Path $staging 'projects/p/x') 'x'
+        @{ format = 1
+            home = @(@{ path = '.credentials.json'; stored = 'x' })
+            projects = @(@{ name = 'C--Other'; folder = 'p'; files = @(@{ path = 'settings.json'; stored = 'x' }) })
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $staging 'claude-files.json')
+        $output = { Invoke-ClaudeRestore $staging } | Should -Throw -PassThru
+        $output.Exception.Message | Should -Match "\.credentials\.json: not a file the claude provider backs up - refused"
+        $output.Exception.Message | Should -Match 'projects/C--Other/settings\.json: not a project file the claude provider backs up - refused'
+        $output.Exception.Message | Should -Match '2 Claude Code item\(s\) could not be restored'
+        Get-Content -LiteralPath (Join-Path $script:ClaudeDir '.credentials.json') -Raw | Should -Not -Match '^x'
     }
 
     It 'keeps the last backup when Claude Code''s folder is gone, and is quiet where there never was one (#69)' {
