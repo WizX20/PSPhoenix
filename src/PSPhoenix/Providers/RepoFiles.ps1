@@ -9,7 +9,7 @@
 # Snapshot: repo-files/<identity>/<path>, and files.json - which repository each folder belongs to
 # (its root and path) and which files are in it, so a restore needs nothing else.
 
-$script:PhxRepoFilesFormat = 1
+$script:PhxRepoFilesFormat = [PSPhoenix.Engine.RestoreManifest]::RepoFilesFormat
 
 function Get-PhxRepoFilesStatePath { Join-PhxPath (Get-PhxStateDir) 'repo-files.json' }
 
@@ -196,78 +196,73 @@ function Backup-PhxRepoFiles {
     & $Context.Log "$copied file(s) from $($manifest.Count) repositories$note"
 }
 
+function Resolve-PhxRestorePath {
+    # The full path of a manifest's relative path below $Folder (`.` is $Folder itself), through the
+    # engine: refused when it is not a plain relative path, leads into .git or out of $Folder.
+    param([Parameter(Mandatory)][string]$Folder, [Parameter(Mandatory)][string]$RelativePath)
+    try { [PSPhoenix.Engine.RestorePlanner]::Below($Folder, $RelativePath) }
+    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
+}
+
 function Resolve-PhxRestoreRepoPath {
     # Where a recorded repository lives on this machine: under its root, or the new root the
     # restore maps it to. Nothing when the root is no path here (C:\Repos on Linux, unmapped).
-    param([Parameter(Mandatory)][System.Collections.IDictionary]$Entry, [Parameter(Mandatory)]$Context)
+    param([Parameter(Mandatory)]$Entry, [Parameter(Mandatory)]$Context)
     $root = if ($Context.RootMap.Contains("$($Entry.root)")) { $Context.RootMap["$($Entry.root)"] } else { "$($Entry.root)" }
     if (-not [IO.Path]::IsPathFullyQualified($root)) { return }
-    if ([IO.Path]::IsPathRooted("$($Entry.path)")) { throw "its path $($Entry.path) is not relative to its root - refused" }
-    $path = Get-PhxRepoPath -Root $root -RelativePath $Entry.path
-    if (-not (Test-PhxPathWithin $path $root)) { throw "its path $($Entry.path) leads out of the root $root - refused" }
-    $path
+    Resolve-PhxRestorePath -Folder $root -RelativePath "$($Entry.path)"
 }
 
-function Restore-PhxRepoFile {
-    # One file back into a repository: written when it is not there, left alone when it is the
-    # same, and when it differs too - with a warning. A secret is decrypted with the age key the
-    # restore was given. Returns restored, present, differs or skipped.
-    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Target, [switch]$Encrypted, [Parameter(Mandatory)]$Context)
-    $bytes = [IO.File]::ReadAllBytes($Source)
-    if ($Encrypted) {
-        if (-not $Context.Identity) { & $Context.Log "$Target is encrypted and this restore has no age key - skipped" 'Warn'; return 'skipped' }
-        try { $bytes = [PSPhoenix.Engine.Age]::Decrypt($bytes, $Context.Identity) }
-        catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
+function Restore-PhxManifestFile {
+    # One file of a manifest back, through the engine (RestorePlanner): written when it is not
+    # there, left alone when it is the same, and when it differs too - with a warning. A secret is
+    # decrypted with the age key the restore was given. The outcome is counted; a refused path or a
+    # file missing from the snapshot counts as failed.
+    param(
+        [Parameter(Mandatory)][string]$SourceFolder, [Parameter(Mandatory)]$File, [Parameter(Mandatory)][string]$TargetFolder,
+        [string]$Prefix = '', [Parameter(Mandatory)][ValidateSet('Repository', 'ClaudeHome', 'ClaudeProject')][string]$Scope,
+        [Parameter(Mandatory)][string]$Label, [Parameter(Mandatory)]$Context, [Parameter(Mandatory)][System.Collections.IDictionary]$Counts
+    )
+    try { $result = [PSPhoenix.Engine.RestorePlanner]::Restore($SourceFolder, $File, $TargetFolder, $Prefix, $Scope, $Context.Identity, [bool]$Context.DryRun) }
+    catch {
+        $problem = if ($_.Exception -is [System.Management.Automation.MethodInvocationException]) { $_.Exception.InnerException } else { $_.Exception }
+        & $Context.Log "${Label}: $(Hide-PhxSecret $problem.Message)" 'Warn'
+        $Counts.failed++
+        return
     }
-    if ([IO.File]::Exists($Target)) {
-        if ([Linq.Enumerable]::SequenceEqual([byte[]]$bytes, [byte[]][IO.File]::ReadAllBytes($Target))) { return 'present' }
-        & $Context.Log "$Target differs from the backup - left as it is" 'Warn'
-        return 'differs'
+    switch ("$($result.Outcome)") {
+        'Restored' { if ($Context.DryRun) { & $Context.Log "would restore $($result.Target)" 'Action' } }
+        'Differs' { & $Context.Log "$($result.Target) differs from the backup - left as it is" 'Warn' }
+        'Skipped' { & $Context.Log "$($result.Target) is encrypted and this restore has no age key - skipped" 'Warn' }
     }
-    if ($Context.DryRun) { & $Context.Log "would restore $Target" 'Action'; return 'restored' }
-    try { [PSPhoenix.Engine.AtomicFile]::WriteAllBytes($Target, $bytes) }
-    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
-    'restored'
+    $Counts["$($result.Outcome)".ToLowerInvariant()]++
 }
 
 function Restore-PhxRepoFiles {
     # The backed-up gitignored files back into each repository's place on this machine - after the
     # repos provider has cloned it. Idempotent: a second run finds every file in place.
     param([Parameter(Mandatory)]$Context)
-    $manifest = Read-PhxRepoFilesManifest $Context.Staging
-    if (-not $manifest) { & $Context.Log 'no gitignored files in this snapshot'; return }
+    $file = Join-PhxPath $Context.Staging 'files.json'
+    if (-not [IO.File]::Exists($file)) { & $Context.Log 'no gitignored files in this snapshot'; return }
+    try { $manifest = [PSPhoenix.Engine.RestoreManifest]::ReadRepoFiles($file) }
+    catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
     $counts = [ordered]@{ restored = 0; present = 0; differs = 0; skipped = 0; failed = 0 }
-    foreach ($entry in @($manifest.repositories | Where-Object { $_ })) {
-        if ($Context.Select.Count -and $Context.Select -notcontains $entry.identity) { continue }
-        $files = @($entry.files | Where-Object { $_ })
-        try { $repo = Resolve-PhxRestoreRepoPath -Entry $entry -Context $Context }
-        catch { & $Context.Log "$($entry.identity): $($_.Exception.Message)" 'Warn'; $counts.failed += $files.Count; continue }
+    foreach ($entry in $manifest.Repositories) {
+        if ($Context.Select.Count -and $Context.Select -notcontains $entry.Identity) { continue }
+        $files = @($entry.Files)
+        try {
+            $repo = Resolve-PhxRestoreRepoPath -Entry $entry -Context $Context
+            $folder = Resolve-PhxRestorePath -Folder $Context.Staging -RelativePath $entry.Folder
+        }
+        catch { & $Context.Log "$($entry.Identity): $($_.Exception.Message)" 'Warn'; $counts.failed += $files.Count; continue }
         if (-not $repo -or -not [IO.Directory]::Exists($repo)) {
-            $where = if ($repo) { "$repo not found" } else { "its root $($entry.root) is not a path on this machine - map it to one" }
-            & $Context.Log "$($entry.identity): $where - its $($files.Count) file(s) skipped; restore the repository first" 'Warn'
+            $where = if ($repo) { "$repo not found" } else { "its root $($entry.Root) is not a path on this machine - map it to one" }
+            & $Context.Log "$($entry.Identity): $where - its $($files.Count) file(s) skipped; restore the repository first" 'Warn'
             $counts.skipped += $files.Count
             continue
         }
-        $folder = [IO.Path]::GetFullPath((Join-PhxPath $Context.Staging "$($entry.folder)"))
-        if (-not (Test-PhxPathWithin $folder $Context.Staging)) {
-            & $Context.Log "$($entry.identity): its folder $($entry.folder) leads out of the snapshot - refused" 'Warn'
-            $counts.failed += $files.Count
-            continue
-        }
-        foreach ($file in $files) {
-            $target = [IO.Path]::GetFullPath((Join-PhxPath $repo "$($file.path)"))
-            $source = [IO.Path]::GetFullPath((Join-PhxPath $folder "$($file.stored)"))
-            # The manifest names places inside the repository and the snapshot, nothing else.
-            if ([string]::Equals($target, $repo, (Get-PhxPathComparison)) -or -not (Test-PhxPathWithin $target $repo) -or -not (Test-PhxPathWithin $source $folder)) {
-                & $Context.Log "$($entry.identity): $($file.path) leads out of the repository - refused" 'Warn'
-                $counts.failed++
-                continue
-            }
-            if (-not [IO.File]::Exists($source)) { & $Context.Log "$($entry.identity): $($file.stored) is missing from the snapshot" 'Warn'; $counts.failed++; continue }
-            $encrypted = "$($file.stored)" -cne "$($file.path)"
-            try { $result = Restore-PhxRepoFile -Source $source -Target $target -Encrypted:$encrypted -Context $Context }
-            catch { & $Context.Log "${target}: $(Hide-PhxSecret $_.Exception.Message)" 'Warn'; $result = 'failed' }
-            $counts[$result]++
+        foreach ($one in $files) {
+            Restore-PhxManifestFile -SourceFolder $folder -File $one -TargetFolder $repo -Scope Repository -Label $entry.Identity -Context $Context -Counts $counts
         }
     }
     $verb = if ($Context.DryRun) { 'would be ' } else { '' }

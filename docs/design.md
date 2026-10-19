@@ -226,8 +226,9 @@ files, so a restore needs nothing else. The same remote cloned twice gets a seco
 backup. Restore copies each file back into the repository's place on the new machine (root
 mapped), after the clone: it decrypts a secret with the age key it is given, skips one without a
 key, leaves a file that is the same alone, and never overwrites one that differs - it says so.
-The manifest is not trusted blindly: a path leading out of the repository or the snapshot is
-refused.
+The manifest is not trusted blindly - see [A snapshot is trusted input](#github-accounts): a
+path that is not plain and relative, leads into `.git` or into a repository of its own, or out of
+the repository or the snapshot is refused, as is a link on the way.
 
 Per repository, generated config is excluded once and stays excluded. Example: in a repository
 whose `task configure` writes `appsettings.*.local.json` and `.env.local` from `config.local.env`,
@@ -288,6 +289,22 @@ config. Restore therefore refuses whatever PSPhoenix itself would never have wri
 key outside the recorded set (`core.hooksPath`, `core.fsmonitor`), a URL git could read as an
 option, a repository path that is absolute or leads out of its root - and `phx restore` (M6) shows
 the helpers, SSH commands and include paths it is about to apply before it applies them.
+
+Files come back through the engine (`RestoreManifest`, `RestorePlanner`), the same way for every
+provider that restores files:
+
+- **A manifest is read strictly**: every value of its type, a format this version knows. One that
+  is not what PSPhoenix writes is refused as a whole.
+- **A path is refused** when it is not plain and relative (rooted, `..`, `\`, and on Windows a
+  stream `:`, a device name, a trailing dot or space), when any segment is `.git` - in any case,
+  and on Windows also as `.git.` or its short name `GIT~1` - and when it lies outside what its
+  provider backs up: of `~/.claude` only the selection the claude provider reads (never
+  `.credentials.json`), of a project only its memory and transcripts. A stored name is the path or
+  the path with `.age`, inside the snapshot.
+- **Writing** refuses a link on the way and a folder that is a repository of its own inside the
+  repository, and creates a file only when nothing is there: written to a temporary name and moved
+  into place without overwrite, so a file that appears in the meantime is compared, never
+  replaced.
 
 ## Secrets
 
@@ -677,7 +694,9 @@ with its own xUnit tests):
 - the discovery walk under each root (`RepositoryFinder`) - see [Concepts](#concepts);
 - the gitignored files of a repository through the built-in filters (`IgnoredFiles`), and the
   review's patterns and decisions (`PathPattern`, `FileRules`) - see
-  [Gitignored files](#gitignored-files-filters-and-review).
+  [Gitignored files](#gitignored-files-filters-and-review);
+- restoring files: the manifests and what a restore may write where (`RestoreManifest`,
+  `RestorePlanner`) - see [A snapshot is trusted input](#github-accounts).
 
 It targets .NET 8, what PowerShell 7.4 runs on, and depends on nothing but .NET: PowerShell calls
 its public classes, and an exception it throws reaches the user as its own message. The module
