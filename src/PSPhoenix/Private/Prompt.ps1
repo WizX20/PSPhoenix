@@ -158,7 +158,9 @@ function Read-PhxChoiceByKey {
         Selected = [bool[]]@(for ($i = 0; $i -lt $Options.Count; $i++) { $Default -contains $i })
         Multi    = [bool]$Multi
     }
-    $width = try { [Console]::WindowWidth } catch { 120 }
+    # A console without a size (a redirected or headless one reports 0) gets the usual width.
+    $width = try { [Console]::WindowWidth } catch { 0 }
+    if ($width -lt 20) { $width = 120 }
     $keys = if ($Multi) { 'up/down to move, space ticks, a ticks all, Enter accepts, q stops' } else { 'up/down to move, Enter chooses, q stops' }
     Write-Host "  $Prompt - $keys" -ForegroundColor DarkGray
     $escape = [char]27
