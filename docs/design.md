@@ -589,6 +589,8 @@ phx init                          wizard: roots, discovery, accounts, target, ma
 phx run [-Provider <name>]        one backup run now (what the scheduled task calls)
 phx status                        last run, changes, pending review items, local-only work, warnings
 phx review                        decide on pending gitignored candidates (see Gitignored files)
+phx logs [<n>|errors]             the last runs, one run's log, recent warnings and errors
+phx logs verbose on|off           the detail of every run in its log (see Logging)
 phx scan                          re-discover repositories under the roots
 phx roots add|rm|list             manage roots; add takes -Depth <n> (1-10, default 3); roots
                                   may not overlap - discovery would see repositories twice
@@ -635,6 +637,22 @@ even when it fails half-way, and `phx status` shows when it was, whether it fail
 log is. `phx-task.ps1` exits 1 when the run failed, but under `conhost --headless` the Task
 Scheduler only sees conhost's own result - the state is where the outcome is read.
 
+### Logging
+
+A line in a run's log is `<UTC time> [<source>] <text>`: the source is `run`, `scan` or a provider.
+A line the run shows in yellow is marked `warning:`, one in red `error:`.
+
+- **`phx logs`** lists the last runs, newest first and numbered: when, how long, the result,
+  warnings and errors, and each provider with whether it failed. `phx logs <n>` shows one run's
+  log with local times, and `phx logs errors` the warnings and errors of the last ten runs.
+- **`phx logs verbose on`** sets `logging.verbose` in the config, which every run reads, the
+  scheduled one included: the task does not change. A verbose run also logs, marked `verbose:`,
+  per provider its time, per repository whether git was asked again or the scan's record was
+  reused, and why, per staged file whether it was kept from the last run or staged again, plain,
+  encrypted or held back, and where it published. It never logs a value: file names and counts
+  only, masked like every line. Verbose logs are kept by age, `logging.keepDays` (default 7),
+  instead of the newest 30. `phx logs verbose off` goes back to the newest 30.
+
 ## Restore sequence
 
 0. Install PSPhoenix, git, `gh` and age (or let step 2 do the rest).
@@ -668,6 +686,7 @@ itself is part of every snapshot.
   "providers": { "winget": { "enabled": true, "cadence": "1d" }, "claude": { "transcripts": false } },
   "accounts": { "github.com/WizX20": "WizX20", "github.com/summitnl": "wpaap" },
   "secrets": { "recipient": "age1..." },
+  "logging": { "verbose": false, "keepDays": 7 },
   "files": {
     "maxKB": 1024,
     "exclude": [],
@@ -685,7 +704,8 @@ itself is part of every snapshot.
 
 A root needs a full path; a hand-written one without `depth` gets 3, and a depth outside 1-10 is an
 error, like any other invalid config: an `interval` that is not 15m to 31d, a `providers.<name>` that
-is not an object, an `enabled` that is not true or false, a `cadence` that is not a duration.
+is not an object, an `enabled` that is not true or false, a `cadence` that is not a duration, a
+`logging.verbose` that is not true or false, a `logging.keepDays` outside 1-365.
 
 ## Engine
 

@@ -1,0 +1,2 @@
+- added: logs - `phx logs` lists the last runs (when, how long, result, warnings, errors, providers), `phx logs <n>` shows one run and `phx logs errors` what went wrong lately; the run log marks warnings and errors (#93)
+- added: logs - `phx logs verbose on|off` (config `logging.verbose`) puts the detail of every run, the scheduled one included, in its log - per provider its time, per repository whether git was asked again, per file how it was staged - and keeps those logs by age, `logging.keepDays` (default 7) (#93)

@@ -16,6 +16,8 @@ function New-PhxDefaultConfig {
         accounts  = [ordered]@{}
         secrets   = [ordered]@{ recipient = $null }
         files     = [ordered]@{ maxKB = 1024; exclude = @(); repos = [ordered]@{} }
+        # verbose: the detail of every run in its log, kept keepDays days (phx logs verbose on).
+        logging   = [ordered]@{ verbose = $false; keepDays = 7 }
     }
 }
 
@@ -64,6 +66,11 @@ function Read-PhxConfig {
         throw "config ${path}: secrets.recipient $why"
     }
     Assert-PhxFilesConfig -Files $merged.files -ConfigPath $path
+    if ($merged.logging -isnot [System.Collections.IDictionary]) { throw "config ${path}: logging must be an object" }
+    if ($merged.logging.verbose -isnot [bool]) { throw "config ${path}: logging.verbose must be true or false" }
+    if (($merged.logging.keepDays -isnot [int] -and $merged.logging.keepDays -isnot [long]) -or $merged.logging.keepDays -lt 1 -or $merged.logging.keepDays -gt 365) {
+        throw "config ${path}: logging.keepDays must be a whole number of days, 1 to 365"
+    }
     # The machine name becomes a folder in the target: ..\x must not lead out of it.
     if ($merged.machine -isnot [System.Collections.IDictionary]) { throw "config ${path}: machine must be an object" }
     if ($merged.machine.name -and -not (Test-PhxMachineName "$($merged.machine.name)")) { throw "config ${path}: machine name '$($merged.machine.name)' is not a folder name - letters, digits, dot, dash, underscore" }

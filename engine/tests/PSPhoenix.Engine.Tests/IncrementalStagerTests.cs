@@ -24,6 +24,8 @@ public sealed class IncrementalStagerTests : IDisposable
         StagedEntry entry = second.CopyFile(source, temp["staging", "notes.md"]);
 
         second.Reused.Should().Be(1);
+        second.WasReused("notes.md").Should().BeTrue();
+        first.WasReused("notes.md").Should().BeFalse();
         entry.Should().Match<StagedEntry>(e => e.As == StagedAs.Plain && e.Stored == "notes.md");
         File.GetLastWriteTimeUtc(temp["staging", "notes.md"]).Should().Be(written);
         second.KnownHash("notes.md").Should().Be(FileHash.Sha256(temp["staging", "notes.md"]));

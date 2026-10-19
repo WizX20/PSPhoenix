@@ -76,10 +76,13 @@ function Backup-PhxRepos {
         # Unchanged since the scan read it - the same config, HEAD, refs and includes: no git call.
         $stamp = if ($record.stamp) { Get-PhxRepoStamp -Path $path -Primary $record.primaryRemote -Includes @($record.includeFiles) }
         if ($stamp -and $stamp -ceq $record.stamp) {
+            Write-Verbose "${path}: unchanged since the scan - git not asked"
             $now = $record
             foreach ($warning in @($record.warnings | Where-Object { $_ })) { & $Context.Log $warning 'Warn' }
         }
         else {
+            $why = if (-not $record.stamp) { 'the scan has no stamp for it' } elseif (-not $stamp) { 'its files could not be stamped' } else { 'its config, HEAD, refs, attributes or includes changed since the scan' }
+            Write-Verbose "${path}: read again - $why"
             try { $now = Get-PhxRepoRecord -Root $record.root -Path $path }
             catch {
                 & $Context.Log "could not read ${path}: $(Hide-PhxSecret $_.Exception.Message) - recorded from the last scan" 'Warn'

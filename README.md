@@ -83,6 +83,7 @@ phx init                 # roots, accounts, a target (try a new folder first), m
 phx review               # decide on what is still pending - a folder or a pattern at a time
 phx run                  # one backup now
 phx status               # what is set up, the last run, and what needs attention
+phx logs                 # the last runs, the scheduled ones included; phx logs verbose on for their detail
 ```
 
 Then look in `<target>\<machine>`: one folder per provider, `phoenix.json`, your config, and the passphrase-protected copy of your age key. A second `phx run` with nothing changed writes nothing and says how many files it did not read again.
@@ -107,6 +108,8 @@ USAGE:
   phx run [-Provider <name>]      one backup run now (the scheduled task calls this)
   phx schedule on|off|status      the background task; -Every 30m|1h|1d sets the interval
   phx review                      decide which gitignored files to back up
+  phx logs [<n>|errors]           the last runs; one run's log; what went wrong lately
+  phx logs verbose on|off         the detail of every run in its log, kept 7 days
   phx restore [-From <target>]    rebuild this machine from a snapshot                 (M6)
   phx providers                   what gets backed up on this platform
   phx version                     module version

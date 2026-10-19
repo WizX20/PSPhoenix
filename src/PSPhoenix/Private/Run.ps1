@@ -7,6 +7,8 @@
 
 $script:PhxRunLogKeep = 30
 $script:PhxRunLog = $null
+# logging.verbose in the config: the detail of a run goes into its log (docs/design.md -> Logging).
+$script:PhxRunVerbose = $false
 
 function Write-PhxRunLog {
     # One line into this run's log file, if one is open: UTC time, the source in brackets, the text.
@@ -25,8 +27,10 @@ function Invoke-PhxLogged {
     param([Parameter(Mandatory)][scriptblock]$Action, [string]$Source = 'run')
     # Whatever the caller passed as -ErrorAction or -WarningAction: here a written error is caught
     # and counted, and a warning logged - the same for phx run by hand and for the scheduled run.
+    # Write-Verbose detail goes into the log - not on screen - when the config asks for it.
     $ErrorActionPreference = 'Continue'
     $WarningPreference = 'Continue'
+    $VerbosePreference = if ($script:PhxRunVerbose) { 'Continue' } else { 'SilentlyContinue' }
     $errors = [Collections.Generic.List[string]]::new()
     & $Action *>&1 | ForEach-Object {
         if ($_ -is [System.Management.Automation.WarningRecord]) {
@@ -40,15 +44,16 @@ function Invoke-PhxLogged {
             Write-Host "  error: $text" -ForegroundColor Red
             $errors.Add($text)
         }
-        elseif ($_ -is [System.Management.Automation.VerboseRecord] -or $_ -is [System.Management.Automation.DebugRecord]) { }
+        elseif ($_ -is [System.Management.Automation.VerboseRecord]) { Write-PhxRunLog -Message "verbose: $($_.Message)" -Source $Source }
+        elseif ($_ -is [System.Management.Automation.DebugRecord]) { }
         elseif ($_ -is [System.Management.Automation.InformationRecord]) {
             $data = $_.MessageData
             # A token a provider prints is masked on screen as in the log: a console can be recorded.
             $text = Hide-PhxSecret $(if ($data -is [System.Management.Automation.HostInformationMessage]) { $data.Message } else { "$data" })
-            Write-PhxRunLog -Message $text -Source $Source
             # A line without a colour of its own carries the host's, which is -1 - no colour - on a
             # host without a console (a CI runner, a redirected run): not one Write-Host takes.
             $color = if ($data -is [System.Management.Automation.HostInformationMessage]) { $data.ForegroundColor }
+            Write-PhxRunLog -Message ((Get-PhxLogLevel $color) + $text.Trim()) -Source $Source
             if ($null -ne $color -and [Enum]::IsDefined([ConsoleColor], $color)) { Write-Host $text -ForegroundColor $color }
             else { Write-Host $text }
         }
@@ -61,8 +66,26 @@ function Write-PhxRunLine {
     # A line of the run itself: to the host and to the log.
     param([Parameter(Mandatory)][string]$Message, [string]$Color)
     $Message = Hide-PhxSecret $Message
-    Write-PhxRunLog -Message $Message
+    Write-PhxRunLog -Message ((Get-PhxLogLevel $Color) + $Message.Trim())
     if ($Color) { Write-Host $Message -ForegroundColor $Color } else { Write-Host $Message }
+}
+
+function Get-PhxLogLevel {
+    # What a line's colour says, as the log marks it: a yellow line is a warning, a red one an
+    # error - phx logs counts them. Nothing for the rest.
+    param($Color)
+    if ($null -eq $Color -or -not [Enum]::IsDefined([ConsoleColor], $Color)) { return '' }
+    switch ([ConsoleColor]$Color) {
+        { $_ -in 'Yellow', 'DarkYellow' } { return 'warning: ' }
+        { $_ -in 'Red', 'DarkRed' } { return 'error: ' }
+    }
+    ''
+}
+
+function Write-PhxRunDetail {
+    # A line of detail for the log only, when logging.verbose is on.
+    param([Parameter(Mandatory)][string]$Message, [string]$Source = 'run')
+    if ($script:PhxRunVerbose) { Write-PhxRunLog -Message "verbose: $Message" -Source $Source }
 }
 
 function Open-PhxRunLock {
@@ -75,13 +98,17 @@ function Open-PhxRunLock {
 }
 
 function New-PhxRunLog {
-    # A fresh log file for this run, and the oldest ones beyond the last $script:PhxRunLogKeep gone.
-    $dir = Join-PhxPath (Get-PhxStateDir) 'logs'
+    # A fresh log file for this run. The older ones go: beyond the newest $script:PhxRunLogKeep, or
+    # with -KeepDays (logging.verbose) those older than that many days - a week of detail to look
+    # back on, whatever the interval.
+    param([int]$KeepDays = 0, [datetime]$Now = [DateTime]::UtcNow)
+    $dir = Get-PhxLogDir
     [IO.Directory]::CreateDirectory($dir) | Out-Null
-    $path = Join-PhxPath $dir ('run-{0}.log' -f [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff'))
+    $path = Join-PhxPath $dir ('run-{0}.log' -f $Now.ToString('yyyyMMdd-HHmmss-fff'))
     [IO.File]::WriteAllText($path, '')
-    @(Get-ChildItem -LiteralPath $dir -Filter 'run-*.log' | Sort-Object Name -Descending | Select-Object -Skip $script:PhxRunLogKeep) |
-        ForEach-Object { Remove-Item -LiteralPath $_.FullName -ErrorAction SilentlyContinue }
+    $logs = @(Get-ChildItem -LiteralPath $dir -Filter 'run-*.log' | Sort-Object Name -Descending)
+    $old = if ($KeepDays -gt 0) { @($logs | Where-Object { $_.LastWriteTimeUtc -lt $Now.AddDays(-$KeepDays) }) } else { @($logs | Select-Object -Skip $script:PhxRunLogKeep) }
+    $old | ForEach-Object { Remove-Item -LiteralPath $_.FullName -ErrorAction SilentlyContinue }
     $path
 }
 
@@ -115,7 +142,8 @@ function Invoke-PhxRun {
 
     # The lock first: nothing is written - not even a machine id - by a run that does not run.
     $lock = Open-PhxRunLock
-    $script:PhxRunLog = New-PhxRunLog
+    $script:PhxRunVerbose = $config.logging.verbose -eq $true
+    $script:PhxRunLog = New-PhxRunLog -KeepDays $(if ($script:PhxRunVerbose) { $config.logging.keepDays } else { 0 })
     $state = $null
     try {
         $started = [DateTime]::UtcNow
@@ -144,6 +172,7 @@ function Invoke-PhxRun {
         foreach ($entry in $providers) {
             $name = $entry.Name
             Write-PhxRunLine "${name}:" Cyan
+            $began = [DateTime]::UtcNow
             try {
                 # The staging folder stays between runs: a file whose source did not change is left
                 # as the last run staged it (the stager's records in the state). What this run did
@@ -160,6 +189,7 @@ function Invoke-PhxRun {
                     Remove-PhxStagedSecret -Context $context
                 } | Out-Null
                 $stagers[$name] = $context.Stager
+                Write-PhxStagedDetail -Name $name -Stager $context.Stager -Began $began
                 $trackers[$name] = $context.Files
                 $withheld[$name] = [string[]]@($context.Withheld)
                 $sealed[$name] = $context.Sealed.Count
@@ -193,6 +223,7 @@ function Invoke-PhxRun {
             $held = $held -join ''
             Write-PhxRunLine ('  {0}: {1} written, {2} unchanged, {3} removed{4}' -f $name, $result.Written, $result.Unchanged, $result.Removed, $held)
         }
+        Write-PhxRunDetail "published to $snapshot"
         $state.LastRun = [PSPhoenix.Engine.RunRecord]::new($started, [string[]]@($providers | ForEach-Object Name), [string[]]@($failed), $script:PhxRunLog)
         $seconds = [Math]::Round(([DateTime]::UtcNow - $started).TotalSeconds, 1)
         if ($failed.Count) { throw "$($failed.Count) provider(s) failed: $($failed -join ', ') - log: $script:PhxRunLog" }
@@ -212,6 +243,7 @@ function Invoke-PhxRun {
             Save-PhxState $state
         }
         $script:PhxRunLog = $null
+        $script:PhxRunVerbose = $false
         $lock.Dispose()
     }
 }
