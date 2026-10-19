@@ -77,19 +77,22 @@ function Copy-PhxClaudeStaged {
 function Get-PhxClaudeProject {
     # The project folders under ~/.claude/projects with the repository each belongs to: { Name,
     # Folder, Record }, Record empty for a project without one (or a repository no scan found).
-    # A repository is matched by the name Claude Code derives from its path, ignoring case - the
-    # drive letter comes either way.
+    # A repository is matched by the name Claude Code derives from its path, compared as paths are
+    # here: ignoring case on Windows - the drive letter comes either way - exactly elsewhere, where
+    # two folders that differ only in case are two repositories.
     param([object[]]$Records = @())
     $projects = Join-PhxPath (Get-PhxClaudeDir) 'projects'
     if (-not [IO.Directory]::Exists($projects)) { return }
-    $byName = @{}
+    $byName = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::FromComparison((Get-PhxPathComparison)))
     foreach ($record in $Records) {
-        $name = (ConvertTo-PhxClaudeProjectName (Get-PhxRepoKey $record)).ToLowerInvariant()
+        $name = ConvertTo-PhxClaudeProjectName (Get-PhxRepoKey $record)
         if (-not $byName.ContainsKey($name)) { $byName[$name] = $record }
     }
     foreach ($folder in [IO.Directory]::GetDirectories($projects) | Sort-Object) {
         $name = [IO.Path]::GetFileName($folder)
-        [pscustomobject]@{ Name = $name; Folder = $folder; Record = $byName[$name.ToLowerInvariant()] }
+        $record = $null
+        $null = $byName.TryGetValue($name, [ref]$record)
+        [pscustomobject]@{ Name = $name; Folder = $folder; Record = $record }
     }
 }
 

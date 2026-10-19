@@ -199,10 +199,13 @@ function Select-PhxInitMachine {
 }
 
 function Test-PhxPassphrase {
-    # Long enough to guard a key copy in a synced folder: four words or more, or 20 characters.
+    # Long enough to guard a key copy in a synced folder: four different words of three letters or
+    # more, 15 letters in all - not "ab cd ef gh" - or 20 characters, eight of them different.
     param([string]$Text)
-    $words = @($Text -split '[\s\-_.,;:]+' | Where-Object { $_.Length -ge 2 })
-    $words.Count -ge 4 -or $Text.Length -ge 20
+    $words = @($Text -split '[\s\-_.,;:]+' | Where-Object { $_.Length -ge 3 } | Sort-Object -Unique)
+    $wordy = $words.Count -ge 4 -and ($words -join '').Length -ge 15
+    $long = $Text.Length -ge 20 -and @($Text.ToCharArray() | Sort-Object -Unique -CaseSensitive).Count -ge 8
+    $wordy -or $long
 }
 
 function Select-PhxInitSecret {

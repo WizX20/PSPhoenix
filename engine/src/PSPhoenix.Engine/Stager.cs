@@ -185,6 +185,13 @@ public sealed class Stager
     }
 
     /// <summary>
+    /// Removes from the sealer's cache the ciphertexts of files this run did not stage encrypted -
+    /// after <see cref="CheckRest"/>, which may seal more. Returns how many cache files went.
+    /// </summary>
+    public int PruneSealed() =>
+        sealer?.Prune(entries.Values.Where(e => e.As == StagedAs.Sealed).Select(e => Path.Combine(Root, e.Path))) ?? 0;
+
+    /// <summary>
     /// The last check before publishing: every file in the staging folder this stager did not write
     /// is scanned, and one with a secret encrypted - or removed, without a key. Returns what it did
     /// to those with a secret.

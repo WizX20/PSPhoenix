@@ -107,8 +107,10 @@ function Read-PhxRepoFilesManifest {
 function Copy-PhxPublishedRepoFile {
     # A repository this run cannot read (an offline root, git refusing it): what the last backup
     # holds of it goes into staging again, so publishing does not remove it from the snapshot.
-    # Returns its manifest entry, or nothing when the last backup has none.
-    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Key)
+    # It goes into $Folder, the folder this run gives the repository - the last backup's may now
+    # belong to another clone of the same remote (~2). Returns its manifest entry, or nothing when
+    # the last backup has none.
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Key, [Parameter(Mandatory)][string]$Folder)
     $snapshot = try { Join-PhxPath (Get-PhxSnapshotPath $Context.Config) $Context.Provider } catch { return }
     $manifest = try { Read-PhxRepoFilesManifest $snapshot } catch { return }
     $entry = @($manifest.repositories | Where-Object { $_ -and [string]::Equals((Get-PhxRepoPath -Root $_.root -RelativePath $_.path), $Key, (Get-PhxPathComparison)) })[0]
@@ -117,8 +119,9 @@ function Copy-PhxPublishedRepoFile {
         $source = Join-PhxPath (Join-PhxPath $snapshot $entry.folder) $file.stored
         if (-not [IO.File]::Exists($source)) { continue }
         # Already as the snapshot needs it: plain, or encrypted.
-        Copy-PhxStagedFile -Context $Context -Source $source -Path "$($entry.folder)/$($file.stored)"
+        Copy-PhxStagedFile -Context $Context -Source $source -Path "$Folder/$($file.stored)"
     }
+    $entry.folder = $Folder
     $entry
 }
 
@@ -152,7 +155,7 @@ function Backup-PhxRepoFiles {
         else { $truncated = $false }
         if (-not $candidates) {
             if ($Context.DryRun) { continue }
-            $kept = Copy-PhxPublishedRepoFile -Context $Context -Key $key
+            $kept = Copy-PhxPublishedRepoFile -Context $Context -Key $key -Folder $folder
             if ($kept) {
                 if (-not $truncated) { & $Context.Log "${key}: not readable now - kept the $(@($kept.files).Count) file(s) of the last backup" 'Warn' }
                 $manifest.Add($kept)
@@ -172,6 +175,12 @@ function Backup-PhxRepoFiles {
         }
         $stored = [Collections.Generic.List[object]]::new()
         foreach ($file in @($candidates.Files | Where-Object Decision -In 'Include', 'Secret')) {
+            # A name Windows cannot hold (a: on Linux) would fail publishing to a target on such a
+            # file system - the whole provider - and could not be restored there.
+            if (-not (Test-PhxPortableName $file.Path)) {
+                & $Context.Log "${key}: $($file.Path) has a name Windows cannot hold - left out" 'Warn'
+                continue
+            }
             $target = "$folder/$($file.Path)"
             if ($Context.DryRun) { & $Context.Log "would back up $target" 'Action'; continue }
             # A file can go while the run looks at it: the next run sees it gone.

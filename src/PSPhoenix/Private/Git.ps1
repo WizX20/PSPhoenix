@@ -11,12 +11,17 @@ function Invoke-PhxGit {
     # that starts with `~` into the home folder, so a recorded `include.path=~/.gitconfig-work`
     # would come back as C:\Users\<old user>/.gitconfig-work. ArgumentList passes every argument as
     # it is, and the output is read as UTF-8 - git writes it so - whatever the console code page.
+    #
+    # git never asks on a terminal here (GIT_TERMINAL_PROMPT=0): nobody sees the question in a
+    # background run, and it would wait forever. A git that takes longer than -TimeoutSeconds is
+    # stopped, with its children, and fails - a hung network share must not hold the run's lock.
     param(
         [Parameter(Mandatory)][string]$Repository,
         # Empty strings are real arguments: `credential.helper =` resets the helper list.
         [Parameter(Mandatory)][AllowEmptyString()][string[]]$Arguments,
         [int[]]$AllowExitCode = @(),
-        [switch]$AllowFailure
+        [switch]$AllowFailure,
+        [int]$TimeoutSeconds = 300
     )
     if (-not $script:PhxGitPath) {
         $script:PhxGitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
@@ -27,13 +32,20 @@ function Invoke-PhxGit {
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $start.StandardOutputEncoding = $start.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
+    $start.Environment['GIT_TERMINAL_PROMPT'] = '0'
     $process = [Diagnostics.Process]::Start($start)
     try {
         # Both streams at once: a process that fills one pipe while nobody reads it never exits.
         $errorText = $process.StandardError.ReadToEndAsync()
-        $output = $process.StandardOutput.ReadToEnd()
+        $outputText = $process.StandardOutput.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $process.Kill($true) } catch { $null = $_ }
+            throw (Hide-PhxSecret "git $($Arguments -join ' ') did not finish within $TimeoutSeconds s in ${Repository} - stopped")
+        }
+        # The streams end when the process does; WaitForExit() without a time waits for them too.
         $process.WaitForExit()
         $exitCode = $process.ExitCode
+        $output = $outputText.GetAwaiter().GetResult()
         $message = $errorText.GetAwaiter().GetResult()
     }
     finally { $process.Dispose() }

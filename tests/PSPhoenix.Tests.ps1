@@ -898,6 +898,34 @@ Describe 'scan' {
         }
     }
 
+    It 'never lets git ask on a terminal, and stops one that hangs (#74)' {
+        # A script in git's place: one that says what it was given, one that hangs.
+        $fake = Join-Path $TestDrive 'fake-git'
+        New-Item -ItemType Directory -Force -Path $fake | Out-Null
+        if ($IsWindows) {
+            $echo = Join-Path $fake 'echo.cmd'; Set-Content -LiteralPath $echo -Value '@echo %GIT_TERMINAL_PROMPT%'
+            $hang = Join-Path $fake 'hang.cmd'; Set-Content -LiteralPath $hang -Value '@ping -n 30 127.0.0.1 >nul'
+        }
+        else {
+            $echo = Join-Path $fake 'echo.sh'; Set-Content -LiteralPath $echo -Value "#!/bin/sh`necho `"`$GIT_TERMINAL_PROMPT`""
+            $hang = Join-Path $fake 'hang.sh'; Set-Content -LiteralPath $hang -Value "#!/bin/sh`nsleep 30"
+            chmod +x $echo $hang
+        }
+        InModuleScope PSPhoenix -Parameters @{ Echo = $echo; Hang = $hang; Folder = $TestDrive } {
+            param($Echo, $Hang, $Folder)
+            $saved = $script:PhxGitPath
+            try {
+                $script:PhxGitPath = $Echo
+                Invoke-PhxGit -Repository $Folder -Arguments @('status') | Should -Be '0'
+                $script:PhxGitPath = $Hang
+                $watch = [Diagnostics.Stopwatch]::StartNew()
+                { Invoke-PhxGit -Repository $Folder -Arguments @('fetch') -TimeoutSeconds 2 } | Should -Throw '*git fetch did not finish within 2 s*stopped*'
+                $watch.Elapsed.TotalSeconds | Should -BeLessThan 20
+            }
+            finally { $script:PhxGitPath = $saved }
+        }
+    }
+
     It 'refuses to scan without roots' {
         { phx scan -ErrorAction Stop 6>$null } | Should -Throw '*no roots yet*'
     }
@@ -1722,6 +1750,54 @@ Describe 'repo-files provider' {
         Test-Path -LiteralPath (Join-Path $target 'Box/repo-files/files.json') | Should -BeTrue
     }
 
+    It 'keeps the last backup of an unreadable repository in the folder this run gives it (#74)' {
+        $target = Join-Path $script:FilesHome 'Target'
+        New-Item -ItemType Directory -Path $target | Out-Null
+        Set-TestFilesConfig -Decisions @{ include = @('config.local.env') }
+        InModuleScope PSPhoenix -Parameters @{ Target = $target } {
+            param($Target)
+            $c = Read-PhxConfig
+            $c.target = [ordered]@{ type = 'folder'; path = $Target }
+            $c.machine = [ordered]@{ name = 'Box'; id = 'id-box' }
+            Save-PhxConfig $c
+        }
+        $original = Get-Content -LiteralPath (Join-Path $script:FilesRepo 'config.local.env') -Raw
+        Get-PhxOutput { phx run -Provider repo-files } | Out-Null
+        # A second clone that sorts first now gets the folder app; the first one, unreadable, gets app~2.
+        New-TestRepository (Join-Path $script:FilesRoot 'Aaa') -Remote 'origin=https://github.com/WizX20/app.git' | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:FilesRoot 'Aaa/.gitignore') -Value 'config.local.env'
+        Set-Content -LiteralPath (Join-Path $script:FilesRoot 'Aaa/config.local.env') -Value 'second clone'
+        phx scan 6>$null
+        # git refuses the first one now.
+        Add-Content -LiteralPath (Join-Path $script:FilesRepo '.git/config') -Value '[not valid'
+        $second = Get-PhxOutput { phx run -Provider repo-files }
+        $second | Should -Match 'not readable now - kept the 1 file\(s\) of the last backup'
+        $folder = Join-Path $target 'Box/repo-files/github.com/WizX20'
+        Get-Content -LiteralPath (Join-Path $folder 'app/config.local.env') -Raw | Should -Match 'second clone'
+        Get-Content -LiteralPath (Join-Path $folder 'app~2/config.local.env') -Raw | Should -Be $original
+        $manifest = Get-Content -LiteralPath (Join-Path $target 'Box/repo-files/files.json') -Raw | ConvertFrom-Json
+        @($manifest.repositories | ForEach-Object { "$($_.path)=$($_.folder)" } | Sort-Object) | Should -Be @('Aaa=github.com/WizX20/app', 'App=github.com/WizX20/app~2')
+    }
+
+    It 'tells a name every platform can hold from one Windows cannot: <Name>' -ForEach @(
+        @{ Name = 'config/app.local.json'; Portable = $true }
+        @{ Name = 'a:b.env'; Portable = $false }
+        @{ Name = 'dir/what?.txt'; Portable = $false }
+        @{ Name = 'trailing./x'; Portable = $false }
+        @{ Name = 'trailing '; Portable = $false }
+    ) {
+        InModuleScope PSPhoenix -Parameters @{ Name = $Name } { param($Name) Test-PhxPortableName $Name } | Should -Be $Portable
+    }
+
+    It 'leaves out a gitignored file whose name Windows cannot hold, and backs up the rest (#74)' -Skip:$IsWindows {
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo '.gitignore') -Value "config.local.env`nodd:name.env"
+        Set-Content -LiteralPath (Join-Path $script:FilesRepo 'odd:name.env') -Value 'X=1'
+        Set-TestFilesConfig -Decisions @{ include = @('config.local.env', 'odd:name.env') }
+        $output = Invoke-FilesBackup $script:FilesStaging
+        $output | Should -Match 'odd:name\.env has a name Windows cannot hold - left out'
+        Get-TestStaged $script:FilesStaging | Should -Contain 'github.com/WizX20/app/config.local.env'
+    }
+
     It 'gives the same remote cloned twice a folder each' {
         New-TestRepository (Join-Path $script:FilesRoot 'App2') -Remote 'origin=https://github.com/WizX20/app.git' | Out-Null
         Set-Content -LiteralPath (Join-Path $script:FilesRoot 'App2/.gitignore') -Value 'config.local.env'
@@ -2195,6 +2271,19 @@ Describe 'claude provider' {
         Test-Path -LiteralPath (Join-Path $target 'Box/claude/home/commands/ship.md') | Should -BeFalse
     }
 
+    It 'matches a project to the repository whose path has its case, where paths have case (#74)' -Skip:$IsWindows {
+        InModuleScope PSPhoenix {
+            $root = '/home/someone/Repos'
+            $upper = @{ identity = 'github.com/o/upper'; root = $root; path = 'App' }
+            $lower = @{ identity = 'github.com/o/lower'; root = $root; path = 'app' }
+            $name = ConvertTo-PhxClaudeProjectName '/home/someone/Repos/app'
+            New-Item -ItemType Directory -Force -Path (Join-PhxPath (Join-PhxPath (Get-PhxClaudeDir) 'projects') $name) | Out-Null
+            $project = @(Get-PhxClaudeProject -Records @($upper, $lower) | Where-Object Name -CEQ $name)
+            $project.Count | Should -Be 1
+            $project[0].Record.identity | Should -Be 'github.com/o/lower'
+        }
+    }
+
     It 'says in phx status how much memory there is' {
         Get-PhxOutput { phx status } | Should -Match 'claude\s+memory of 2 project\(s\), 1 by repository; session transcripts not'
     }
@@ -2622,6 +2711,17 @@ Describe 'init secrets' {
         $output | Should -Match "put it in your password manager now.*\s+it, or the passphrase for $copyName in the snapshot"
         Get-Content -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) -Raw | Should -Not -Match 'AGE-SECRET-KEY'
         Get-PhxOutput { phx status } | Should -Match "secrets\s+encrypted to age1\S+ - a passphrase-protected copy of the key is $copyName in the snapshot"
+    }
+
+    It 'takes <Text> as a passphrase: <Good> (#74)' -ForEach @(
+        @{ Text = 'correct horse battery staple'; Good = $true }
+        @{ Text = 'ab cd ef gh'; Good = $false }
+        @{ Text = 'the the the the the'; Good = $false }
+        @{ Text = 'cat dog sun red'; Good = $false }
+        @{ Text = 'aaaaaaaaaaaaaaaaaaaaaaaa'; Good = $false }
+        @{ Text = 'Tr0ub4dor&3-Tr0ub4dor'; Good = $true }
+    ) {
+        InModuleScope PSPhoenix -Parameters @{ Text = $Text } { param($Text) Test-PhxPassphrase $Text } | Should -Be $Good
     }
 
     It 'asks for a passphrase of four words or 20 characters, twice the same' {
@@ -3830,17 +3930,20 @@ Describe 'run' {
                 Backup = {
                     param($Context)
                     & $Context.Log "the token is $script:FakeToken"
-                    Write-Warning 'something odd'
+                    Write-Warning "something odd with $script:FakeToken"
                     Write-Error 'something broke'
                 }
             }
         }
         $output = Invoke-TestRun
         $output | Should -Match 'noisy failed: 1 error\(s\): something broke'
+        # Masked on screen too (#74).
+        $output -join "`n" | Should -Not -Match 'ghp_a'
+        $output | Should -Match 'the token is \*\*\*'
         $log = Get-Content -LiteralPath (InModuleScope PSPhoenix { Read-PhxState }).lastRun.log -Raw
         $log | Should -Not -Match 'ghp_a'
         $log | Should -Match '\[noisy\] the token is \*\*\*'
-        $log | Should -Match '\[noisy\] warning: something odd'
+        $log | Should -Match '\[noisy\] warning: something odd with \*\*\*'
         $log | Should -Match '\[noisy\] error: something broke'
     }
 
@@ -3860,6 +3963,20 @@ Describe 'run' {
         Mock Test-PhxWritableFolder -ModuleName PSPhoenix { throw 'probed' }
         Invoke-TestRun | Out-Null
         $script:RunError | Should -BeNullOrEmpty
+    }
+
+    It 'reads phoenix.json once a run, and the published config.json not at all while the config is unchanged (#74)' {
+        Invoke-TestRun | Out-Null
+        Mock Read-PhxSnapshotInfo -ModuleName PSPhoenix { $script:SnapshotReads++; Get-Content -LiteralPath (Join-Path $Path 'phoenix.json') -Raw | ConvertFrom-Json -AsHashtable }
+        $script:SnapshotReads = 0
+        # A hand edit in the target stays: the run knows what it published there from the state.
+        $published = Join-Path $script:RunSnapshot 'config.json'
+        Add-Content -LiteralPath $published -Value ' '
+        $edited = Get-Content -LiteralPath $published -Raw
+        Invoke-TestRun | Out-Null
+        $script:RunError | Should -BeNullOrEmpty
+        $script:SnapshotReads | Should -Be 1
+        Get-Content -LiteralPath $published -Raw | Should -Be $edited
     }
 
     It 'publishes the other providers when one cannot be, and records the run' -Skip:(-not $IsWindows) {

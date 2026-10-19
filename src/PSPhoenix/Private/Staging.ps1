@@ -19,6 +19,17 @@ function Resolve-PhxStagedPath {
     $full
 }
 
+function Test-PhxPortableName {
+    # Whether a relative path (with /) can be a file on every platform a snapshot goes to: no
+    # character Windows refuses (: * ? " < > | \ or a control character), no name ending in a dot or
+    # a space.
+    param([Parameter(Mandatory)][string]$Path)
+    foreach ($segment in $Path.Split('/')) {
+        if ($segment -match '[:*?"<>|\\\x00-\x1f]' -or $segment -match '[. ]$') { return $false }
+    }
+    $true
+}
+
 function New-PhxSealer {
     # What encrypts a provider's secrets: to the recipient in the config, its last ciphertexts kept
     # in the state folder so an unchanged secret is not a new file every run. Nothing without a key.
@@ -115,7 +126,11 @@ function Remove-PhxStagedSecret {
     # What the stager wrote is not scanned again: a decision of the review stands.
     param([Parameter(Mandatory)]$Context)
     if (-not $Context.Stager) { return }
-    try { $found = @($Context.Stager.CheckRest()) }
+    try {
+        $found = @($Context.Stager.CheckRest())
+        # What is no longer staged encrypted leaves no ciphertext behind in the state folder.
+        $Context.Stager.PruneSealed() | Out-Null
+    }
     catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
     foreach ($entry in $found) { Add-PhxStagedResult -Context $Context -Entry $entry }
 }
