@@ -1,8 +1,0 @@
-- fix: run - a token a provider prints is masked on screen too, not only in the log (#74)
-- fix: run - `phoenix.json` is read once a run, and the published `config.json` not read back while the config is unchanged (#74)
-- fix: secrets - the ciphertext cache in the state folder drops what is no longer staged encrypted (#74)
-- fix: repo-files - an unreadable repository keeps its last backup in the folder this run gives it, not one another clone now has (#74)
-- fix: repo-files - a file whose name Windows cannot hold is left out with a warning instead of failing the provider at publish (#74)
-- fix: init - a passphrase needs four different real words or 20 varied characters; `ab cd ef gh` is refused (#74)
-- fix: git - runs with a time limit and never asks on a terminal, so a background run cannot hang on it (#74)
-- fix: claude - a project is matched to its repository ignoring case only on Windows (#74)

@@ -1,1 +1,0 @@
-- changed: init - roots, accounts, target and interval are chosen from a list with the arrow keys (space ticks, Enter accepts, q stops), with a last row to type a path or interval; without a console the lists are numbered and answered by typing, as before (#86)

@@ -1,1 +1,0 @@
-- security: restore - the files of repo-files and claude come back through the engine: manifests read strictly, a path into `.git`, out of its place or outside what the provider backs up refused, no write through a link or into a nested repository, and a file that appears in the meantime is never overwritten (#71)

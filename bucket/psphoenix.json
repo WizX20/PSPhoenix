@@ -1,10 +1,10 @@
 {
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "phx - back up what a developer machine would lose in a crash (repo inventory, local-only git work, gitignored local files, Claude Code memory, machine setup) and rebuild a new one from it.",
   "homepage": "https://github.com/WizX20/PSPhoenix",
   "license": "BUSL-1.1",
-  "url": "https://github.com/WizX20/PSPhoenix/releases/download/v0.3.0/PSPhoenix-0.3.0.zip",
-  "hash": "A9E8BA0D6D5B78B1472CF2C66DC91C22A0203AE1ECB45B4DBBF34EC849A30C07",
+  "url": "https://github.com/WizX20/PSPhoenix/releases/download/v0.3.1/PSPhoenix-0.3.1.zip",
+  "hash": "7FE6DC1A45EF3A48A4E292A2AF8F5AC0C713347B428C389BFA3C40A027338063",
   "extract_dir": "PSPhoenix",
   "psmodule": {
     "name": "PSPhoenix"

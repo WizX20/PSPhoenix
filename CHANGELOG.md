@@ -6,6 +6,32 @@ New entries go in [changelog.d/](changelog.d/README.md), one file per pull reque
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-20
+
+### Added
+
+- added: logs - `phx logs` lists the last runs (when, how long, result, warnings, errors, providers), `phx logs <n>` shows one run and `phx logs errors` what went wrong lately; the run log marks warnings and errors (#93)
+- added: logs - `phx logs verbose on|off` (config `logging.verbose`) puts the detail of every run, the scheduled one included, in its log - per provider its time, per repository whether git was asked again, per file how it was staged - and keeps those logs by age, `logging.keepDays` (default 7) (#93)
+
+### Changed
+
+- changed: init - roots, accounts, target and interval are chosen from a list with the arrow keys (space ticks, Enter accepts, q stops), with a last row to type a path or interval; without a console the lists are numbered and answered by typing, as before (#86)
+
+### Fixed
+
+- fix: run - a token a provider prints is masked on screen too, not only in the log (#74)
+- fix: run - `phoenix.json` is read once a run, and the published `config.json` not read back while the config is unchanged (#74)
+- fix: secrets - the ciphertext cache in the state folder drops what is no longer staged encrypted (#74)
+- fix: repo-files - an unreadable repository keeps its last backup in the folder this run gives it, not one another clone now has (#74)
+- fix: repo-files - a file whose name Windows cannot hold is left out with a warning instead of failing the provider at publish (#74)
+- fix: init - a passphrase needs four different real words or 20 varied characters; `ab cd ef gh` is refused (#74)
+- fix: git - runs with a time limit and never asks on a terminal, so a background run cannot hang on it (#74)
+- fix: claude - a project is matched to its repository ignoring case only on Windows (#74)
+
+### Security
+
+- security: restore - the files of repo-files and claude come back through the engine: manifests read strictly, a path into `.git`, out of its place or outside what the provider backs up refused, no write through a link or into a nested repository, and a file that appears in the meantime is never overwritten (#71)
+
 ## [0.3.0] - 2026-10-15
 
 ### Added
