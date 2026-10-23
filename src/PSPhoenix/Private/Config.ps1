@@ -15,7 +15,7 @@ function New-PhxDefaultConfig {
         providers = [ordered]@{}
         accounts  = [ordered]@{}
         secrets   = [ordered]@{ recipient = $null }
-        files     = [ordered]@{ maxKB = 1024; exclude = @(); repos = [ordered]@{} }
+        files     = [ordered]@{ maxKB = 1024; include = @(); secret = @(); exclude = @(); repos = [ordered]@{} }
         # verbose: the detail of every run in its log, kept keepDays days (phx logs verbose on).
         logging   = [ordered]@{ verbose = $false; keepDays = 7 }
     }
@@ -79,12 +79,13 @@ function Read-PhxConfig {
 
 function Assert-PhxFilesConfig {
     # config.files as the repo-files provider relies on it: a size cap in KB, and the review's
-    # decisions as lists of patterns the engine reads (PathPattern) - per repository under
+    # decisions as lists of patterns the engine reads (PathPattern) - for every repository in
+    # files.include, files.secret and files.exclude, and per repository under
     # files.repos[<identity>], with include, secret and exclude. Throws on anything else.
     param($Files, [Parameter(Mandatory)][string]$ConfigPath)
     if ($Files -isnot [System.Collections.IDictionary]) { throw "config ${ConfigPath}: files must be an object" }
     if (($Files.maxKB -isnot [int] -and $Files.maxKB -isnot [long]) -or $Files.maxKB -lt 1) { throw "config ${ConfigPath}: files.maxKB must be a whole number of KB, 1 or more" }
-    $lists = [ordered]@{ 'files.exclude' = $Files.exclude }
+    $lists = [ordered]@{ 'files.include' = $Files.include; 'files.secret' = $Files.secret; 'files.exclude' = $Files.exclude }
     if ($null -ne $Files.repos -and $Files.repos -isnot [System.Collections.IDictionary]) { throw "config ${ConfigPath}: files.repos must be an object, keyed by repository" }
     foreach ($identity in @($Files.repos.Keys)) {
         $decisions = $Files.repos[$identity]
