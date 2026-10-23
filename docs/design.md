@@ -184,20 +184,39 @@ Including everything is not an option; a pure allowlist misses files nobody thou
    pending files, which each backup and each review record in the state folder
    (`repo-files.json`).
 
-**`phx review`** lists, per repository, the pending files grouped by their first folder: a folder of
-several files is one line (`leftover/   12 files, 40 KB, 1 secret`) and `o <n>` opens it. Each
-line says why a file is secret - by its name, or by what the [detector](#secrets) finds in it
-(the kind and the line, never the value). An answer is a letter and what it is for:
+**`phx review`** first lists the pending files found under the same path in more than one
+repository (`.env   in 9 repositories`): one decision there is for all of them, and for every
+repository scanned later, in `files.include`, `files.secret` or `files.exclude`. Then, per
+repository, its pending files grouped by their first folder: a folder of several files is one line
+(`leftover/   12 files, 40 KB, 1 secret`). Each line says why a file is secret - by its name, or by
+what the [detector](#secrets) finds in it (the kind and the line, never the value) - and what the
+review proposes: a file included (secret when its name or content says so), a folder of several
+files left out. `a` accepts the rest as proposed - every list still to come - in one key.
+
+On a console each list is one screen of check boxes, the proposals checked:
+
+```
+  > [x] secret   .env                                     15 B   secret by its name - stored encrypted
+    [ ] exclude  leftover/                                2 files, 8 B
+    [x] include  notes.md                                 9 B
+```
+
+Space includes or excludes the row, `s` marks it secret or not (a file secret by its name stays
+secret; unmarking a file whose content looked like a secret is "not a secret", below), right
+opens a folder into its files, `/` filters the rows by path. Enter saves the list and goes on, Esc
+skips it (its files stay pending), `q` stops. Elsewhere - redirected, or no console - the lists are
+numbered and an answer is a letter and what it is for:
 
 - `i` include, `s` secret (always encrypted), `x` exclude - with numbers (`1,3-5`, `*` for all),
-  or with a pattern (`x *.log`, `i src/**/local.json`);
+  or with a pattern (`x *.log`, `i src/**/local.json`); numbers without a letter ask which;
 - `n` "not a secret": the detector's findings in that file are accepted, and it is backed up as it
-  is (see below);
-- Enter moves on to the next repository, the rest staying pending; `q` stops.
+  is (see below) - per repository only;
+- `o` opens a folder; Enter moves on to the next list, the rest staying pending; `q` stops.
 
-A number becomes a pattern from the repository's top (`/notes.md`, `/leftover/`), so it does not
-also catch a file of that name deeper down. Every answer is saved in the config at once, a new one
-for the same pattern replacing the old; a second review shows only what is still pending.
+After an answer that goes wrong only the message shows, not the list again. A row becomes a pattern
+from the repository's top (`/notes.md`, `/leftover/`), so it does not also catch a file of that name
+deeper down. Every answer - every list on a console - is saved in the config at once, a new one for
+the same pattern replacing the old; a second review shows only what is still pending.
 
 **Not a secret.** `n` stores the file's pattern with the
 [signature](#secrets) of each finding the review showed - its kind and key, not its place:
@@ -207,8 +226,8 @@ file is encrypted again. A file secret by its name cannot be called no secret: i
 secret, or excluded.
 
 **Decisions** are patterns in `files.repos[<identity>]` (`include`, `secret`, `exclude`, and
-`plain` for "not a secret") and in `files.exclude` for every repository. A pattern is a path
-relative to the repository, with `/`:
+`plain` for "not a secret") and in `files.include`, `files.secret` and `files.exclude` for every
+repository. A pattern is a path relative to the repository, with `/`:
 
 - `*` matches within a segment, `?` one character, `**` any number of segments;
 - a pattern without a `/` matches that name at any depth, as in a `.gitignore`; one with a `/` -
@@ -218,7 +237,9 @@ relative to the repository, with `/`:
 - case is ignored, on every platform.
 
 `secret` wins over `include`, and `include` over `exclude`: a folder excluded as a whole can still
-have one file in it included by name. An included file with a secret name is a secret. Only a
+have one file in it included by name. A repository's own decisions come before those for every
+repository: `/.env` excluded in one repository stays excluded when `.env` is included for all. An
+included file with a secret name is a secret. Only a
 pattern that names one file - no wildcard, not a folder - overrides a built-in filter (step 3 and 4).
 
 **Backup and restore.** The decided files go to `repo-files/<identity>/<path>`, a secret as
@@ -693,6 +714,8 @@ itself is part of every snapshot.
   "logging": { "verbose": false, "keepDays": 7 },
   "files": {
     "maxKB": 1024,
+    "include": [ "/.claude/settings.local.json" ],
+    "secret": [ "/.env" ],
     "exclude": [],
     "repos": {
       "github.com/summitnl/HippoCampus": {
