@@ -31,7 +31,7 @@ This project is licensed under the [Business Source License 1.1](LICENSE) (BUSL-
 
 ## How it works
 
-- **A wizard first.** `phx init` asks where your repositories live — as many folders as you like (`C:\Repos`, `D:\Work`, ...) — where backups go, how often, and walks you through the gitignored files it found. `phx review` does that walk again whenever new ones turn up: a whole folder or a pattern at a time, and a file nobody decided on is not backed up.
+- **A wizard first.** `phx init` asks where your repositories live — as many folders as you like (`C:\Repos`, `D:\Work`, ...) — where backups go, how often, and walks you through the gitignored files it found. `phx review` does that walk again whenever new ones turn up: check boxes with the proposal ticked, a whole folder or a pattern at a time, a file found in several repositories once for all of them, `a` to accept the rest - and a file nobody decided on is not backed up.
 - **Then in the background.** A per-user scheduled task runs every hour (configurable). A run with nothing changed compares a few hundred file timestamps and is done; slow inventories such as `winget export` run once a day.
 - **Any folder as the target.** OneDrive, Dropbox, a NAS share or a USB disk: PSPhoenix writes plain files, the sync client moves them. A git repository as target follows later.
 - **Secrets only encrypted.** A file with a password or token in it — found by its content, not just its name — goes into the snapshot only [age](https://age-encryption.org)-encrypted, to a key `phx init` makes. Keep the key it shows you; a passphrase-protected copy can sit in the target (`key-<id>.age`), so a restore needs only the passphrase. Nothing to install: PSPhoenix speaks age itself.
@@ -80,7 +80,7 @@ A first run, start to finish - with a target folder of its own, so you can look 
 ```powershell
 phx init                 # roots, accounts, a target (try a new folder first), machine, key, interval, schedule;
                          # then the review of the gitignored files it found
-phx review               # decide on what is still pending - a folder or a pattern at a time
+phx review               # decide on what is still pending - check boxes, a = accept the rest as proposed
 phx run                  # one backup now
 phx status               # what is set up, the last run, and what needs attention
 phx logs                 # the last runs, the scheduled ones included; phx logs verbose on for their detail

@@ -1832,6 +1832,27 @@ Describe 'repo-files provider' {
         $after | Should -Match 'review\s+5 gitignored file\(s\) in 1 repositories wait for a decision'
     }
 
+    It 'backs up what is decided for every repository, a repository''s own decision first (#90)' {
+        Set-TestFilesConfig -Decisions @{ exclude = @('/notes.md') }
+        InModuleScope PSPhoenix {
+            $c = Read-PhxConfig
+            $c.files.include = @('/notes.md', '/config.local.env')
+            $c.files.secret = @('/leftover/keep.txt')
+            Save-PhxConfig $c
+        }
+        Invoke-FilesBackup $script:FilesStaging | Out-Null
+        $staged = Get-TestStaged $script:FilesStaging
+        $staged | Should -Contain 'github.com/WizX20/app/config.local.env'
+        $staged | Should -Contain 'github.com/WizX20/app/leftover/keep.txt.age'
+        $staged | Should -Not -Contain 'github.com/WizX20/app/notes.md'
+        InModuleScope PSPhoenix {
+            $c = Read-PhxConfig
+            $c.files.secret = @('../outside')
+            Save-PhxConfig $c
+            { Read-PhxConfig } | Should -Throw "*files.secret: '../outside' is not a path pattern*"
+        }
+    }
+
     It 'refuses a config with a pattern that is not one' {
         $path = InModuleScope PSPhoenix { Get-PhxConfigPath }
         Set-TestFilesConfig -Decisions @{ exclude = @('../outside') }
@@ -1856,6 +1877,19 @@ Describe 'review' {
         }
         function script:Get-TestPendingPath {
             @((InModuleScope PSPhoenix { Get-PhxRepoFilesPending }).repositories | ForEach-Object { $_.files.path })
+        }
+        function script:New-ReviewKey {
+            param([ConsoleKey]$Key, [char]$Char = [char]0)
+            [ConsoleKeyInfo]::new($Char, $Key, $false, $false, $false)
+        }
+        function script:Add-TestLibRepository {
+            # A second repository with a .env and notes.md like the first, and a file of its own.
+            $lib = New-TestRepository (Join-Path $script:ReviewHome 'Repos/Lib') -Remote 'origin=https://github.com/WizX20/lib.git'
+            Set-Content -LiteralPath (Join-Path $lib '.gitignore') -Value @('.env', 'notes.md', 'own.txt')
+            Set-Content -LiteralPath (Join-Path $lib '.env') -Value 'LOG_LEVEL=info'
+            Set-Content -LiteralPath (Join-Path $lib 'notes.md') -Value 'lib notes'
+            Set-Content -LiteralPath (Join-Path $lib 'own.txt') -Value 'mine'
+            phx scan 6>$null
         }
     }
 
@@ -1993,6 +2027,92 @@ Describe 'review' {
         $status = Get-PhxOutput { phx status }
         $status | Should -Match 'review\s+4 gitignored file\(s\) in 1 repositories wait for a decision, not backed up until then - phx review'
         $status | Should -Match 'thing\(s\) need attention'
+    }
+
+    It 'decides a file found in several repositories once for all of them (#90)' {
+        Add-TestLibRepository
+        # 1 .env  2 notes.md - each in both; then App's list, and q in Lib's.
+        $output = Invoke-TestReview 'x 2' 's 1' '' 'q'
+        $output | Should -Match 'In more than one repository - one decision for all of them\s+4 pending'
+        $output | Should -Match '1\. \.env\s+in 2 repositories\s+secret by its name'
+        $output | Should -Match '2\. notes\.md\s+in 2 repositories\s+proposed: include'
+        $config = InModuleScope PSPhoenix { Read-PhxConfig }
+        @($config.files.secret) | Should -Be @('/.env')
+        @($config.files.exclude) | Should -Be @('/notes.md')
+        $config.files.repos.Count | Should -Be 0
+        $pending = Get-TestPendingPath
+        $pending | Should -Not -Contain '.env'
+        $pending | Should -Not -Contain 'notes.md'
+        $pending | Should -Contain 'own.txt'
+    }
+
+    It 'asks which decision for numbers without a letter, and after a mistake shows only the message (#90)' {
+        $output = Invoke-TestReview '1' 'x' 'i 9' '*' 'z' 'q'
+        @((Get-TestDecision).exclude) | Should -Be @('/.env')
+        $output | Should -Match 'there is no 9 in the list'
+        $output | Should -Match 'include \(i\), secret \(s\) or exclude \(x\) - nothing decided'
+        # The list: at the start and after the answer that decided something - not after a mistake.
+        [regex]::Matches($output, 'WizX20/app   .*\d+ pending').Count | Should -Be 2
+    }
+
+    It 'accepts the rest as proposed in one key (#90)' {
+        $output = Invoke-TestReview 'x 1' 'a'
+        $output | Should -Match '5\. leftover/\s+2 files, .*proposed: exclude'
+        $output | Should -Match '6\. notes\.md\s+.*proposed: include'
+        $output | Should -Match 'accepted as proposed: 6 file\(s\)'
+        $decision = Get-TestDecision
+        @($decision.exclude) | Should -Be @('/.env', '/leftover/')
+        @($decision.secret) | Should -Be @('/cert.pfx')
+        @($decision.include) | Should -Be @('/big.json', '/config.local.env', '/notes.md')
+        Get-TestPendingPath | Should -BeNullOrEmpty
+        $output | Should -Match 'every gitignored file is decided on'
+    }
+
+    It 'decides with check boxes on a console: include, secret, a folder opened, a filter (#90)' {
+        Mock Test-PhxChoiceConsole -ModuleName PSPhoenix { $true }
+        # 1 .env (secret by its name)  2 big.json  3 cert.pfx  4 config.local.env  5 leftover/  6 notes.md
+        $script:Keys = [Collections.Generic.Queue[ConsoleKeyInfo]]::new([ConsoleKeyInfo[]]@(
+                (New-ReviewKey S 's'), (New-ReviewKey Spacebar ' '),
+                (New-ReviewKey DownArrow), (New-ReviewKey Spacebar ' '),
+                (New-ReviewKey DownArrow), (New-ReviewKey DownArrow), (New-ReviewKey S 's'),
+                (New-ReviewKey DownArrow), (New-ReviewKey RightArrow), (New-ReviewKey Spacebar ' '),
+                (New-ReviewKey Oem2 '/'), (New-ReviewKey S 's'),
+                (New-ReviewKey Enter)))
+        Mock Read-PhxKey -ModuleName PSPhoenix { $script:Keys.Dequeue() }
+        $output = Invoke-TestReview 'notes'
+        $script:Keys.Count | Should -Be 0
+        $output | Should -Match '> \[x\] secret\s+\.env\s+.*secret by its name'
+        $output | Should -Match '\[ \] exclude\s+leftover/keep\.txt'
+        $output | Should -Match "filter 'notes': 1 of 7"
+        $output | Should -Match 'WizX20/app .* - 1 included, 3 secret, 3 excluded'
+        $decision = Get-TestDecision
+        @($decision.exclude) | Should -Be @('/.env', '/big.json', '/leftover/more.txt')
+        @($decision.secret) | Should -Be @('/cert.pfx', '/config.local.env', '/notes.md')
+        @($decision.include) | Should -Be @('/leftover/keep.txt')
+        Get-TestPendingPath | Should -BeNullOrEmpty
+    }
+
+    It 'accepts the rest as proposed from the list across repositories on a console (#90)' {
+        Add-TestLibRepository
+        Mock Test-PhxChoiceConsole -ModuleName PSPhoenix { $true }
+        $script:Keys = [Collections.Generic.Queue[ConsoleKeyInfo]]::new([ConsoleKeyInfo[]]@((New-ReviewKey Spacebar ' '), (New-ReviewKey A 'a')))
+        Mock Read-PhxKey -ModuleName PSPhoenix { $script:Keys.Dequeue() }
+        $output = Invoke-TestReview
+        $output | Should -Match 'accepted as proposed: 6 file\(s\)'
+        $config = InModuleScope PSPhoenix { Read-PhxConfig }
+        @($config.files.exclude) | Should -Be @('/.env')
+        @($config.files.include) | Should -Be @('/notes.md')
+        @($config.files.repos['github.com/WizX20/app'].exclude) | Should -Be @('/leftover/')
+        @($config.files.repos['github.com/WizX20/lib'].include) | Should -Be @('/own.txt')
+        Get-TestPendingPath | Should -BeNullOrEmpty
+    }
+
+    It 'skips a repository with Esc and stops with q on a console, saving neither list (#90)' {
+        Mock Test-PhxChoiceConsole -ModuleName PSPhoenix { $true }
+        $script:Keys = [Collections.Generic.Queue[ConsoleKeyInfo]]::new([ConsoleKeyInfo[]]@((New-ReviewKey Spacebar ' '), (New-ReviewKey Escape)))
+        Mock Read-PhxKey -ModuleName PSPhoenix { $script:Keys.Dequeue() }
+        Invoke-TestReview | Should -Match '7 file\(s\) still pending'
+        Get-TestDecision | Should -BeNullOrEmpty
     }
 
     It 'needs phx init first' {
