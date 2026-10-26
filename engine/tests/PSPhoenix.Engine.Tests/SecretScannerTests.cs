@@ -33,7 +33,7 @@ public sealed class SecretScannerTests : IDisposable
             { "a JSON web token", $"Cookie: id={Fake.JsonWebToken()}", SecretKind.JsonWebToken, Fake.JsonWebToken() },
             { "a private key", $"key:\n{Fake.PrivateKey()}\nafter", SecretKind.PrivateKey, Fake.PrivateKey() },
             { "an OpenSSH private key", Fake.PrivateKey("OPENSSH"), SecretKind.PrivateKey, Fake.PrivateKey("OPENSSH") },
-            { "a password in a URL", "git clone https://wouter:" + "hunter2" + "@example.com/r.git", SecretKind.UrlCredential, "hunter2" },
+            { "a password in a URL", "git clone https://alice:" + "hunter2" + "@example.com/r.git", SecretKind.UrlCredential, "hunter2" },
             { "a token as a URL's user name", $"https://{Fake.Random(Fake.Alphanumeric, 40)}@dev.azure.com/org", SecretKind.UrlCredential, Fake.Random(Fake.Alphanumeric, 40) },
             { "a GitHub token as a URL's user name", $"https://{github}@github.com/o/r", SecretKind.GitHubToken, github },
             { "an authorization header", $"http.extraheader=AUTHORIZATION: bearer {base64}", SecretKind.AuthorizationHeader, base64 },
@@ -176,7 +176,7 @@ public sealed class SecretScannerTests : IDisposable
             "ghp_" => Fake.GitHubToken(),
             "glpat-" => Fake.GitLabToken(),
             "opaque" => Fake.Random(Fake.Alphanumeric, 52),
-            "short" => "wouter",
+            "short" => "alice",
             _ => Fake.Random(Fake.Alphanumeric, 20) + ":" + Fake.Random(Fake.Alphanumeric, 20),
         };
 

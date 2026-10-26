@@ -260,7 +260,7 @@ repository, or commits authored with the wrong identity.
   warns about it, and the `git` provider backs it up;
 - `account`: detected from a credential helper (`gh auth token --user <x>`), in the local config or
   an included file, else taken from the `accounts` map in the config, which the wizard fills per
-  owner (`"github.com/WizX20": "WizX20"`, `"github.com/summitnl": "wpaap"`), else the host's default.
+  owner (`"github.com/WizX20": "WizX20"`, `"github.com/contoso": "work-login"`), else the host's default.
 
 **Restore**:
 
@@ -685,17 +685,17 @@ itself is part of every snapshot.
   "version": 1,
   "roots": [ { "path": "C:\\Repos", "depth": 3 } ],
   "target": { "type": "folder", "path": "C:\\Users\\me\\OneDrive - Company\\PSPhoenix" },
-  "machine": { "name": "WOUTER-LT", "id": "6f0e8c1a-..." },
+  "machine": { "name": "MY-LAPTOP", "id": "6f0e8c1a-..." },
   "interval": "1h",
   "providers": { "winget": { "enabled": true, "cadence": "1d" }, "claude": { "transcripts": false } },
-  "accounts": { "github.com/WizX20": "WizX20", "github.com/summitnl": "wpaap" },
+  "accounts": { "github.com/WizX20": "WizX20", "github.com/contoso": "work-login" },
   "secrets": { "recipient": "age1..." },
   "logging": { "verbose": false, "keepDays": 7 },
   "files": {
     "maxKB": 1024,
     "exclude": [],
     "repos": {
-      "github.com/summitnl/HippoCampus": {
+      "github.com/contoso/webapp": {
         "include": [ "/config.local.env", ".claude/settings.local.json" ],
         "secret":  [ "/secrets.local.env" ],
         "exclude": [ "docker/services.local.env", "**/appsettings*.local.json", "/tmp/" ],
