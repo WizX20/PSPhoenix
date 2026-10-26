@@ -15,7 +15,8 @@ function Get-PhxRepoFilesStatePath { Join-PhxPath (Get-PhxStateDir) 'repo-files.
 
 function Get-PhxRepoFileRule {
     # The review's decisions for one repository as the engine's FileRules: its own include, secret
-    # and exclude patterns, and the exclude patterns for every repository (files.exclude).
+    # and exclude patterns, and behind them the ones for every repository (files.include,
+    # files.secret, files.exclude) - a repository's own decision on a file comes first.
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [Parameter(Mandatory)][string]$Identity)
     $files = $Config.files
     $own = if ($files.repos -is [System.Collections.IDictionary]) { $files.repos[$Identity] }
@@ -23,9 +24,20 @@ function Get-PhxRepoFileRule {
     $plain = if ($own.plain -is [System.Collections.IDictionary]) { @($own.plain.Keys) } else { @() }
     $include = [string[]]@(@($own.include) + $plain | Where-Object { $_ })
     $secret = [string[]]@($own.secret | Where-Object { $_ })
-    $exclude = [string[]]@(@($own.exclude) + @($files.exclude) | Where-Object { $_ })
-    try { [PSPhoenix.Engine.FileRules]::new($include, $secret, $exclude) }
+    $exclude = [string[]]@($own.exclude | Where-Object { $_ })
+    try {
+        $every = [PSPhoenix.Engine.FileRules]::new([string[]]@($files.include | Where-Object { $_ }), [string[]]@($files.secret | Where-Object { $_ }), [string[]]@($files.exclude | Where-Object { $_ }), $null)
+        [PSPhoenix.Engine.FileRules]::new($include, $secret, $exclude, $every)
+    }
     catch [System.Management.Automation.MethodInvocationException] { throw $_.Exception.InnerException }
+}
+
+function Get-PhxRepoSecretPattern {
+    # The patterns that make a file of one repository secret by its name, on top of the built-in
+    # names: its own secret patterns and those for every repository.
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [Parameter(Mandatory)][string]$Identity)
+    $own = if ($Config.files.repos -is [System.Collections.IDictionary]) { $Config.files.repos[$Identity] }
+    [string[]]@(@($own.secret) + @($Config.files.secret) | Where-Object { $_ })
 }
 
 function Get-PhxIgnoredFile {
@@ -55,7 +67,7 @@ function Get-PhxRepoFileCandidate {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Record, [Parameter(Mandatory)][System.Collections.IDictionary]$Config, $List)
     $own = if ($Config.files.repos -is [System.Collections.IDictionary]) { $Config.files.repos[$Record.identity] }
     $rules = Get-PhxRepoFileRule -Config $Config -Identity $Record.identity
-    if (-not $List) { $List = Get-PhxIgnoredFile -Path (Get-PhxRepoKey $Record) -MaxBytes (Get-PhxMaxFileBytes $Config) -SecretPatterns ([string[]]@($own.secret | Where-Object { $_ })) -Rules $rules }
+    if (-not $List) { $List = Get-PhxIgnoredFile -Path (Get-PhxRepoKey $Record) -MaxBytes (Get-PhxMaxFileBytes $Config) -SecretPatterns (Get-PhxRepoSecretPattern -Config $Config -Identity $Record.identity) -Rules $rules }
     $plain = @(if ($own.plain -is [System.Collections.IDictionary]) {
             foreach ($key in $own.plain.Keys) { [pscustomobject]@{ Pattern = [PSPhoenix.Engine.PathPattern]::Parse($key); Signatures = @($own.plain[$key]) } }
         })

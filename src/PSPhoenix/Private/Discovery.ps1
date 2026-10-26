@@ -332,13 +332,14 @@ function Invoke-PhxScan {
     # Discovers the repositories under every root, saves the cache and says what changed since the
     # last scan. -Roots scans those instead of the configured ones, and -NoSave leaves the cache as
     # it is: the wizard scans the roots it is offered and saves them only with the config.
-    # -PassThru also returns the records.
+    # -PassThru also returns the records. -Brief leaves out the count per root and in all: the
+    # wizard says it in its own words.
     #
     # Nothing a scan cannot see is dropped: a root whose folder is gone (an unplugged drive, a
     # disconnected share) keeps the repositories the last scan found there, marked offline; a
     # repository git cannot read keeps its last record. A backup must not lose them because a drive
     # was out for an hour.
-    param([object[]]$Roots, [switch]$NoSave, [switch]$PassThru)
+    param([object[]]$Roots, [switch]$NoSave, [switch]$PassThru, [switch]$Brief)
     $roots = if ($PSBoundParameters.ContainsKey('Roots')) { @($Roots) } else { Get-PhxRoot }
     if (-not $roots) { throw 'no roots yet - add the folders that hold your repositories: phx roots add <path>' }
     $previous = Read-PhxRepoCache
@@ -356,8 +357,16 @@ function Invoke-PhxScan {
                 try { Get-PhxRepoRecord -Root $root.path -Path $path }
                 catch {
                     $last = $before[$path]
-                    $note = if ($last) { ' - kept what the last scan recorded' } else { ' - not recorded' }
-                    Write-Host "  skipped ${path}: $(Hide-PhxSecret $_.Exception.Message)$note" -ForegroundColor Yellow
+                    # A .git git does not take for a repository - an empty or half-copied one - in
+                    # one line, without git's command line and its fatal: ...
+                    if ($_.Exception.Message -match 'not a git repository|can only be used inside a git repository') {
+                        $note = if ($last) { 'kept what the last scan recorded' } else { 'skipped' }
+                        Write-Host "  $path - .git is not a valid repository, $note" -ForegroundColor Yellow
+                    }
+                    else {
+                        $note = if ($last) { ' - kept what the last scan recorded' } else { ' - not recorded' }
+                        Write-Host "  skipped ${path}: $(Hide-PhxSecret $_.Exception.Message)$note" -ForegroundColor Yellow
+                    }
                     if ($last) { $last }
                 }
             })
@@ -370,11 +379,13 @@ function Invoke-PhxScan {
             continue
         }
         foreach ($record in $found) { $records.Add($record) }
-        Write-Host ('  {0,-48} {1,4} repositories' -f $root.path, $found.Count)
+        if (-not $Brief) { Write-Host ('  {0,-48} {1,4} repositories' -f $root.path, $found.Count) }
     }
     if (-not $NoSave) { Save-PhxRepoCache -Roots $roots -Records $records }
 
-    Write-Host (Format-PhxRepoCount $records) -ForegroundColor Green
+    # The count in all, unless it only says again what the one root's line said.
+    $total = Format-PhxRepoCount $records
+    if (-not $Brief -and ($roots.Count -gt 1 -or $total -ne "$($records.Count) repositories")) { Write-Host $total -ForegroundColor Green }
     if ($previous) {
         $comparison = Get-PhxPathComparison
         $before = [Collections.Generic.HashSet[string]]::new([StringComparer]::FromComparison($comparison))

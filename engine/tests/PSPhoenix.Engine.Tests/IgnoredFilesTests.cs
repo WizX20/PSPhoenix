@@ -300,6 +300,26 @@ public sealed class FileRulesTests
     }
 
     [Fact]
+    public void A_repository_s_own_decision_beats_the_one_for_every_repository()
+    {
+        FileRules every = new(include: ["/.env", "*.local.json"], secret: ["/keys.txt"], exclude: ["/tmp/"]);
+        FileRules rules = new(exclude: ["/.env"], include: ["/tmp/keep.txt"], everyRepository: every);
+
+        rules.Decide(File(".env", secretName: true)).Should().Be(FileDecision.Exclude);
+        rules.Decide(File("app.local.json")).Should().Be(FileDecision.Include);
+        rules.Decide(File("keys.txt")).Should().Be(FileDecision.Secret);
+        rules.Decide(File("tmp/keep.txt")).Should().Be(FileDecision.Include);
+        rules.Decide(File("tmp/other.txt")).Should().Be(FileDecision.Exclude);
+        rules.Decide(File("notes.md")).Should().Be(FileDecision.Pending);
+        rules.Decide(File("big.local.json", filter: CandidateFilter.Large)).Should().Be(FileDecision.Exclude);
+        rules.Names("x/app.local.json").Should().BeTrue();
+        rules.Prunes("tmp").Should().BeFalse();
+        new FileRules(everyRepository: new FileRules(exclude: ["/tmp/"])).Prunes("tmp").Should().BeTrue();
+        // *.local.json for every repository can match inside it.
+        new FileRules(everyRepository: every).Prunes("tmp").Should().BeFalse();
+    }
+
+    [Fact]
     public void An_included_file_with_a_secret_name_is_secret()
     {
         new FileRules(include: [".env"]).Decide(File(".env", secretName: true)).Should().Be(FileDecision.Secret);

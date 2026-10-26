@@ -1,8 +1,10 @@
 # phx review (docs/design.md -> Gitignored files: filters and review): the gitignored files nobody
 # decided on yet, per repository, and the answer for each - include, secret, exclude, or not a
 # secret after all. Measured on a first machine: ~700 candidates of which ~60 matter, so a whole
-# folder or a pattern is decided at once. Every answer is saved in the config straight away; q stops,
-# keeping what was decided. phx init ends with it.
+# folder or a pattern is decided at once, a file found in several repositories once for all of
+# them, and one key accepts the rest as proposed. On a console it is a list with check boxes;
+# elsewhere typed answers. Every answer is saved in the config straight away; q stops, keeping
+# what was decided. phx init ends with it.
 
 function Format-PhxSize {
     # 512 B, 1.2 KB, 3.4 MB.
@@ -33,8 +35,17 @@ function Get-PhxReviewEntry {
 
 function Get-PhxReviewNote {
     # What the review says about an entry: its size, and why it is secret - by its name, or by what
-    # is in it (the kind and the line, never the value).
+    # is in it (the kind and the line, never the value). A file found in several repositories says
+    # in how many.
     param([Parameter(Mandatory)]$Entry)
+    if ($Entry.PSObject.Properties['Repositories']) {
+        $file = @($Entry.Files | Where-Object { $_.SecretName -or @($_.Findings | Where-Object { $_ }).Count })[0]
+        $text = "in $($Entry.Repositories) repositories"
+        if ($file.SecretName) { return "$text   secret by its name - stored encrypted" }
+        $finding = @($file.Findings)[0]
+        if ($finding) { return "$text   holds $($finding.Description) in one - stored encrypted" }
+        return $text
+    }
     if ($Entry.Folder) {
         $secret = @($Entry.Files | Where-Object { $_.SecretName -or @($_.Findings | Where-Object { $_ }).Count }).Count
         $text = "$($Entry.Files.Count) files, $(Format-PhxSize $Entry.Size)"
@@ -79,21 +90,23 @@ function Get-PhxRepoDecision {
 }
 
 function Add-PhxReviewDecision {
-    # Adds patterns to one of a repository's lists (include, secret, exclude); the same pattern
-    # leaves the other two - a new answer replaces an old one.
+    # Adds patterns to one of a repository's lists (include, secret, exclude) - or, with no
+    # identity, to the lists for every repository (files.include, files.secret, files.exclude); the
+    # same pattern leaves the other two - a new answer replaces an old one.
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Config,
-        [Parameter(Mandatory)][string]$Identity,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Identity,
         [Parameter(Mandatory)][ValidateSet('include', 'secret', 'exclude')][string]$List,
         [Parameter(Mandatory)][string[]]$Patterns
     )
-    $decisions = Get-PhxRepoDecision -Config $Config -Identity $Identity
+    $decisions = if ($Identity) { Get-PhxRepoDecision -Config $Config -Identity $Identity } else { $Config.files }
     foreach ($name in 'include', 'secret', 'exclude') {
         $current = @($decisions[$name] | Where-Object { $_ })
         # A list even of one: the config holds arrays.
         $decisions[$name] = [string[]]$(if ($name -eq $List) { @($current + @($Patterns | Where-Object { $current -notcontains $_ })) }
             else { @($current | Where-Object { $Patterns -notcontains $_ }) })
-        if (-not @($decisions[$name] | Where-Object { $_ }).Count) { $decisions.Remove($name) }
+        # files.include and the rest stay, empty; a repository's empty lists go.
+        if ($Identity -and -not @($decisions[$name] | Where-Object { $_ }).Count) { $decisions.Remove($name) }
     }
 }
 
@@ -122,7 +135,8 @@ function Invoke-PhxReviewAnswer {
     # Throws when the answer is not one.
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Config,
-        [Parameter(Mandatory)][string]$Identity,
+        # Empty: a decision for every repository.
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Identity,
         [Parameter(Mandatory)][string]$Answer,
         [Parameter(Mandatory)][object[]]$Entries,
         [Parameter(Mandatory)][AllowEmptyCollection()][Collections.Generic.List[string]]$Open
@@ -141,6 +155,7 @@ function Invoke-PhxReviewAnswer {
         return "${list}: $what"
     }
     $chosen = @(Get-PhxReviewSelection -Text $what -Entries $Entries)
+    if ($verb -eq 'n' -and -not $Identity) { throw "n is decided per repository - the file's own repository lists it next" }
     switch ($verb) {
         'o' {
             $folders = @($chosen | Where-Object Folder)
@@ -172,7 +187,7 @@ function Show-PhxReviewHelp {
     Write-Host '  n <numbers>  not a secret: what looks like one in it is none - back it up as it is' -ForegroundColor DarkGray
     Write-Host '  o <numbers>  open a folder, to decide on what is in it' -ForegroundColor DarkGray
     Write-Host '  numbers: 3, 1,4, 2-6, or * for all; i, s and x also take a pattern: x *.log, i src/**/local.json, x tmp/' -ForegroundColor DarkGray
-    Write-Host '  Enter: next repository (the rest stays pending); q: stop' -ForegroundColor DarkGray
+    Write-Host '  a: accept the rest as proposed; Enter: next repository (the rest stays pending); q: stop' -ForegroundColor DarkGray
 }
 
 function Get-PhxReviewRepository {
@@ -210,10 +225,284 @@ function Get-PhxReviewPending {
     }
 }
 
+function Get-PhxReviewKind {
+    # The pending files found under the same path in more than one repository - .env in 9 of them -
+    # as entries the review decides on once for all: { Path, Folder, Files, Size, Repositories },
+    # the most widespread first.
+    param([object[]]$Work = @())
+    $files = @(foreach ($item in $Work) { foreach ($file in @($item.Pending)) { [pscustomobject]@{ Key = $item.Repository.Key; File = $file } } })
+    $kinds = foreach ($group in @($files | Group-Object { $_.File.Path })) {
+        $repositories = @($group.Group.Key | Select-Object -Unique).Count
+        if ($repositories -lt 2) { continue }
+        [pscustomobject]@{ Path = $group.Name; Folder = $false; Files = @($group.Group.File); Size = [long]($group.Group.File | Measure-Object Size -Sum).Sum; Repositories = $repositories }
+    }
+    @($kinds | Sort-Object @{ Expression = 'Repositories'; Descending = $true }, @{ Expression = { $_.Path } })
+}
+
+function Get-PhxReviewProposal {
+    # What the review proposes for an entry, until a decision of #89 does it for it: a file is
+    # included - secret when its name or content says so; a folder of several files, unknown, is
+    # left out. Returns { Include, Secret }.
+    param([Parameter(Mandatory)]$Entry)
+    $secret = @($Entry.Files | Where-Object { $_.SecretName -or @($_.Findings | Where-Object { $_ }).Count }).Count -gt 0
+    [pscustomobject]@{ Include = -not $Entry.Folder; Secret = $secret -and -not $Entry.Folder }
+}
+
+function New-PhxReviewRow {
+    # One row of the review's list: the entry, and the decision on it - the proposal until changed.
+    # Locked: secret by its name, so secret it stays.
+    param([Parameter(Mandatory)]$Entry)
+    $proposal = Get-PhxReviewProposal $Entry
+    [pscustomobject]@{
+        Entry   = $Entry
+        Include = $proposal.Include
+        Secret  = $proposal.Secret
+        Locked  = -not $Entry.Folder -and @($Entry.Files | Where-Object { -not $_.SecretName }).Count -eq 0
+    }
+}
+
+function Save-PhxReviewRow {
+    # The decisions on a list's rows into $Config (not saved): excluded, secret (always encrypted),
+    # included - and a file whose content looked like a secret, included without the secret mark,
+    # is "not a secret" (per repository only). Returns what it did, as a line.
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [Parameter(Mandatory)][AllowEmptyString()][string]$Identity, [object[]]$Rows = @())
+    $lists = @{ include = [Collections.Generic.List[string]]::new(); secret = [Collections.Generic.List[string]]::new(); exclude = [Collections.Generic.List[string]]::new() }
+    $plain = 0
+    foreach ($row in $Rows) {
+        $pattern = ConvertTo-PhxReviewPattern $row.Entry
+        $findings = @($row.Entry.Files | ForEach-Object { @($_.Findings) } | Where-Object { $_ })
+        if (-not $row.Include) { $lists.exclude.Add($pattern) }
+        elseif ($row.Secret) { $lists.secret.Add($pattern) }
+        elseif ($Identity -and -not $row.Entry.Folder -and $findings.Count) {
+            Set-PhxReviewPlain -Config $Config -Identity $Identity -Pattern $pattern -Signatures @($findings | ForEach-Object Signature)
+            $plain++
+        }
+        else { $lists.include.Add($pattern) }
+    }
+    foreach ($name in 'include', 'secret', 'exclude') {
+        if ($lists[$name].Count) { Add-PhxReviewDecision -Config $Config -Identity $Identity -List $name -Patterns $lists[$name].ToArray() }
+    }
+    $parts = @(
+        if ($lists.include.Count + $plain) { "$($lists.include.Count + $plain) included" }
+        if ($lists.secret.Count) { "$($lists.secret.Count) secret" }
+        if ($lists.exclude.Count) { "$($lists.exclude.Count) excluded" }
+    )
+    if ($parts.Count) { $parts -join ', ' } else { 'nothing decided' }
+}
+
+function Get-PhxReviewVisible {
+    # The rows a list shows: those whose path holds the filter, ignoring case - all without one.
+    param([Parameter(Mandatory)]$State)
+    if (-not $State.Filter) { return @($State.Rows) }
+    @($State.Rows | Where-Object { $_.Entry.Path.IndexOf($State.Filter, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+}
+
+function Step-PhxReview {
+    # One key on the review's list: moves the cursor, changes the decision on a row, opens a folder,
+    # or ends the list. Returns what the key did: move, toggle, open, filter, save, rest, skip,
+    # stop or none.
+    param([Parameter(Mandatory)]$State, [Parameter(Mandatory)][ConsoleKeyInfo]$Key)
+    $visible = @(Get-PhxReviewVisible $State)
+    $count = $visible.Count
+    if ($Key.KeyChar -eq '/') { return 'filter' }
+    switch ($Key.Key) {
+        'Enter' { return 'save' }
+        'A' { return 'rest' }
+        'Escape' { return 'skip' }
+        'Q' { return 'stop' }
+    }
+    if (-not $count) { return 'none' }
+    if ($State.Index -ge $count) { $State.Index = $count - 1 }
+    $row = $visible[$State.Index]
+    switch ($Key.Key) {
+        { $_ -in 'UpArrow', 'K' } { $State.Index = ($State.Index - 1 + $count) % $count; return 'move' }
+        { $_ -in 'DownArrow', 'J', 'Tab' } { $State.Index = ($State.Index + 1) % $count; return 'move' }
+        'Home' { $State.Index = 0; return 'move' }
+        'End' { $State.Index = $count - 1; return 'move' }
+        'Spacebar' { $row.Include = -not $row.Include; return 'toggle' }
+        'S' {
+            if ($row.Locked) { return 'none' }
+            $row.Secret = -not $row.Secret
+            # Secret means backed up, encrypted.
+            if ($row.Secret) { $row.Include = $true }
+            return 'toggle'
+        }
+        'RightArrow' {
+            if (-not $row.Entry.Folder -or -not $State.CanOpen) { return 'none' }
+            # The folder gives way to what is in it, each taking the folder's include.
+            $children = @(Get-PhxReviewEntry -Files $row.Entry.Files -Prefix $row.Entry.Path | ForEach-Object {
+                    $child = New-PhxReviewRow $_
+                    $child.Include = $row.Include
+                    $child
+                })
+            $at = $State.Rows.IndexOf($row)
+            $State.Rows.RemoveAt($at)
+            $State.Rows.InsertRange($at, [object[]]$children)
+            return 'open'
+        }
+    }
+    'none'
+}
+
+function Format-PhxReviewRow {
+    # One row of the review's list as shown: cursor, tick box, the decision, path and note - cut to
+    # the width, so a row never wraps (a redraw counts rows).
+    param([Parameter(Mandatory)]$Row, [switch]$Current, [int]$Width = 120)
+    $cursor = if ($Current) { '>' } else { ' ' }
+    $box = if ($Row.Include) { '[x]' } else { '[ ]' }
+    $what = if (-not $Row.Include) { 'exclude' } elseif ($Row.Secret) { 'secret' } else { 'include' }
+    $text = '  {0} {1} {2,-8} {3,-40} {4}' -f $cursor, $box, $what, $Row.Entry.Path, (Get-PhxReviewNote $Row.Entry)
+    $text = $text.TrimEnd()
+    if ($text.Length -ge $Width) { $text = $text.Substring(0, [Math]::Max(1, $Width - 4)) + '...' }
+    $text
+}
+
+function Read-PhxReviewList {
+    # The review's list on a console: drawn, and redrawn in place on every key - as many rows as fit,
+    # scrolling with the cursor. Returns how it ended: save, rest, skip or stop; the decisions are in
+    # $State.Rows.
+    param([Parameter(Mandatory)][string]$Title, [Parameter(Mandatory)]$State)
+    $width = try { [Console]::WindowWidth } catch { 0 }
+    if ($width -lt 20) { $width = 120 }
+    $height = try { [Console]::WindowHeight } catch { 0 }
+    $room = if ($height -lt 12) { 20 } else { $height - 6 }
+    $open = if ($State.CanOpen) { ', right opens a folder' } else { '' }
+    Write-Host
+    Write-Host $Title -ForegroundColor Cyan
+    Write-Host "  space includes or excludes, s marks secret$open, / filters; Enter saves and goes on, a accepts the rest as proposed, Esc skips, q stops" -ForegroundColor DarkGray
+    $escape = [char]27
+    $visible = try { [Console]::CursorVisible } catch { $true }
+    $drawn = 0
+    $top = 0
+    try {
+        try { [Console]::CursorVisible = $false } catch { $null = $_ }
+        while ($true) {
+            if ($drawn) { Write-Host "$escape[$($drawn)F$escape[0J" -NoNewline }
+            $rows = @(Get-PhxReviewVisible $State)
+            if ($State.Index -ge $rows.Count) { $State.Index = [Math]::Max(0, $rows.Count - 1) }
+            if ($State.Index -lt $top) { $top = $State.Index }
+            if ($State.Index -ge $top + $room) { $top = $State.Index - $room + 1 }
+            if ($top -gt [Math]::Max(0, $rows.Count - $room)) { $top = [Math]::Max(0, $rows.Count - $room) }
+            $drawn = 0
+            for ($i = $top; $i -lt [Math]::Min($rows.Count, $top + $room); $i++) {
+                $color = if ($i -eq $State.Index) { 'Cyan' } else { 'Gray' }
+                Write-Host (Format-PhxReviewRow -Row $rows[$i] -Current:($i -eq $State.Index) -Width $width) -ForegroundColor $color
+                $drawn++
+            }
+            $footer = @(
+                if ($State.Filter) { "filter '$($State.Filter)': $($rows.Count) of $($State.Rows.Count)" }
+                if ($top -gt 0) { "$top more above" }
+                if ($rows.Count -gt $top + $room) { "$($rows.Count - $top - $room) more below" }
+            )
+            Write-Host "  $($footer -join ' - ')" -ForegroundColor DarkGray
+            $drawn++
+            $action = Step-PhxReview -State $State -Key (Read-PhxKey)
+            if ($action -eq 'filter') {
+                Write-Host "$escape[$($drawn)F$escape[0J" -NoNewline
+                $drawn = 0
+                try { [Console]::CursorVisible = $true } catch { $null = $_ }
+                $State.Filter = Read-PhxAnswer -Prompt '  Filter (Enter: none)'
+                # The question's line goes as well.
+                Write-Host "$escape[1F$escape[0J" -NoNewline
+                try { [Console]::CursorVisible = $false } catch { $null = $_ }
+                $State.Index = 0
+                $top = 0
+                continue
+            }
+            if ($action -in 'save', 'rest', 'skip', 'stop') {
+                Write-Host "$escape[$($drawn)F$escape[0J" -NoNewline
+                return $action
+            }
+        }
+    }
+    finally { try { [Console]::CursorVisible = $visible } catch { $null = $_ } }
+}
+
+function Invoke-PhxReviewList {
+    # One list of the review - the files in several repositories, or one repository's - until it is
+    # done: next, rest (accept the rest as proposed) or stop. $Entries gives the entries as they
+    # are now, with the folders in its argument opened. On a console a list with check boxes, saved
+    # as a whole; elsewhere typed answers, each saved at once.
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Config,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Identity,
+        [Parameter(Mandatory)][string]$Title,
+        [Parameter(Mandatory)][scriptblock]$Entries,
+        [switch]$Console
+    )
+    $open = [Collections.Generic.List[string]]::new()
+    if ($Console) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($entry in @(& $Entries @())) { $rows.Add((New-PhxReviewRow $entry)) }
+        if (-not $rows.Count) { return 'next' }
+        $files = @($rows | ForEach-Object { $_.Entry.Files }).Count
+        $state = [pscustomobject]@{ Rows = $rows; Index = 0; Filter = ''; CanOpen = [bool]$Identity }
+        $action = Read-PhxReviewList -Title "$Title   $files pending" -State $state
+        if ($action -in 'skip', 'stop') { return @{ skip = 'next'; stop = 'stop' }[$action] }
+        $done = Save-PhxReviewRow -Config $Config -Identity $Identity -Rows @($rows)
+        Save-PhxConfig $Config
+        Write-Host "$Title - $done" -ForegroundColor Green
+        return @{ save = 'next'; rest = 'rest' }[$action]
+    }
+    $show = $true
+    while ($true) {
+        $current = @(& $Entries @($open))
+        if (-not $current.Count) { Write-Host '  all decided' -ForegroundColor Green; return 'next' }
+        if ($show) {
+            $files = @($current | ForEach-Object { $_.Files }).Count
+            Write-Host
+            Write-Host "$Title   $files pending" -ForegroundColor Cyan
+            for ($i = 0; $i -lt $current.Count; $i++) {
+                $proposal = Get-PhxReviewProposal $current[$i]
+                $proposed = if (-not $proposal.Include) { 'exclude' } elseif ($proposal.Secret) { 'secret' } else { 'include' }
+                Write-Host ('  {0,3}. {1,-44} {2}   proposed: {3}' -f ($i + 1), $current[$i].Path, (Get-PhxReviewNote $current[$i]), $proposed)
+            }
+        }
+        # After an answer that went wrong only the message, not the whole list again.
+        $show = $false
+        $answer = Read-PhxAnswer -Prompt '  Decide (? for help)'
+        if (-not $answer) { return 'next' }
+        if ($answer -eq 'q') { return 'stop' }
+        if ($answer -eq 'a') { return 'rest' }
+        if ($answer -in '?', 'h', 'help') { Show-PhxReviewHelp; continue }
+        if ($answer -match '^(\*|[\d\s,-]+)$') {
+            # Numbers without a letter: which decision, then.
+            $letter = Read-PhxAnswer -Prompt "  $answer - include (i), secret (s) or exclude (x)?"
+            if ($letter -notin 'i', 's', 'x') { Write-Host '  include (i), secret (s) or exclude (x) - nothing decided' -ForegroundColor Yellow; continue }
+            $answer = "$letter $answer"
+        }
+        try { $done = Invoke-PhxReviewAnswer -Config $Config -Identity $Identity -Answer $answer -Entries $current -Open $open }
+        catch { Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow; continue }
+        if ($answer -notmatch '^o\s') {
+            # Saved at once: what is decided stays decided, whatever comes next.
+            Save-PhxConfig $Config
+        }
+        Write-Host "  $done" -ForegroundColor Green
+        $show = $true
+    }
+}
+
+function Approve-PhxReviewProposal {
+    # "Accept the rest as proposed": every pending file of these repositories decided as the review
+    # proposes, in one go. Returns how many files.
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Config, [object[]]$Work = @())
+    $count = 0
+    foreach ($item in $Work) {
+        $pending = @(Get-PhxReviewPending -Repository $item.Repository -Config $Config -Scans $item.Scans)
+        if (-not $pending.Count) { continue }
+        $rows = @(Get-PhxReviewEntry -Files $pending | ForEach-Object { New-PhxReviewRow $_ })
+        Save-PhxReviewRow -Config $Config -Identity $item.Repository.Record.identity -Rows $rows | Out-Null
+        $count += $pending.Count
+    }
+    Save-PhxConfig $Config
+    $count
+}
+
 function Invoke-PhxReview {
-    # phx review: per repository its pending files, and an answer at a time until none is left,
-    # Enter moves on or q stops. With -Ask (phx init) it asks first whether to review at all.
-    # Afterwards the state's pending list (phx status) is what is left.
+    # phx review: first the files found in several repositories, decided once for all of them; then
+    # per repository its pending files, until none is left - Enter (or Esc on a console) moves on,
+    # a accepts the rest as proposed, q stops. With -Ask (phx init) it asks first whether to review
+    # at all. Afterwards the state's pending list (phx status) is what is left.
     param([switch]$Ask)
     if (-not [IO.File]::Exists((Get-PhxConfigPath))) { throw 'not set up yet - run: phx init' }
     $config = Read-PhxConfig
@@ -234,35 +523,35 @@ function Invoke-PhxReview {
         $now = try { Read-PhxInitYesNo -Prompt '  Review them now? (later: phx review)' } catch [OperationCanceledException] { $false }
         if (-not $now) { return }
     }
-    Show-PhxReviewHelp
-    $stopped = $false
-    foreach ($item in $withPending) {
-        if ($stopped) { break }
-        $repository = $item.Repository
-        $open = [Collections.Generic.List[string]]::new()
-        while ($true) {
-            $pending = @(Get-PhxReviewPending -Repository $repository -Config $config -Scans $item.Scans)
-            $item.Pending = $pending
-            if (-not $pending.Count) { Write-Host '  all decided' -ForegroundColor Green; break }
-            $entries = @(Get-PhxReviewEntry -Files $pending -Open @($open))
-            Write-Host
-            Write-Host "$($repository.Record.identity)   $($repository.Key)   $($pending.Count) pending" -ForegroundColor Cyan
-            for ($i = 0; $i -lt $entries.Count; $i++) {
-                Write-Host ('  {0,3}. {1,-44} {2}' -f ($i + 1), $entries[$i].Path, (Get-PhxReviewNote $entries[$i]))
-            }
-            $answer = Read-PhxAnswer -Prompt '  Decide (? for help)'
-            if (-not $answer) { break }
-            if ($answer -eq 'q') { $stopped = $true; break }
-            if ($answer -in '?', 'h', 'help') { Show-PhxReviewHelp; continue }
-            try { $done = Invoke-PhxReviewAnswer -Config $config -Identity $repository.Record.identity -Answer $answer -Entries $entries -Open $open }
-            catch { Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow; continue }
-            if ($answer -notmatch '^o\s') {
-                # Saved at once: what is decided stays decided, whatever comes next.
-                Save-PhxConfig $config
-            }
-            Write-Host "  $done" -ForegroundColor Green
+    $console = Test-PhxChoiceConsole
+    if (-not $console) { Show-PhxReviewHelp }
+    $refresh = {
+        foreach ($item in $withPending) { $item.Pending = @(Get-PhxReviewPending -Repository $item.Repository -Config $config -Scans $item.Scans) }
+    }
+    $outcome = 'next'
+    $from = 0
+    if (@(Get-PhxReviewKind -Work $withPending).Count) {
+        $outcome = Invoke-PhxReviewList -Config $config -Identity '' -Title 'In more than one repository - one decision for all of them' -Console:$console -Entries {
+            & $refresh
+            Get-PhxReviewKind -Work $withPending
         }
     }
+    for (; $from -lt $withPending.Count -and $outcome -eq 'next'; $from++) {
+        $item = $withPending[$from]
+        $repository = $item.Repository
+        $outcome = Invoke-PhxReviewList -Config $config -Identity $repository.Record.identity -Title "$($repository.Record.identity)   $($repository.Key)" -Console:$console -Entries {
+            param($Open)
+            $item.Pending = @(Get-PhxReviewPending -Repository $repository -Config $config -Scans $item.Scans)
+            Get-PhxReviewEntry -Files $item.Pending -Open @($Open)
+        }
+    }
+    if ($outcome -eq 'rest') {
+        # This repository's rest too: a list on a console has saved it all, typed answers not.
+        $start = [Math]::Max(0, $from - 1)
+        $accepted = Approve-PhxReviewProposal -Config $config -Work @($withPending | Select-Object -Skip $start)
+        Write-Host "accepted as proposed: $accepted file(s)" -ForegroundColor Green
+    }
+    & $refresh
     $left = @($work | Where-Object { $_.Pending.Count })
     Save-PhxRepoFilesPending -Pending @($left | ForEach-Object {
             [ordered]@{

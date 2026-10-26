@@ -184,20 +184,39 @@ Including everything is not an option; a pure allowlist misses files nobody thou
    pending files, which each backup and each review record in the state folder
    (`repo-files.json`).
 
-**`phx review`** lists, per repository, the pending files grouped by their first folder: a folder of
-several files is one line (`leftover/   12 files, 40 KB, 1 secret`) and `o <n>` opens it. Each
-line says why a file is secret - by its name, or by what the [detector](#secrets) finds in it
-(the kind and the line, never the value). An answer is a letter and what it is for:
+**`phx review`** first lists the pending files found under the same path in more than one
+repository (`.env   in 9 repositories`): one decision there is for all of them, and for every
+repository scanned later, in `files.include`, `files.secret` or `files.exclude`. Then, per
+repository, its pending files grouped by their first folder: a folder of several files is one line
+(`leftover/   12 files, 40 KB, 1 secret`). Each line says why a file is secret - by its name, or by
+what the [detector](#secrets) finds in it (the kind and the line, never the value) - and what the
+review proposes: a file included (secret when its name or content says so), a folder of several
+files left out. `a` accepts the rest as proposed - every list still to come - in one key.
+
+On a console each list is one screen of check boxes, the proposals checked:
+
+```
+  > [x] secret   .env                                     15 B   secret by its name - stored encrypted
+    [ ] exclude  leftover/                                2 files, 8 B
+    [x] include  notes.md                                 9 B
+```
+
+Space includes or excludes the row, `s` marks it secret or not (a file secret by its name stays
+secret; unmarking a file whose content looked like a secret is "not a secret", below), right
+opens a folder into its files, `/` filters the rows by path. Enter saves the list and goes on, Esc
+skips it (its files stay pending), `q` stops. Elsewhere - redirected, or no console - the lists are
+numbered and an answer is a letter and what it is for:
 
 - `i` include, `s` secret (always encrypted), `x` exclude - with numbers (`1,3-5`, `*` for all),
-  or with a pattern (`x *.log`, `i src/**/local.json`);
+  or with a pattern (`x *.log`, `i src/**/local.json`); numbers without a letter ask which;
 - `n` "not a secret": the detector's findings in that file are accepted, and it is backed up as it
-  is (see below);
-- Enter moves on to the next repository, the rest staying pending; `q` stops.
+  is (see below) - per repository only;
+- `o` opens a folder; Enter moves on to the next list, the rest staying pending; `q` stops.
 
-A number becomes a pattern from the repository's top (`/notes.md`, `/leftover/`), so it does not
-also catch a file of that name deeper down. Every answer is saved in the config at once, a new one
-for the same pattern replacing the old; a second review shows only what is still pending.
+After an answer that goes wrong only the message shows, not the list again. A row becomes a pattern
+from the repository's top (`/notes.md`, `/leftover/`), so it does not also catch a file of that name
+deeper down. Every answer - every list on a console - is saved in the config at once, a new one for
+the same pattern replacing the old; a second review shows only what is still pending.
 
 **Not a secret.** `n` stores the file's pattern with the
 [signature](#secrets) of each finding the review showed - its kind and key, not its place:
@@ -207,8 +226,8 @@ file is encrypted again. A file secret by its name cannot be called no secret: i
 secret, or excluded.
 
 **Decisions** are patterns in `files.repos[<identity>]` (`include`, `secret`, `exclude`, and
-`plain` for "not a secret") and in `files.exclude` for every repository. A pattern is a path
-relative to the repository, with `/`:
+`plain` for "not a secret") and in `files.include`, `files.secret` and `files.exclude` for every
+repository. A pattern is a path relative to the repository, with `/`:
 
 - `*` matches within a segment, `?` one character, `**` any number of segments;
 - a pattern without a `/` matches that name at any depth, as in a `.gitignore`; one with a `/` -
@@ -218,7 +237,9 @@ relative to the repository, with `/`:
 - case is ignored, on every platform.
 
 `secret` wins over `include`, and `include` over `exclude`: a folder excluded as a whole can still
-have one file in it included by name. An included file with a secret name is a secret. Only a
+have one file in it included by name. A repository's own decisions come before those for every
+repository: `/.env` excluded in one repository stays excluded when `.env` is included for all. An
+included file with a secret name is a secret. Only a
 pattern that names one file - no wildcard, not a folder - overrides a built-in filter (step 3 and 4).
 
 **Backup and restore.** The decided files go to `repo-files/<identity>/<path>`, a secret as
@@ -606,21 +627,44 @@ An unknown command, or one whose milestone has not arrived yet, is an error - `$
 
 `phx init` saves nothing before its last question - neither the config nor the scan of the roots it
 offers; `q` at any prompt, Ctrl+C or the end of input stops without saving - and starts from the
-current values when run again. A choice from a list - the roots (several), the account per owner,
-the target, the interval - is made with the arrow keys on a console: space ticks a row, Enter
-accepts, `q` or Esc stops, and a last row takes a typed path or interval. Without one (input
+current values when run again. Every step is counted ("Step 3 of 8 - Accounts"; seven where there
+is no schedule step), asks one plain question with one line of why - `?` shows the details
+(search depth, `phx roots add -Depth`, what a snapshot holds) - and ends with one line that
+confirms the answer (`✓ C:\Repos - 27 repositories`; `+` on a console whose code page has no check
+mark). A default is shown as what it is (`Enter = C:\Repos (27 repositories)`), not as list
+numbers. A choice from a list - the roots (several), the account per owner, the target, the
+interval - is made with the arrow keys on a console: space ticks a row, Enter accepts, `?`
+explains, `q` or Esc stops, and a last row takes a typed path or interval. Without one (input
 redirected, `-NonInteractive`, another host) the same lists are numbered and answered by typing
-numbers, a label or a path. It offers the current roots and the usual folders that hold
-repositories (`~/source/repos`, `C:\Repos`, `~/src`, ...) with their repository counts; asks, per
-owner on a host `gh` is logged in to, which account its repositories use - defaulting to the account
-set before (kept, with a warning, when `gh` is not logged in with it), else what their credential
-helpers say, else the active account; suggests the OneDrive for Business folder as target, with a
-note on where company data belongs when another folder is chosen; names the machine (the computer
-name, not a folder another installation wrote); sets up the age key secrets are encrypted to (see
-[Secrets](#secrets)); takes an interval from 15 minutes to 31 days (Task Scheduler's longest
-repetition); and, on Windows, asks to turn the schedule on. Once saved, it shows how many
-gitignored files wait for a decision and offers the review (`phx review`), which saves each
-answer itself - `q` there leaves the saved set-up as it is. Each later milestone adds its step.
+numbers, a label or a path.
+
+1. **Repositories**: the current roots and the usual folders that hold repositories
+   (`~/source/repos`, `C:\Repos`, `~/src`, ...) with their repository counts.
+2. **Discovery**: reads them, without saving; a folder whose `.git` git does not take for a
+   repository is one line (`<path> - .git is not a valid repository, skipped`), not git's error.
+3. **Accounts**: per owner on a host `gh` is logged in to, which account clones its repositories -
+   defaulting to the account set before (kept, with a warning, when `gh` is not logged in with
+   it), else what their credential helpers say, else the active account.
+4. **Target**: suggests the OneDrive folders; a suggested folder that does not exist yet is
+   created when saving (the summary marks it new), a typed one is asked about only when the folder
+   it is in is missing too (a typo?). On a work machine - one with OneDrive for Business - a
+   personal cloud folder (the personal OneDrive, Dropbox, Google Drive, iCloud) gets a note on
+   where company data belongs.
+5. **Machine**: the computer name, not a folder another installation wrote.
+6. **Secrets**: the age key secrets are encrypted to (see [Secrets](#secrets)).
+7. **Interval**: 15 minutes to 31 days (Task Scheduler's longest repetition); the step says that a
+   run backs up only what no remote has, and that a run with nothing changed takes seconds and
+   writes nothing.
+8. **Schedule** (Windows): whether to run in the background - hidden, at below-normal priority, 5
+   minutes after logon and on the interval; `phx schedule off` stops it.
+
+Once saved, it shows how many gitignored files wait for a decision and offers the review (`phx
+review`), which saves each answer itself - `q` there leaves the saved set-up as it is - and ends
+with when the first background run comes and that `phx run` backs up now. Each later milestone
+adds its step.
+
+`phx scan` says the count in all only when it adds something to the per-root lines: more than one
+root, or repositories without a remote or offline.
 
 `phx run` is one backup run, and what the scheduled task calls (through `phx-task.ps1` next to the
 module, headless and at below-normal priority). It needs the set-up from `phx init` and the target
@@ -693,6 +737,8 @@ itself is part of every snapshot.
   "logging": { "verbose": false, "keepDays": 7 },
   "files": {
     "maxKB": 1024,
+    "include": [ "/.claude/settings.local.json" ],
+    "secret": [ "/.env" ],
     "exclude": [],
     "repos": {
       "github.com/contoso/webapp": {
