@@ -614,7 +614,7 @@ Describe 'repository identity' {
             $finding.Description | Should -Be 'a secret value (ClientSecret)'
             "$finding" | Should -Not -Match 'Zx9'
             Test-PhxTokenLike ('p' * 52) | Should -BeTrue
-            Test-PhxTokenLike 'wouter' | Should -BeFalse
+            Test-PhxTokenLike 'alice' | Should -BeFalse
         }
     }
 
@@ -1502,7 +1502,7 @@ Describe 'repos provider' {
     It 'is a registered provider with status lines per account' {
         # One (a local file/ remote) needs no account; the GitHub ones do.
         New-TestRepository (Join-Path $reposA 'Mine') -Remote 'origin=https://github.com/WizX20/mine.git' | Out-Null
-        New-TestRepository (Join-Path $reposA 'Work') -Remote 'origin=https://github.com/summitnl/work.git' | Out-Null
+        New-TestRepository (Join-Path $reposA 'Work') -Remote 'origin=https://github.com/contoso/work.git' | Out-Null
         InModuleScope PSPhoenix { $c = Read-PhxConfig; $c.accounts['github.com/WizX20'] = 'WizX20'; Save-PhxConfig $c }
         phx scan 6>$null
         Get-PhxOutput { phx providers } | Should -Match 'repos\s+Repositories'
@@ -2642,7 +2642,7 @@ Describe 'init' {
         $helped = New-TestRepository (Join-Path $script:InitWork 'Helped') -Remote 'origin=https://github.com/WizX20/helped.git'
         git -C $helped config --add credential.https://github.com.helper ''
         git -C $helped config --add credential.https://github.com.helper '!f() { gh auth token --user WizX20; }; f'
-        New-TestRepository (Join-Path $script:InitWork 'Company') -Remote 'origin=https://github.com/summitnl/app.git' | Out-Null
+        New-TestRepository (Join-Path $script:InitWork 'Company') -Remote 'origin=https://github.com/contoso/app.git' | Out-Null
         New-TestRepository (Join-Path $script:InitOther 'Lab') -Remote 'origin=https://dev.azure.com/org/proj/_git/lab' | Out-Null
         $script:InitEmpty = Join-Path $testHome 'NoRepos'
         New-Item -ItemType Directory -Path $script:InitEmpty | Out-Null
@@ -2660,7 +2660,7 @@ Describe 'init' {
         Mock Get-PhxRootCandidate -ModuleName PSPhoenix { $script:InitWork; $script:InitOther; $script:InitEmpty; (Join-Path $script:InitEmpty 'Missing') }
         Mock Select-PhxInitSecret -ModuleName PSPhoenix { [pscustomobject]@{ Recipient = $script:TestRecipient; Identity = $null; Passphrase = $null; Source = 'yours' } }
         Mock Get-PhxGhAccount -ModuleName PSPhoenix {
-            [pscustomobject]@{ Host = 'github.com'; Login = 'wpaap'; Active = $true }
+            [pscustomobject]@{ Host = 'github.com'; Login = 'work-login'; Active = $true }
             [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $false }
         }
         # The schedule question as on Windows, on every platform; registering is recorded, not done.
@@ -2682,7 +2682,7 @@ Describe 'init' {
     }
 
     It 'sets up roots, accounts, target, machine and interval from the defaults and a few answers' {
-        # roots, WizX20 account, summitnl account, target (created when saving), machine, interval (bad, good), schedule?, save?
+        # roots, WizX20 account, contoso account, target (created when saving), machine, interval (bad, good), schedule?, save?
         Set-TestAnswer '' '' '' '' '' 'soon' '2h' '' ''
         $output = Get-PhxOutput { phx init }
         $script:Answers.Count | Should -Be 0
@@ -2690,7 +2690,7 @@ Describe 'init' {
         @($config.roots.path) | Should -Be @($script:InitWork, $script:InitOther)
         @($config.roots.depth) | Should -Be @(3, 3)
         $config.accounts['github.com/WizX20'] | Should -Be 'WizX20'      # from its credential helper
-        $config.accounts['github.com/summitnl'] | Should -Be 'wpaap'    # the active account
+        $config.accounts['github.com/contoso'] | Should -Be 'work-login'    # the active account
         $config.accounts.Contains('dev.azure.com/org') | Should -BeFalse # not a gh host
         $config.target.type | Should -Be 'folder'
         $config.target.path | Should -Be (Join-Path $script:InitOneDrive 'PSPhoenix')
@@ -2787,22 +2787,22 @@ Describe 'init' {
     }
 
     It 'asks again for an account gh does not have, and stores its exact spelling' {
-        # WizX20's owner first (two repositories): a login gh lacks, then Enter; summitnl: typed in lower case.
+        # WizX20's owner first (two repositories): a login gh lacks, then Enter; contoso: typed in lower case.
         Set-TestAnswer '1' 'nobody' '' 'wizx20' '' '' '' '' ''
-        Get-PhxOutput { phx init } | Should -Match 'one of: wpaap, WizX20'
+        Get-PhxOutput { phx init } | Should -Match 'one of: work-login, WizX20'
         $script:Answers.Count | Should -Be 0
-        (InModuleScope PSPhoenix { Read-PhxConfig }).accounts['github.com/summitnl'] | Should -BeExactly 'WizX20'
+        (InModuleScope PSPhoenix { Read-PhxConfig }).accounts['github.com/contoso'] | Should -BeExactly 'WizX20'
     }
 
     It 'keeps an account that is set when gh is not logged in with it' {
         Set-TestAnswer '' '' '' '' '' '' '' ''
         phx init 6>$null
         $before = Read-TestConfig
-        # gh now knows only WizX20: summitnl's wpaap stays the default, and Enter keeps it.
+        # gh now knows only WizX20: contoso's work-login stays the default, and Enter keeps it.
         Mock Get-PhxGhAccount -ModuleName PSPhoenix { [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $true } }
-        # roots, summitnl account (asked: its account is not logged in), target, machine, interval, schedule?, save?
+        # roots, contoso account (asked: its account is not logged in), target, machine, interval, schedule?, save?
         Set-TestAnswer '' '' '' '' '' '' ''
-        Get-PhxOutput { phx init } | Should -Match 'github.com/summitnl uses wpaap, but gh is not logged in as wpaap'
+        Get-PhxOutput { phx init } | Should -Match 'github.com/contoso uses work-login, but gh is not logged in as work-login'
         $script:Answers.Count | Should -Be 0
         Read-TestConfig | Should -Be $before
     }
@@ -3083,12 +3083,12 @@ Describe 'status' {
         $testHome = Use-TestHome
         $repos = Join-Path $testHome 'Repos'
         New-TestRepository (Join-Path $repos 'Mine') -Remote 'origin=https://github.com/WizX20/mine.git' | Out-Null
-        New-TestRepository (Join-Path $repos 'Work') -Remote 'origin=https://github.com/summitnl/work.git' | Out-Null
+        New-TestRepository (Join-Path $repos 'Work') -Remote 'origin=https://github.com/contoso/work.git' | Out-Null
         New-TestRepository (Join-Path $repos 'Scratch') | Out-Null
         $target = Join-Path $testHome 'Target'
         New-Item -ItemType Directory -Path $target | Out-Null
         Mock Get-PhxGhAccount -ModuleName PSPhoenix {
-            [pscustomobject]@{ Host = 'github.com'; Login = 'wpaap'; Active = $true }
+            [pscustomobject]@{ Host = 'github.com'; Login = 'work-login'; Active = $true }
             [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $false }
         }
         # A scheduled task as phx schedule on registers it, every hour.
@@ -3101,14 +3101,14 @@ Describe 'status' {
         Mock Get-PhxScheduledTask -ModuleName PSPhoenix { $script:ScheduledTask }
 
         function Set-TestConfig {
-            param([string]$WorkAccount = 'wpaap', [string]$TargetPath = $target)
+            param([string]$WorkAccount = 'work-login', [string]$TargetPath = $target)
             InModuleScope PSPhoenix -Parameters @{ Root = $repos; Target = $TargetPath; Work = $WorkAccount } {
                 param($Root, $Target, $Work)
                 $c = Read-PhxConfig
                 $c.roots = @([ordered]@{ path = $Root; depth = 3 })
                 $c.target = [ordered]@{ type = 'folder'; path = $Target }
                 $c.accounts['github.com/WizX20'] = 'WizX20'
-                $c.accounts['github.com/summitnl'] = $Work
+                $c.accounts['github.com/contoso'] = $Work
                 Save-PhxConfig $c
             }
         }
@@ -3137,14 +3137,14 @@ Describe 'status' {
         $output | Should -Match 'scan\s+just now'
         $output | Should -Match 'repos\s+3 repositories, 1 without a remote'
         $output | Should -Match 'WizX20: 1'
-        $output | Should -Match 'account\s+wpaap on github.com \(1 repositories\) - logged in to gh'
+        $output | Should -Match 'account\s+work-login on github.com \(1 repositories\) - logged in to gh'
         $output | Should -Match 'last run\s+none yet - phx run'
         $output | Should -Match 'schedule\s+on, every 1h and at logon - next 2026-10-12 10:00'
         $output | Should -Match 'nothing needs attention'
     }
 
     It 'needs no gh account for a repository cloned over SSH' {
-        git -C (Join-Path $repos 'Work') remote set-url origin 'git@github.com:summitnl/work.git'
+        git -C (Join-Path $repos 'Work') remote set-url origin 'git@github.com:contoso/work.git'
         Set-TestConfig -WorkAccount 'Ghost'
         phx scan 6>$null
         $output = Get-PhxOutput { phx status }
@@ -3156,11 +3156,11 @@ Describe 'status' {
         Set-TestConfig
         phx scan 6>$null
         Mock Get-PhxGhAccount -ModuleName PSPhoenix {
-            [pscustomobject]@{ Host = 'github.com'; Login = 'wpaap'; Active = $true; Verified = $false }
+            [pscustomobject]@{ Host = 'github.com'; Login = 'work-login'; Active = $true; Verified = $false }
             [pscustomobject]@{ Host = 'github.com'; Login = 'WizX20'; Active = $false; Verified = $true }
         }
         $output = Get-PhxOutput { phx status }
-        $output | Should -Match 'wpaap on github.com \(1 repositories\) - logged in to gh, not checked'
+        $output | Should -Match 'work-login on github.com \(1 repositories\) - logged in to gh, not checked'
         $output | Should -Match 'nothing needs attention'
     }
 
@@ -3264,7 +3264,7 @@ Describe 'status' {
     It 'counts only the configured roots, and says which one the last scan did not cover' {
         # Scanned: Repos and Extra. Then Extra is removed and New added - neither scanned that way.
         $extra = Join-Path $testHome 'Extra'
-        New-TestRepository (Join-Path $extra 'Gone') -Remote 'origin=https://github.com/summitnl/gone.git' | Out-Null
+        New-TestRepository (Join-Path $extra 'Gone') -Remote 'origin=https://github.com/contoso/gone.git' | Out-Null
         $new = Join-Path $testHome 'New'
         New-Item -ItemType Directory -Path $new | Out-Null
         Set-TestConfig
@@ -3276,7 +3276,7 @@ Describe 'status' {
         $output | Should -Match ([regex]::Escape($new) + '\s+depth 3\s+not scanned')
         $output | Should -Match '1 root\(s\) not scanned yet - phx scan'
         $output | Should -Match 'repos\s+3 repositories, 1 without a remote'
-        $output | Should -Match 'account\s+wpaap on github.com \(1 repositories\)'
+        $output | Should -Match 'account\s+work-login on github.com \(1 repositories\)'
         $output | Should -Not -Match ([regex]::Escape($extra))
     }
 
@@ -3515,7 +3515,7 @@ Describe 'snapshot' {
 
     It 'accepts only folder-safe machine names' {
         InModuleScope PSPhoenix {
-            foreach ($good in 'Box', 'WOUTER-LT', 'box.home', 'a_b') { Test-PhxMachineName $good | Should -BeTrue -Because $good }
+            foreach ($good in 'Box', 'MY-LAPTOP', 'box.home', 'a_b') { Test-PhxMachineName $good | Should -BeTrue -Because $good }
             foreach ($bad in '', 'my laptop', '../x', 'a/b', 'trailing.', '-x', ('x' * 64)) { Test-PhxMachineName $bad | Should -BeFalse -Because $bad }
         }
     }
@@ -3958,7 +3958,7 @@ Describe 'run' {
             }
             $script:SecretText = @{
                 'key.pem'        = { param($v) "-----BEGIN RSA PRIVATE" + " KEY-----`n$v`n-----END RSA PRIVATE KEY-----" }
-                'remote.txt'     = { param($v) "url = https://wouter:$v@example.invalid/x.git" }
+                'remote.txt'     = { param($v) "url = https://alice:$v@example.invalid/x.git" }
                 'header.txt'     = { param($v) "Authorization: Bearer $v" }
                 'database.txt'   = { param($v) "Server=db;User Id=sa;Password=$v;" }
                 'storage.txt'    = { param($v) "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=$v;" }
@@ -4465,18 +4465,18 @@ Describe 'prompts' {
 Describe 'gh wrappers' {
     It 'lists the logged-in accounts from gh auth status --json' {
         InModuleScope PSPhoenix {
-            Mock Invoke-PhxGh { '{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"wpaap"},{"state":"success","active":false,"host":"github.com","login":"WizX20"},{"state":"error","active":false,"host":"github.com","login":"Broken"}]}}' }
+            Mock Invoke-PhxGh { '{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"work-login"},{"state":"success","active":false,"host":"github.com","login":"WizX20"},{"state":"error","active":false,"host":"github.com","login":"Broken"}]}}' }
             $accounts = @(Get-PhxGhAccount)
-            $accounts.Login | Should -Be @('wpaap', 'WizX20')
-            ($accounts | Where-Object Login -EQ 'wpaap').Active | Should -BeTrue
+            $accounts.Login | Should -Be @('work-login', 'WizX20')
+            ($accounts | Where-Object Login -EQ 'work-login').Active | Should -BeTrue
         }
     }
 
     It 'keeps an account gh could not check while offline, as not verified' {
         InModuleScope PSPhoenix {
-            Mock Invoke-PhxGh { '{"hosts":{"github.com":[{"state":"timeout","active":true,"host":"github.com","login":"wpaap"}]}}' }
+            Mock Invoke-PhxGh { '{"hosts":{"github.com":[{"state":"timeout","active":true,"host":"github.com","login":"work-login"}]}}' }
             $account = @(Get-PhxGhAccount)
-            $account.Login | Should -Be 'wpaap'
+            $account.Login | Should -Be 'work-login'
             $account.Verified | Should -BeFalse
         }
     }
