@@ -51,9 +51,10 @@ function Read-PhxKey {
 
 function Step-PhxChoice {
     # One key on a choice list: moves the cursor, ticks a row (multi-select) or ends the choice.
-    # Returns what the key did: move, toggle, accept, cancel or none.
+    # Returns what the key did: move, toggle, accept, cancel, help (?) or none.
     param([Parameter(Mandatory)]$State, [Parameter(Mandatory)][ConsoleKeyInfo]$Key)
     $rows = $State.Rows
+    if ($Key.KeyChar -eq '?') { return 'help' }
     switch ($Key.Key) {
         { $_ -in 'UpArrow', 'K' } { $State.Index = ($State.Index - 1 + $rows) % $rows; return 'move' }
         { $_ -in 'DownArrow', 'J', 'Tab' } { $State.Index = ($State.Index + 1) % $rows; return 'move' }
@@ -92,7 +93,9 @@ function Read-PhxChoice {
     # A choice from a list: with the arrow keys on a console (space ticks in a multi-select, Enter
     # accepts, q or Esc stops), else as typed answers through Read-PhxAnswer - numbers from the
     # list (comma-separated in a multi-select) or a label - so a test or a redirected run answers
-    # the same questions. With -Other, a last row lets the user type what is not in the list.
+    # the same questions. With -Other, a last row lets the user type what is not in the list. The
+    # default is shown as what it is (Enter = C:\Repos), not as list numbers. -Help is what ? shows:
+    # the details a plain question leaves out. -NoEcho leaves the line with the answer to the caller.
     # Returns what was chosen: [int] indexes into -Options, and typed text as [string]. q stops
     # (OperationCanceledException).
     param(
@@ -103,7 +106,9 @@ function Read-PhxChoice {
         # The last row's label, e.g. 'another folder - type its path'.
         [string]$Other,
         # What else may be typed as an answer, e.g. 'and/or paths'.
-        [string]$TypedHint
+        [string]$TypedHint,
+        [string[]]$Help = @(),
+        [switch]$NoEcho
     )
     if (-not $Options.Count -and -not $Other) { throw 'nothing to choose from' }
     if (Test-PhxChoiceConsole) { return Read-PhxChoiceByKey @PSBoundParameters }
@@ -112,11 +117,14 @@ function Read-PhxChoice {
     for ($i = 0; $i -lt $Options.Count; $i++) { Write-Host ('  {0}. {1}' -f ($i + 1), $Options[$i]) }
     $what = if ($Multi) { 'numbers from the list, comma-separated' } else { 'a number from the list' }
     if ($TypedHint) { $what += " $TypedHint" }
+    if ($Help.Count) { $what += '; ? explains' }
     Write-Host "  $what" -ForegroundColor DarkGray
-    $shownDefault = if ($Multi) { ($Default | ForEach-Object { $_ + 1 }) -join ',' } elseif ($Default.Count) { $Options[$Default[0]] } else { '' }
+    if ($Default.Count) { Write-Host "  Enter = $(@($Default | ForEach-Object { $Options[$_] }) -join ', ')" -ForegroundColor DarkGray }
     while ($true) {
-        $answer = Read-PhxAnswer -Prompt "  $Prompt" -Default $shownDefault
+        $answer = Read-PhxAnswer -Prompt "  $Prompt"
         if ($answer -eq 'q') { throw [OperationCanceledException]::new('stopped') }
+        if ($answer -eq '?' -and $Help.Count) { foreach ($line in $Help) { Write-Host "  $line" -ForegroundColor DarkGray }; continue }
+        if (-not $answer -and $Default.Count) { return [object[]]@($Default | ForEach-Object { [int]$_ }) }
         $tokens = if ($Multi) { @($answer -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @($answer | Where-Object { $_ }) }
         $result = [Collections.Generic.List[object]]::new()
         $problem = $null
@@ -147,7 +155,9 @@ function Read-PhxChoiceByKey {
         [int[]]$Default = @(),
         [switch]$Multi,
         [string]$Other,
-        [string]$TypedHint
+        [string]$TypedHint,
+        [string[]]$Help = @(),
+        [switch]$NoEcho
     )
     $null = $TypedHint
     $state = [pscustomobject]@{
@@ -161,7 +171,8 @@ function Read-PhxChoiceByKey {
     # A console without a size (a redirected or headless one reports 0) gets the usual width.
     $width = try { [Console]::WindowWidth } catch { 0 }
     if ($width -lt 20) { $width = 120 }
-    $keys = if ($Multi) { 'up/down to move, space ticks, a ticks all, Enter accepts, q stops' } else { 'up/down to move, Enter chooses, q stops' }
+    $keys = if ($Multi) { 'up/down to move, space ticks, a ticks all, Enter accepts' } else { 'up/down to move, Enter chooses' }
+    $keys += $(if ($Help.Count) { ', ? explains, q stops' } else { ', q stops' })
     Write-Host "  $Prompt - $keys" -ForegroundColor DarkGray
     $escape = [char]27
     $visible = try { [Console]::CursorVisible } catch { $true }
@@ -178,6 +189,13 @@ function Read-PhxChoiceByKey {
             $drawn = $true
             $action = Step-PhxChoice -State $state -Key (Read-PhxKey)
             if ($action -eq 'cancel') { throw [OperationCanceledException]::new('stopped') }
+            if ($action -eq 'help' -and $Help.Count) {
+                # The details above the list, which is drawn again below them.
+                Write-Host "$escape[$($state.Rows)F$escape[0J" -NoNewline
+                foreach ($line in $Help) { Write-Host "  $line" -ForegroundColor DarkGray }
+                $drawn = $false
+                continue
+            }
             if ($action -ne 'accept') { continue }
             $onOther = $Other -and $state.Index -eq $Options.Count
             $chosen = @(if ($Multi) { for ($i = 0; $i -lt $Options.Count; $i++) { if ($state.Selected[$i]) { $i } } } elseif (-not $onOther) { $state.Index })
@@ -192,7 +210,7 @@ function Read-PhxChoiceByKey {
                 $typed = @([string]$text)
             }
             $shown = @(@($chosen | ForEach-Object { $Options[$_] }) + $typed)
-            Write-Host "  ${Prompt}: $(if ($shown.Count) { $shown -join ', ' } else { 'none' })"
+            if (-not $NoEcho) { Write-Host "  ${Prompt}: $(if ($shown.Count) { $shown -join ', ' } else { 'none' })" }
             return @(@($chosen | ForEach-Object { [int]$_ }) + $typed)
         }
     }

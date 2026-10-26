@@ -751,6 +751,16 @@ Describe 'scan' {
         $output | Should -Match 'gone:\s+github.com/o/one'
     }
 
+    It 'says the count once for one root, and a .git git cannot read in one line (#85)' {
+        New-TestRepository (Join-Path $repos 'One') -Remote 'origin=https://github.com/o/one.git' | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path (Join-Path $repos 'Hollow') '.git') | Out-Null
+        phx roots add $repos 6>$null
+        $output = Get-PhxOutput { phx scan }
+        [regex]::Matches($output, '1 repositories').Count | Should -Be 1
+        $output | Should -Match ([regex]::Escape((Join-Path $repos 'Hollow')) + ' - \.git is not a valid repository, skipped')
+        $output | Should -Not -Match 'fatal:'
+    }
+
     It 'points out the same remote cloned twice' {
         New-TestRepository (Join-Path $repos 'A') -Remote 'origin=https://github.com/o/same.git' | Out-Null
         New-TestRepository (Join-Path $repos 'B') -Remote 'origin=https://github.com/o/same.git' | Out-Null
@@ -2567,6 +2577,26 @@ Describe 'choice lists' {
         { InModuleScope PSPhoenix { Read-PhxChoice -Prompt 'Target' -Options 'a', 'b' } 6>$null } | Should -Throw -ExceptionType ([OperationCanceledException])
     }
 
+    It 'explains on ? above the list, and leaves the answer line to the caller with -NoEcho (#85)' {
+        Mock Test-PhxChoiceConsole -ModuleName PSPhoenix { $true }
+        $script:Keys = [Collections.Generic.Queue[ConsoleKeyInfo]]::new([ConsoleKeyInfo[]]@((New-TestKey Oem2 '?'), (New-TestKey DownArrow), (New-TestKey Enter)))
+        Mock Read-PhxKey -ModuleName PSPhoenix { $script:Keys.Dequeue() }
+        $output = Get-PhxOutput {
+            $script:Picked = InModuleScope PSPhoenix { @(Read-PhxChoice -Prompt 'Interval' -Options '1h', '4h' -Default 0 -Help 'from 15m to 31d' -NoEcho) }
+        }
+        @($script:Picked) | Should -Be @(1)
+        $output | Should -Match '\? explains'
+        $output | Should -Match 'from 15m to 31d'
+        $output | Should -Not -Match 'Interval: 4h'
+    }
+
+    It 'shows the default as what it is when typed' {
+        Mock Read-PhxAnswer -ModuleName PSPhoenix { '' }
+        $output = Get-PhxOutput { $script:Picked = InModuleScope PSPhoenix { @(Read-PhxChoice -Prompt 'Pick' -Options 'C:\Repos (27 repositories)', 'D:\src (3 repositories)' -Default 0 -Multi) } }
+        $output | Should -Match 'Enter = C:\\Repos \(27 repositories\)'
+        @($script:Picked) | Should -Be @(0)
+    }
+
     It 'takes typed answers elsewhere: <Answer>' -ForEach @(
         @{ Answer = ''; Multi = $true; Expected = @(0, 1) }
         @{ Answer = '3, 1'; Multi = $true; Expected = @(2, 0) }
@@ -2643,8 +2673,8 @@ Describe 'init' {
         $personal = Join-Path $script:InitWork 'Personal'
         Set-Content -LiteralPath (Join-Path $personal '.gitignore') -Value 'local.env'
         Set-Content -LiteralPath (Join-Path $personal 'local.env') -Value 'A=1'
-        # roots, two accounts, target, create it?, machine, interval, schedule?, save?, review now?, include it
-        Set-TestAnswer '' '' '' '' '' '' '1h' '' '' 'y' 'i 1'
+        # roots, two accounts, target, machine, interval, schedule?, save?, review now?, include it
+        Set-TestAnswer '' '' '' '' '' '1h' '' '' 'y' 'i 1'
         $output = Get-PhxOutput { phx init }
         $script:Answers.Count | Should -Be 0
         $output | Should -Match '(?s)saved .*1 gitignored file\(s\) in 1 repositories wait for a decision'
@@ -2652,8 +2682,8 @@ Describe 'init' {
     }
 
     It 'sets up roots, accounts, target, machine and interval from the defaults and a few answers' {
-        # roots, WizX20 account, summitnl account, target, create it?, machine, interval (bad, good), schedule?, save?
-        Set-TestAnswer '' '' '' '' '' '' 'soon' '2h' '' ''
+        # roots, WizX20 account, summitnl account, target (created when saving), machine, interval (bad, good), schedule?, save?
+        Set-TestAnswer '' '' '' '' '' 'soon' '2h' '' ''
         $output = Get-PhxOutput { phx init }
         $script:Answers.Count | Should -Be 0
         $config = InModuleScope PSPhoenix { Read-PhxConfig }
@@ -2669,8 +2699,22 @@ Describe 'init' {
         $config.machine.name | Should -Be ([Environment]::MachineName)
         [guid]::Parse($config.machine.id) | Should -Not -BeNullOrEmpty
         $output | Should -Match ('machine\s+' + [regex]::Escape([Environment]::MachineName) + '\s+snapshot in')
-        $output | Should -Match '1\. .*Work\s+3 repositories'
+        $output | Should -Match '1\. .*Work \(3 repositories\)'
         $output | Should -Not -Match 'NoRepos'
+        # Plain questions, counted, the default as what it is, and a line that confirms each answer.
+        foreach ($step in 1..8) { $output | Should -Match "Step $step of 8 - " }
+        $output | Should -Match 'Where do you keep your git repositories\?'
+        $output | Should -Match ('Enter = ' + [regex]::Escape("$script:InitWork (3 repositories), $script:InitOther (1 repository)"))
+        $output | Should -Match ('[\u2713+] ' + [regex]::Escape($script:InitWork) + ' - 3 repositories')
+        $output | Should -Match '[\u2713+] 4 repositories'
+        $script:Prompts -join "`n" | Should -Match 'Which account clones the repositories of WizX20\? \(2 repositories\)'
+        $output | Should -Match '[\u2713+] WizX20 \(2 repositories\) - account WizX20'
+        $output | Should -Match ('[\u2713+] ' + [regex]::Escape((Join-Path $script:InitOneDrive 'PSPhoenix')) + ' \(new - created when saving\)')
+        $output | Should -Match 'target\s+.*PSPhoenix\s+\(new\)'
+        $output | Should -Match '[\u2713+] every 2h'
+        $output | Should -Match '[\u2713+] in the background, every 2h'
+        $output | Should -Match 'next: the first background run starts within a minute, then every 2h - phx run backs up now'
+        $output | Should -Not -Match 'does not exist yet'
         $output | Should -Match 'like 30m, 1h or 1d'
         $output | Should -Not -Match 'company storage'
         $output | Should -Match 'saved .*config.json'
@@ -2685,12 +2729,12 @@ Describe 'init' {
     }
 
     It 'changes nothing when run again with Enter all the way' {
-        Set-TestAnswer '' '' '' '' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' '' '' ''
         phx init 6>$null
         $before = Read-TestConfig
         # roots, two accounts, target (exists now), machine, interval, schedule?, save?
         Set-TestAnswer '' '' '' '' '' '' '' ''
-        Get-PhxOutput { phx init } | Should -Match '\(current\)'
+        Get-PhxOutput { phx init } | Should -Match '\(3 repositories, current\)'
         $script:Answers.Count | Should -Be 0
         Read-TestConfig | Should -Be $before
     }
@@ -2700,11 +2744,10 @@ Describe 'init' {
         @{ Question = 'first account'; At = 1 }
         @{ Question = 'second account'; At = 2 }
         @{ Question = 'target'; At = 3 }
-        @{ Question = 'create-the-target'; At = 4 }
-        @{ Question = 'machine'; At = 5 }
-        @{ Question = 'interval'; At = 6 }
-        @{ Question = 'schedule'; At = 7 }
-        @{ Question = 'save'; At = 8 }
+        @{ Question = 'machine'; At = 4 }
+        @{ Question = 'interval'; At = 5 }
+        @{ Question = 'schedule'; At = 6 }
+        @{ Question = 'save'; At = 7 }
     ) {
         $answers = @(@('') * $At) + 'q'
         Set-TestAnswer @answers
@@ -2717,25 +2760,25 @@ Describe 'init' {
     }
 
     It 'leaves the last scan alone when stopped after scanning other roots' {
-        Set-TestAnswer '' '' '' '' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' '' '' ''
         phx init 6>$null
         $cachePath = InModuleScope PSPhoenix { Get-PhxRepoCachePath }
         $before = Get-Content -LiteralPath $cachePath -Raw
         # Other holds only an Azure DevOps repository: no account questions, so q answers the target.
         Set-TestAnswer $script:InitOther 'q'
-        Get-PhxOutput { phx init } | Should -Match 'Other\s+1 repositories'
+        Get-PhxOutput { phx init } | Should -Match 'Other - 1 repository'
         Get-Content -LiteralPath $cachePath -Raw | Should -Be $before
     }
 
     It 'saves nothing when the last answer is no' {
-        Set-TestAnswer '' '' '' '' '' '' '' '' 'n'
+        Set-TestAnswer '' '' '' '' '' '' '' 'n'
         Get-PhxOutput { phx init } | Should -Match 'not confirmed - nothing saved'
         Test-Path -LiteralPath (InModuleScope PSPhoenix { Get-PhxConfigPath }) | Should -BeFalse
     }
 
     It 'asks again for roots it cannot use, and takes a typed path' {
         $nope = Join-Path $testHome 'nope'
-        Set-TestAnswer '7' $nope '1,1' $script:InitOther '' '' '' '' '' ''
+        Set-TestAnswer '7' $nope '1,1' $script:InitOther '' '' '' '' ''
         $output = Get-PhxOutput { phx init }
         $output | Should -Match 'there is no number 7 in the list'
         $output | Should -Match ([regex]::Escape("no such folder: $nope"))
@@ -2745,14 +2788,14 @@ Describe 'init' {
 
     It 'asks again for an account gh does not have, and stores its exact spelling' {
         # WizX20's owner first (two repositories): a login gh lacks, then Enter; summitnl: typed in lower case.
-        Set-TestAnswer '1' 'nobody' '' 'wizx20' '' '' '' '' '' ''
+        Set-TestAnswer '1' 'nobody' '' 'wizx20' '' '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'one of: wpaap, WizX20'
         $script:Answers.Count | Should -Be 0
         (InModuleScope PSPhoenix { Read-PhxConfig }).accounts['github.com/summitnl'] | Should -BeExactly 'WizX20'
     }
 
     It 'keeps an account that is set when gh is not logged in with it' {
-        Set-TestAnswer '' '' '' '' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' '' '' ''
         phx init 6>$null
         $before = Read-TestConfig
         # gh now knows only WizX20: summitnl's wpaap stays the default, and Enter keeps it.
@@ -2766,14 +2809,14 @@ Describe 'init' {
 
     It 'skips the accounts when gh is not logged in' {
         Mock Get-PhxGhAccount -ModuleName PSPhoenix { }
-        Set-TestAnswer '' '' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'gh is not logged in'
         (InModuleScope PSPhoenix { Read-PhxConfig }).accounts.Count | Should -Be 0
     }
 
     It 'asks again for a target number that is not in the list' {
-        # roots, two accounts, target (5, a number too big for an int, Enter), create it?, machine, interval, save?
-        Set-TestAnswer '' '' '' '5' '99999999999' '' '' '' '' '' ''
+        # roots, two accounts, target (5, a number too big for an int, Enter), machine, interval, schedule?, save?
+        Set-TestAnswer '' '' '' '5' '99999999999' '' '' '' '' ''
         $output = Get-PhxOutput { phx init }
         $output | Should -Match 'there is no number 5 in the list'
         $output | Should -Match 'there is no number 99999999999 in the list'
@@ -2782,8 +2825,8 @@ Describe 'init' {
     }
 
     It 'takes an interval from 15m to 31d' {
-        # roots, two accounts, target, create it?, machine, interval (three refused), save?
-        Set-TestAnswer '' '' '' '' '' '' '14m' '99999999999m' '32d' '31d' '' ''
+        # roots, two accounts, target, machine, interval (three refused), schedule?, save?
+        Set-TestAnswer '' '' '' '' '' '14m' '99999999999m' '32d' '31d' '' ''
         $output = Get-PhxOutput { phx init }
         [regex]::Matches($output, 'from 15m to 31d').Count | Should -Be 3
         (InModuleScope PSPhoenix { Read-PhxConfig }).interval | Should -Be '31d'
@@ -2794,8 +2837,8 @@ Describe 'init' {
     }
 
     It 'asks again for a machine name that is no folder name, and stores the typed one' {
-        # roots, two accounts, target, create it?, machine (bad, good), interval, save?
-        Set-TestAnswer '' '' '' '' '' 'my laptop' 'Laptop-2026' '' '' ''
+        # roots, two accounts, target, machine (bad, good), interval, schedule?, save?
+        Set-TestAnswer '' '' '' '' 'my laptop' 'Laptop-2026' '' '' ''
         Get-PhxOutput { phx init } | Should -Match 'letters, digits, dot, dash and underscore, please'
         $script:Answers.Count | Should -Be 0
         (InModuleScope PSPhoenix { Read-PhxConfig }).machine.name | Should -Be 'Laptop-2026'
@@ -2825,7 +2868,7 @@ Describe 'init' {
     }
 
     It 'leaves a matching task alone on Enter, and removes it on no' {
-        Set-TestAnswer '' '' '' '' '' '' '' '' ''
+        Set-TestAnswer '' '' '' '' '' '' '' ''
         phx init 6>$null
         $script:Registered | Should -HaveCount 1
         # The task is there now, as init registered it.
@@ -2846,19 +2889,63 @@ Describe 'init' {
     }
 
     It 'leaves the schedule off when told so' {
-        # roots, two accounts, target, create it?, machine, interval, schedule? no, save?
-        Set-TestAnswer '' '' '' '' '' '' '' 'n' ''
+        # roots, two accounts, target, machine, interval, schedule? no, save?
+        Set-TestAnswer '' '' '' '' '' '' 'n' ''
         $output = Get-PhxOutput { phx init }
         $output | Should -Match 'schedule\s+off - phx schedule on later'
+        $output | Should -Match 'next: nothing runs in the background - phx run backs up now'
         $script:Registered | Should -HaveCount 0
     }
 
-    It 'takes a typed target folder, and says where company data belongs' {
+    It 'takes a typed target folder, and says where company data belongs only for a personal cloud' {
         $usb = Join-Path $testHome 'USB'
         New-Item -ItemType Directory -Path $usb | Out-Null
         Set-TestAnswer '' '' '' $usb '' '' '' ''
-        Get-PhxOutput { phx init } | Should -Match 'company storage'
+        Get-PhxOutput { phx init } | Should -Not -Match 'company storage'
         (InModuleScope PSPhoenix { Read-PhxConfig }).target.path | Should -Be $usb
+        # A personal OneDrive on a machine with OneDrive for Business: the note. Its suggestion is
+        # the second in the list now.
+        $env:OneDriveConsumer = Join-Path $testHome 'OneDrive - Personal'
+        New-Item -ItemType Directory -Path $env:OneDriveConsumer | Out-Null
+        Set-TestAnswer '' '' '' (Join-Path $env:OneDriveConsumer 'PSPhoenix') '' '' '' ''
+        Get-PhxOutput { phx init } | Should -Match 'company storage'
+        InModuleScope PSPhoenix {
+            Test-PhxPersonalCloudPath (Join-Path (Join-Path $HOME 'Dropbox') 'PSPhoenix') | Should -BeTrue
+            Test-PhxPersonalCloudPath $env:OneDriveCommercial | Should -BeFalse
+        }
+    }
+
+    It 'asks about a typed target only when the folder it is in is missing too' {
+        # A new folder in an existing one: taken, created when saving.
+        $fresh = Join-Path $testHome 'Fresh'
+        Set-TestAnswer '' '' '' $fresh '' '' '' ''
+        Get-PhxOutput { phx init } | Should -Match ([regex]::Escape($fresh) + ' \(new - created when saving\)')
+        (InModuleScope PSPhoenix { Read-PhxConfig }).target.path | Should -Be $fresh
+        # A likely typo: asked, no by default, then the suggestion.
+        $typo = Join-Path (Join-Path $testHome 'Nowhere') 'PSPhoenix'
+        Set-TestAnswer '' '' '' $typo '' '' '' '' '' ''
+        Get-PhxOutput { phx init } | Out-Null
+        $script:Prompts -join "`n" | Should -Match ('neither ' + [regex]::Escape($typo) + ' nor the folder it is in exists')
+        $script:Answers.Count | Should -Be 0
+        (InModuleScope PSPhoenix { Read-PhxConfig }).target.path | Should -Be $fresh
+    }
+
+    It 'explains a question on ?' {
+        # roots (? then Enter), two accounts, target, machine (? then Enter), interval, schedule?, save?
+        Set-TestAnswer '?' '' '' '' '' '?' '' '' '' ''
+        $output = Get-PhxOutput { phx init }
+        $script:Answers.Count | Should -Be 0
+        $output | Should -Match 'searched 3 levels deep; phx roots add <path> -Depth <n>'
+        $output | Should -Match 'a folder another installation wrote .* is not taken'
+    }
+
+    It 'says a folder whose .git git cannot read in one line' {
+        New-Item -ItemType Directory -Path (Join-Path (Join-Path $script:InitWork 'Hollow') '.git') | Out-Null
+        Set-TestAnswer '' '' '' '' '' '' '' ''
+        $output = Get-PhxOutput { phx init }
+        $output | Should -Match ([regex]::Escape((Join-Path $script:InitWork 'Hollow')) + ' - \.git is not a valid repository, skipped')
+        $output | Should -Not -Match 'fatal:'
+        $output | Should -Not -Match 'git config'
     }
 }
 
