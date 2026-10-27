@@ -6,6 +6,20 @@ New entries go in [changelog.d/](changelog.d/README.md), one file per pull reque
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-27
+
+### Added
+
+- feat: phx review - a list with check boxes on a console (space includes or excludes, `s` marks secret, right opens a folder, `/` filters), the proposal pre-checked
+- feat: phx review - a file found in several repositories (`.env in 9 repositories`) is decided once for all of them, in the new `files.include` and `files.secret` next to `files.exclude`; a repository's own decision comes first
+- feat: phx review - `a` accepts the rest as proposed; typed numbers without a letter ask include, secret or exclude, and a mistake no longer prints the whole list again
+
+### Changed
+
+- changed: init - every step is counted ("Step 3 of 8 - Accounts"), asks one plain question with a line of why (`?` shows the details) and confirms the answer in one line; a default reads as what it is (`Enter = C:\Repos (27 repositories)`) (#85)
+- changed: init - a suggested target folder that does not exist yet is created when saving without asking; a typed one is asked about only when the folder it is in is missing too; the note on company data only shows for a personal cloud folder on a work machine; the interval and schedule steps say what a run does to the machine, and the end says when the first background run comes (#85)
+- changed: scan - in `phx scan` and `phx init`, a folder whose `.git` git cannot read is one line (`<path> - .git is not a valid repository, skipped`) instead of git's command and error; one root's count is no longer repeated as the total (#85)
+
 ## [0.3.1] - 2026-10-20
 
 ### Added

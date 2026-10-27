@@ -1,3 +1,0 @@
-- feat: phx review - a list with check boxes on a console (space includes or excludes, `s` marks secret, right opens a folder, `/` filters), the proposal pre-checked
-- feat: phx review - a file found in several repositories (`.env in 9 repositories`) is decided once for all of them, in the new `files.include` and `files.secret` next to `files.exclude`; a repository's own decision comes first
-- feat: phx review - `a` accepts the rest as proposed; typed numbers without a letter ask include, secret or exclude, and a mistake no longer prints the whole list again
